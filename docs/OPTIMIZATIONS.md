@@ -149,3 +149,44 @@ written by `SETSOUND.EXE`, which is LZEXE-packed, so their exact content
 was not established. Running the real utility keeps the one verified
 code path (§9: menu, keyboard and `SOUND.CFG` write all work under pfemu)
 instead of guessing at its output format.
+
+## 9. Startup launcher + sound toggle (`src/launch.c`, `src/main.c`, `src/pfemu.h`)
+
+`pfemu.exe` used to boot straight into Pinball Fantasies. It now shows a
+small Win32 picker first (same C/MSVC toolchain, no new dependencies):
+
+- Radio buttons: Pinball Fantasies (`FANTASY/PINBALL.EXE`), Pinball Dreams
+  (`DREAMS/DREAMS.COM`), Pinball Illusions (listed but disabled — boot
+  support is not there yet, see §10).
+- Sound checkbox (Fantasies only; greyed out for Dreams, whose sound is
+  chosen in its in-game F1/F2 menu). On Launch it calls `write_sound_cfg()`:
+  on = 25-byte `SBLASTER.SDR` config (name + port index 1 → 220h, IRQ index
+  3 → IRQ 7, quality 0; gap bytes zero, unread by the driver), off = the
+  known-good 16-byte `NOSOUND.SDR` config. The file goes to
+  `<game>/PFEMU-STATE/SOUND.CFG` through the same overlay idea as `src/dos.c`,
+  so installed files stay pristine. The checkbox initialises from the
+  effective config (`read_sound_is_sb()`: overlay first, then installed file;
+  SBPRO/SB16/SB20 count as "on").
+- Launch validates the game directory exists, Quit/close exits without booting.
+
+Skip rules (`src/main.c`): the dialog is bypassed by `-nolauncher` (new),
+by an explicit `-p`/`-setup`, and by `-secs` (headless/benchmark runs stay
+scriptable). In picker mode `-d` is ignored — the directory comes from the
+selected game. Closing the window quits instead of booting (behavior change
+vs. the old double-click boots).
+
+## 10. Multi-game status (exploration, no core changes yet)
+
+- Pinball Dreams (`DREAMS/`): 16-bit real-mode (`PD.EXE` + BAT2EXEC launcher),
+  VGA/PIT/speaker hardware already covered by the core; built-in Zero Hour /
+  Miles sound (no `.SDR` model), `.RMC` MIDI + `.MOD` music, manual-lookup
+  protection. Bring-up recipe is the Fantasies one (boot under `-dosdbg` /
+  `-xring`, fix, patch protection in memory).
+- Pinball Illusions (`ILLUSION/illusion.exe` + `start.bat`): the 3.7 MB file
+  is a real-mode loader (ANSI intro, XMS/VCPI/DPMI detection) around an
+  embedded NLZW resource archive holding the 32-bit protected-mode game
+  (`illusion.000` + pMAX `illusion.386` driver, CauseWay-style `INT 90h`
+  services). Sound reuses the `.SDR`/`SOUND.CFG` family, so the §9 toggle
+  carries over. Still needed: full pmode CPU + DPMI-server surface in the
+  core; first step is a stub-observability run of the real-mode part under
+  the current core to confirm the archive resolves internally.

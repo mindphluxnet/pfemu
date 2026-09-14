@@ -98,6 +98,14 @@ void plat_sleep_ms(int ms);
 void plat_audio_init(int hz);
 void plat_audio_push(const int16_t *samples, int count);
 
+/* ------------------------------------------------------------ launcher --- */
+/* Win32 game picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
+ * into the game's PFEMU-STATE/ overlay so installed files stay pristine. */
+typedef struct { const char *dir, *prog; } LaunchChoice;
+int  show_launcher(LaunchChoice *out);   /* 1 = launch, 0 = quit */
+void write_sound_cfg(const char *dir, int on);
+int  read_sound_is_sb(const char *dir);
+
 /* ------------------------------------------------------------ tracing ---- */
 extern int trace_level;
 void trc(const char *fmt, ...);

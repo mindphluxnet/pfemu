@@ -193,6 +193,8 @@ static unsigned long irq_count[32];
 int main(int argc, char **argv){
     const char *dir = "FANTASY";
     const char *prog = "PINBALL.EXE";
+    int no_launcher = 0;      /* -nolauncher: skip the picker dialog */
+    int explicit_prog = 0;    /* -p / -setup names the program directly */
     double t0, last_present = 0;
     double max_secs = 0;
     const char *shotfile = NULL;
@@ -205,13 +207,13 @@ int main(int argc, char **argv){
 
     for(i=1;i<argc;i++){
         if(!strcmp(argv[i],"-d") && i+1<argc) dir = argv[++i];
-        else if(!strcmp(argv[i],"-p") && i+1<argc) prog = argv[++i];
+        else if(!strcmp(argv[i],"-p") && i+1<argc){ prog = argv[++i]; explicit_prog = 1; }
         /* -setup: boot the sound-configuration utility instead of the game.
          * Equivalent to -p SETSOUND.EXE, but discoverable.  Pick SoundBlaster
          * (base 220h, IRQ 7), answer its questions, and it writes SOUND.CFG;
          * the write goes to PFEMU-STATE/ via the DOS overlay, so the
          * installed files stay pristine.  The game then uses it on next boot. */
-        else if(!strcmp(argv[i],"-setup")) prog = "SETSOUND.EXE";
+        else if(!strcmp(argv[i],"-setup")){ prog = "SETSOUND.EXE"; explicit_prog = 1; }
         else if(!strcmp(argv[i],"-t")){ trace_level = 1; trace_fp = fopen("pfemu.log","w"); }
         else if(!strcmp(argv[i],"-ips") && i+1<argc) emu_ips = atof(argv[++i]);
         else if(!strcmp(argv[i],"-secs") && i+1<argc) max_secs = atof(argv[++i]);
@@ -234,9 +236,20 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-trap") && i+2<argc){ extern uint32_t x_trap_lo, x_trap_hi; extern int x_on;
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-speed") && i+1<argc) speed = atof(argv[++i]);
+        else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
     }
     if(emu_ips <= 0.0) emu_ips = 6000000.0;
     emu_inv_ips = 1.0 / emu_ips;
+
+    /* Game picker, unless the run is explicit or automated: -p/-setup name
+     * the program, -secs means a headless benchmark, -nolauncher forces the
+     * old behaviour (boot dir/prog straight away).  In picker mode -d is
+     * ignored: the directory comes from the selected game. */
+    if(!no_launcher && !explicit_prog && max_secs <= 0.0){
+        LaunchChoice lc;
+        if(!show_launcher(&lc)) return 0;
+        dir = lc.dir; prog = lc.prog;
+    }
 
     ram = (uint8_t*)calloc(RAM_SIZE,1);
     if(!ram){ fprintf(stderr,"out of memory\n"); return 1; }
