@@ -197,11 +197,16 @@ int main(int argc, char **argv){
     int explicit_prog = 0;    /* -p / -setup names the program directly */
     /* Windows-subsystem binary: no console of its own, so double-clicking
      * shows only the UI.  When started from a console, reattach to it so
-     * CLI output (-secs stats, traces) still works. */
-    if(AttachConsole(ATTACH_PARENT_PROCESS)){
-        freopen("CONOUT$", "w", stdout);
-        freopen("CONOUT$", "w", stderr);
-    }
+     * CLI output (-secs stats, traces) still works — but never steal a
+     * redirected stderr, so `2>file` log capture keeps working. */
+    { HANDLE he = GetStdHandle(STD_ERROR_HANDLE);
+      if(he == NULL || he == INVALID_HANDLE_VALUE ||
+         GetFileType(he) == FILE_TYPE_UNKNOWN){
+          if(AttachConsole(ATTACH_PARENT_PROCESS)){
+              freopen("CONOUT$", "w", stdout);
+              freopen("CONOUT$", "w", stderr);
+          }
+      } }
     double t0, last_present = 0;
     double max_secs = 0;
     const char *shotfile = NULL;
@@ -244,6 +249,8 @@ int main(int argc, char **argv){
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-speed") && i+1<argc) speed = atof(argv[++i]);
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
+        else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
+        else if(!strcmp(argv[i],"-vscan") && i+1<argc) vscan_step = strtoull(argv[++i],NULL,10);
     }
     if(emu_ips <= 0.0) emu_ips = 6000000.0;
     emu_inv_ips = 1.0 / emu_ips;
@@ -315,6 +322,7 @@ int main(int argc, char **argv){
                 if(lim < 1) lim = 1;
                 for(n=0;n<lim;n++) cpu_step();
                 dev_tick();
+                vga_vscan_poll();
             }
             if(cpu.iflag){
                 int v = pic_pending();

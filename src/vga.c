@@ -23,6 +23,8 @@ static int bios_mode = 3;
 /* CRT timing cache, refreshed lazily by vga_timing_cached().  Set to 1
  * whenever a register it derives from changes. */
 static int timing_dirty = 1;
+static double timing_per, timing_hde, timing_inv_per;
+static int timing_vtotal, timing_vde, timing_vrs, timing_vre;
 
 uint32_t vga_retrace_hz = 70;
 
@@ -181,6 +183,59 @@ uint8_t vga_io_r(uint16_t p){
 static struct { uint16_t port; uint8_t val; uint8_t ff; } arlog[256];
 static int arlog_n;
 
+/* Present-phase timeline (-flipdbg, -vscan): WHERE in the emulated frame do
+ * page flips land and VRAM mutate?  Needed because sampling the frame at the
+ * wrong phase shows mid-draw pages (ball flicker).  Off by default. */
+int vga_flipdbg = 0;
+uint64_t vscan_step = 0;             /* sample VRAM hash every N instr (0=off) */
+static uint64_t vscan_last = 0;
+void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
+static uint64_t vscan_chunk[64];
+static int vscan_init = 0;
+static unsigned long vscan_logged = 0;
+
+/* Current scan-line position in the frame, same basis as vga_status1(). */
+static double vga_frameline(int *vtotal_out){
+    double per, inv, hde, q, line;
+    int vt, vd, vrs, vre;
+    vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
+    (void)per; (void)hde; (void)vd; (void)vrs; (void)vre;
+    q = emu_now() * inv;
+    q -= (int64_t)q;
+    line = q * (double)vt;
+    if(vtotal_out) *vtotal_out = vt;
+    return line;
+}
+
+static uint64_t vscan_fnv(const uint8_t *p, size_t n){
+    uint64_t h = 1469598103934665603ULL;
+    size_t i;
+    for(i=0;i<n;i++){ h ^= p[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+/* Called once per emulation batch from the main loop.  Samples a 64-chunk
+ * hash of VRAM; on any change logs time, frame phase and change magnitude
+ * (1-2 chunks = sprite-scale, dozens = blit/fill).  Auto-disables after
+ * 100k events so a forgotten flag can't fill the disk. */
+void vga_vscan_poll(void){
+    uint64_t c = cpu.cycles;
+    int k, changed = 0;
+    int vt;
+    double line;
+    if(!vscan_step || c - vscan_last < vscan_step) return;
+    vscan_last = c;
+    for(k=0;k<64;k++){
+        uint64_t h = vscan_fnv(&vga_vram[k*4096], 4096);
+        if(!vscan_init || h != vscan_chunk[k]){ vscan_chunk[k] = h; changed++; }
+    }
+    if(!vscan_init){ vscan_init = 1; return; }
+    if(!changed) return;
+    if(vscan_logged++ > 100000){ vscan_step = 0; fprintf(stderr, "[vscan] auto-off\n"); return; }
+    line = vga_frameline(&vt);
+    fprintf(stderr, "[vscan] t=%.6f line=%6.1f/%d n=%d\n", emu_now(), line, vt, changed);
+}
+
 void vga_io_w(uint16_t p, uint8_t v){
     switch(p){
     case 0x3C0:
@@ -211,7 +266,15 @@ void vga_io_w(uint16_t p, uint8_t v){
     case 0x3B4: case 0x3D4: cr_idx = v & 63; break;
     case 0x3B5: case 0x3D5:
         if(cr_idx==0x0C && cr[0x0C]!=v) vga_startaddr_changes++;
-        cr[cr_idx & 63] = v; vga_dirty = 1; timing_dirty = 1; break;
+        cr[cr_idx & 63] = v; vga_dirty = 1; timing_dirty = 1;
+        if(vga_flipdbg && (cr_idx==0x0C || cr_idx==0x0D)){
+            int vt; double line = vga_frameline(&vt);
+            uint32_t start = ((uint32_t)cr[0x0C]<<8) | cr[0x0D];
+            fprintf(stderr, "[flip] t=%.6f line=%6.1f/%d start=%04X %s from %04X:%04X\n",
+                    emu_now(), line, vt, start, cr_idx==0x0C?"hi":"lo",
+                    cpu.sreg[S_CS], (unsigned)cpu.eip);
+        }
+        break;
     }
 }
 
@@ -430,9 +493,6 @@ void vga_timing(double *frame_period, int *vtotal_out, int *vde_out,
  * registers it derives from only change on mode set / CRTC reprogramming.
  * Recomputing the doubles every read dominated the profile, so refresh the
  * cache only when those registers are written (see vga_io_w/apply_regs). */
-static double timing_per, timing_hde, timing_inv_per;
-static int timing_vtotal, timing_vde, timing_vrs, timing_vre;
-
 void vga_timing_cached(double *frame_period, double *inv_period,
                 int *vtotal_out, int *vde_out,
                 int *vrs_out, int *vre_out, double *hde_frac){

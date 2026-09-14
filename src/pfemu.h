@@ -78,6 +78,9 @@ void    vga_render(uint32_t *out, int *w, int *h);
 void    vga_set_mode_bios(int mode);
 extern uint8_t vga_vram[256*1024];
 extern int vga_dirty;
+extern int vga_flipdbg;              /* -flipdbg: log page flips w/ phase */
+extern uint64_t vscan_step;          /* -vscan N: VRAM mutation timeline */
+void vga_vscan_poll(void);           /* per-batch sampler, no-op unless set */
 
 /* ---------------------------------------------------------------- BIOS --- */
 void bios_init(void);

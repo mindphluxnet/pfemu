@@ -344,9 +344,15 @@ hazard for the ball; the drifting wall phase only lands in it occasionally,
 while the locked phase parked inside it permanently. Lesson: phase-locked
 presentation is only safe once the game's draw/flip timing is measured, not
 assumed. The `vga_dirty` consume/clear went back with it (it was
-write-only before and nobody reads it). A real flicker fix needs flip-phase
-instrumentation first (when CRTC start changes within the frame vs. when
-the ball bits land), which hasn't been done.
-Pending user test: name/serial should now display correctly and boot
-should proceed into video/sound/menu (manual protection and sound-card
-selection expected next).
+write-only before and nobody reads it).
+
+## 17. Present-phase instruments: `-flipdbg`, `-vscan N` (`src/vga.c`)
+
+To place presents correctly, first measure where flips and draws land in
+the emulated frame: `-flipdbg` logs every CRTC start-address write with
+emulated time, scan-line phase and caller; `-vscan N` hashes VRAM in 64
+4 KB chunks every N instructions and logs time, phase and change magnitude
+(1–2 chunks = sprite-scale, dozens = blit/fill), auto-disabling after
+100k events. Both off by default (one branch per batch when off). Also:
+stderr is now only reattached to the parent console when it isn't
+redirected, so `2>file` captures logs from the windowed binary.
