@@ -291,6 +291,40 @@ Fantasies §5.13 protection:
   known gaps for Dreams: no audio (PD uses MPU-401 MIDI/speaker paths, never
   touches the SB ports — silent until that audio work lands) and the
   in-game sound selection, which is cosmetic until then.
+
+## 15. Fantasies "slower" report: measured, not regressed
+
+A windowless harness (fixed instruction budget, same batch/deadline/IRQ
+discipline as the main loop, no GUI) compared the pre-optimization core
+against this one, best-of-3, in `FANTASY/` with scripted keys into table
+play where noted:
+
+| workload | base | this tree |
+|---|---|---|
+| intro, NOSOUND, batch 64 | 33.0 MIPS | 44.8 MIPS |
+| intro, NOSOUND, batch 256 | — | 45.8 MIPS |
+| intro, SoundBlaster, batch 64 | — | 35.4 MIPS |
+| gameplay (table, scripted keys), SB, batch 256 | 22.0 MIPS | 31.5 MIPS |
+| gameplay + `vga_render` per frame, SB | 19.5 MIPS | 27.1 MIPS |
+
+So the core is **36–43% faster** everywhere, including the exact phase
+complained about, and the render path shows no pathology (same ~12%
+proportion both sides). Timing is equivalent too: the driver's PLL
+calibration traces are bit-identical (`-pll` sequences match to the
+microsecond), and table-phase tick counts agree within normal lock
+variation (~58 Hz both).
+
+Two real costs that are *not* regressions, but explain the feel: enabling
+sound spends ~23% of cycles in the driver's in-guest MOD mixer plus its
+DMA/3DA sync polling (NOSOUND runs never paid it), and Fantasies is simply
+heavier per frame than Dreams (mode-X planar blits + split screen +
+mixer — all guest work). Audio stays perfect because it is SB-clocked while
+graphics are game-logic-paced. If graphics still feel slow on a given
+machine, the remaining suspect is the host present path (`StretchDIBits`
+each 1/60 s, identical code both builds): test whether sluggishness scales
+with window size — bigger window slower means GDI-bound, in which case the
+fix is presenting less (frame skip / dirty-only present), not emulating
+faster.
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).
