@@ -472,16 +472,23 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
             }
         }
         /* Pinball Dreams' manual-lookup protection works the same way: PD.EXE
-         * sums the typed word (uppercased) and takes JE to the pass path on a
-         * match, with retries then a silent exit on failure.  Turn that JE
-         * (image+0x7020) into a JMP.  Same rules: memory only, signature
-         * checked, -nopatch disables. */
-        if(!dos_no_patch && imglen > 0x7023){
-            static const uint8_t sig[10] = { 0x02,0xC4,0xE2,0xF6,0x3A,0x44,0x04,0x74,0x05,0x4D };
-            uint32_t at = (uint32_t)load*16 + 0x7019;
-            if(at + 10 <= RAM_SIZE && memcmp(&ram[at], sig, sizeof(sig)) == 0){
-                ram[at + 7] = 0xEB;                     /* JE -> JMP */
-                trc("[dos] dreams manual check patched in memory at image+0x7020\n");
+         * compares the typed length against the expected length (JNE to fail)
+         * then checksums the answer uppercased (JE to pass), with retries and
+         * a silent exit on failure.  Forcing only the checksum JE is not
+         * enough — a wrong-length word (e.g. "aaa") fails earlier and never
+         * reaches it, which is why the prompt retried three times.  Retarget
+         * the length JNE at its pass path too, so every input passes both
+         * gates.  Same rules: memory only, signature checked, -nopatch
+         * disables. */
+        if(!dos_no_patch && imglen > 0x7022){
+            static const uint8_t sig[30] = { 0x8D,0x1E,0xC9,0x00,0x8A,0x0F,0x3A,0x4C,0x03,0x75,
+                                             0x13,0x2B,0xC0,0x2A,0xED,0x43,0x8A,0x27,0x80,0xE4,
+                                             0xDF,0x02,0xC4,0xE2,0xF6,0x3A,0x44,0x04,0x74,0x05 };
+            uint32_t at = (uint32_t)load*16 + 0x7004;
+            if(at + 30 <= RAM_SIZE && memcmp(&ram[at], sig, sizeof(sig)) == 0){
+                ram[at + 10] = 0x18;                    /* JNE fail -> JNE pass */
+                ram[at + 28] = 0xEB;                    /* JE -> JMP */
+                trc("[dos] dreams manual check patched in memory at image+0x700D/0x7020\n");
             }
         }
 

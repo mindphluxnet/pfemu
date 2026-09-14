@@ -279,11 +279,13 @@ Fantasies §5.13 protection:
   (stub rewind, idle, resume on IRQ) with partial input kept in the guest
   buffer (`oa_active`, reset on `EXEC`). Needs the exported
   `bios_kbuf_get/peek` (`src/bios.c`, `src/pfemu.h`).
-- The check itself is patched in the loaded image (`JE`→`JMP` at
-  image+`0x7020`, 10-byte signature `02 C4 E2 F6 3A 44 04 74 05 4D`),
-  memory-only, `-nopatch` restores the original prompt-and-answer behavior
-  (which now works, thanks to the `0Ah` implementation, for anyone holding
-  the manual).
+- The check itself is patched in the loaded image (30-byte signature at
+  image+`0x7004`, two one-byte fixes: length-`JNE` retargeted fail→pass,
+  checksum-`JE`→`JMP`), memory-only, `-nopatch` restores the original
+  prompt-and-answer behavior (which now works, thanks to the `0Ah`
+  implementation, for anyone holding the manual). The two-gate form
+  matters: checksumming alone still retries on a wrong-length word, which
+  is exactly the observed three-prompts-then-quit.
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).
