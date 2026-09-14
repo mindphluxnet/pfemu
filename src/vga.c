@@ -20,6 +20,19 @@ static int dac_widx, dac_ridx, dac_wcomp, dac_rcomp;
 static uint8_t latch[4];
 static int bios_mode = 3;
 
+/* AR14 (Color Select) switch history, for the majority-palette render below.
+ * The menu flips AR14 every game tick around a small glyph redraw that is
+ * meant to hide inside vertical blanking; on a slower machine the window
+ * lands mid-frame and presents sample it as a fullscreen red->green flash.
+ * Game state is untouched - only the presented frame uses the
+ * majority-duration bank.  Entries are chronological; pal_sw_base is the
+ * value before the oldest retained switch. */
+#define PALSW_N 16
+static uint8_t pal_sw_val[PALSW_N];
+static double pal_sw_t[PALSW_N];
+static int pal_sw_n = 0;
+static uint8_t pal_sw_base = 0;
+
 /* CRT timing cache, refreshed lazily by vga_timing_cached().  Set to 1
  * whenever a register it derives from changes. */
 static int timing_dirty = 1;
@@ -321,6 +334,17 @@ void vga_io_w(uint16_t p, uint8_t v){
             if((ar_idx & 0x1F)==0x10 && ar[0x10]!=v)
                 printf("[vga] AR10 %02X -> %02X  at %04X:%04X\n", ar[0x10], v,
                        cpu.sreg[S_CS], (unsigned)cpu.eip);
+            if((ar_idx & 0x1F) == 0x14 && ar[ar_idx & 0x1F] != v){
+                if(pal_sw_n == PALSW_N){
+                    pal_sw_base = pal_sw_val[0];
+                    memmove(pal_sw_val, pal_sw_val+1, (PALSW_N-1));
+                    memmove(pal_sw_t, pal_sw_t+1, sizeof(double)*(PALSW_N-1));
+                    pal_sw_n--;
+                }
+                pal_sw_val[pal_sw_n] = v;
+                pal_sw_t[pal_sw_n] = emu_now();
+                pal_sw_n++;
+            }
             ar[ar_idx & 0x1F] = v; ar_flipflop = 0; vga_dirty = 1;
         }
         break;
@@ -452,6 +476,52 @@ void vga_render(uint32_t *out, int *wp, int *hp){
      * shrinks to the letterboxed menu. */
     int rowh = maxscan * dbl;
     int h_log, split_log, dup = (dbl == 2) ? 2 : 1;
+    /* Majority-duration AR14 for this frame (see note at pal_sw_*): the
+     * menu flips the Color Select bank around a small per-tick redraw that
+     * is meant to hide inside vertical blanking.  Sampling the instantaneous
+     * value aliases the transient bank to a fullscreen red->green flash, so
+     * the frame renders with whichever bank covered most of it instead. */
+    uint8_t ar14_eff = ar[0x14];
+    if(pal_sw_n > 0){
+        double per, inv, hde, now, fstart, fprev;
+        int vt, vd, vrs, vre;
+        vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
+        (void)vt; (void)vd; (void)vrs; (void)vre; (void)hde;
+        now = emu_now();
+        fstart = per > 0.0 ? (double)(uint64_t)(now * inv) * per : now;
+        /* Score the last COMPLETE frame, not the partial current one:
+         * presents fire mid-frame, and a switch window straddling the frame
+         * start would otherwise read as a majority for the transient bank. */
+        fprev = fstart - per;
+        {
+            int i = 0, k, nw = 0;
+            uint8_t cur = pal_sw_base, wv[4];
+            double bnd = fprev, wd[4];
+            while(i < pal_sw_n && pal_sw_t[i] <= fprev){ cur = pal_sw_val[i]; i++; }
+            if(i < pal_sw_n){
+                for(; i < pal_sw_n; i++){
+                    double t = pal_sw_t[i];
+                    if(t <= fprev) continue;
+                    if(t >= fstart) break;
+                    for(k=0;k<nw;k++) if(wv[k]==cur) break;
+                    if(k==nw && nw<4){ wv[nw]=cur; wd[nw]=0.0; nw++; k=nw-1; }
+                    if(k<4) wd[k] += t - bnd;
+                    bnd = t;
+                    cur = pal_sw_val[i];
+                }
+                if(fstart > bnd){
+                    for(k=0;k<nw;k++) if(wv[k]==cur) break;
+                    if(k==nw && nw<4){ wv[nw]=cur; wd[nw]=0.0; nw++; k=nw-1; }
+                    if(k<4) wd[k] += fstart - bnd;
+                }
+                if(nw > 0){
+                    double best = wd[0];
+                    ar14_eff = wv[0];
+                    for(k=1;k<nw;k++) if(wd[k] >= best){ best = wd[k]; ar14_eff = wv[k]; }
+                }
+            }
+        }
+    }
     w = (cr[0x01] + 1) * 8;
     h_log = vde() / rowh;
     split_log = (lc + 1) / rowh;
@@ -472,8 +542,8 @@ void vga_render(uint32_t *out, int *wp, int *hp){
             {
                 uint8_t a = ar[ci & 0x0F];
                 uint8_t di;
-                if(ar[0x10] & 0x80) di = (uint8_t)((a & 0x0F) | ((ar[0x14]&0x0F)<<4));
-                else di = (uint8_t)((a & 0x3F) | ((ar[0x14]&0x0C)<<4));
+                if(ar[0x10] & 0x80) di = (uint8_t)((a & 0x0F) | ((ar14_eff&0x0F)<<4));
+                else di = (uint8_t)((a & 0x3F) | ((ar14_eff&0x0C)<<4));
                 out[y*w+x] = pal[di];
             }
         }
@@ -494,6 +564,7 @@ static void apply_regs(const uint8_t *c, const uint8_t *s, const uint8_t *g, con
     for(i=0;i<21;i++) ar[i]=a[i];
     ar_flipflop = 0;
     timing_dirty = 1;
+    pal_sw_n = 0; pal_sw_base = ar[0x14];   /* old banks are meaningless now */
 }
 
 static const uint8_t c_text80[25] = {
