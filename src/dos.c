@@ -457,40 +457,11 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         fseek(f, (long)hdrsize, SEEK_SET);
         if(fread(&ram[(uint32_t)load*16], 1, imglen, f) != imglen){ }
 
-        /* Defeat the manual-lookup protection in the loaded image rather than
-         * on disk.  INTRO.PRG asks for a word from the manual and branches on
-         * the result with a JNC; CRACK.COM (which shipped with the game) turns
-         * that into a JMP by rewriting one byte at file offset 239,232.  Doing
-         * it here keeps the user's file untouched, and the signature check
-         * means a different build is left alone instead of being corrupted. */
-        if(!dos_no_patch && imglen > 238210){
-            static const uint8_t sig[6] = { 0x81, 0xFB, 0xE7, 0x51, 0x73, 0x32 };
-            uint32_t at = (uint32_t)load*16 + 238204;
-            if(memcmp(&ram[at], sig, sizeof(sig)) == 0){
-                ram[at + 4] = 0xEB;                     /* JNC -> JMP */
-                trc("[dos] manual check patched in memory at image+238208\n");
-            }
-        }
-        /* Pinball Dreams' manual-lookup protection works the same way: PD.EXE
-         * compares the typed length against the expected length (JNE to fail)
-         * then checksums the answer uppercased (JE to pass), with retries and
-         * a silent exit on failure.  Forcing only the checksum JE is not
-         * enough — a wrong-length word (e.g. "aaa") fails earlier and never
-         * reaches it, which is why the prompt retried three times.  Retarget
-         * the length JNE at its pass path too, so every input passes both
-         * gates.  Same rules: memory only, signature checked, -nopatch
-         * disables. */
-        if(!dos_no_patch && imglen > 0x7022){
-            static const uint8_t sig[30] = { 0x8D,0x1E,0xC9,0x00,0x8A,0x0F,0x3A,0x4C,0x03,0x75,
-                                             0x13,0x2B,0xC0,0x2A,0xED,0x43,0x8A,0x27,0x80,0xE4,
-                                             0xDF,0x02,0xC4,0xE2,0xF6,0x3A,0x44,0x04,0x74,0x05 };
-            uint32_t at = (uint32_t)load*16 + 0x7004;
-            if(at + 30 <= RAM_SIZE && memcmp(&ram[at], sig, sizeof(sig)) == 0){
-                ram[at + 10] = 0x18;                    /* JNE fail -> JNE pass */
-                ram[at + 28] = 0xEB;                    /* JE -> JMP */
-                trc("[dos] dreams manual check patched in memory at image+0x700D/0x7020\n");
-            }
-        }
+        /* Game-specific image patches (memory-only, signature-checked,
+         * -nopatch disables).  Implemented per game in src/fantasies.c and
+         * src/dreams.c; dos.c only dispatches. */
+        fantasies_patch_image((uint32_t)load*16, imglen);
+        dreams_patch_image((uint32_t)load*16, imglen);
 
         fseek(f, lfarlc, SEEK_SET);
         for(i=0;i<crlc;i++){
@@ -530,6 +501,8 @@ int dos_exec(const char *dospath, uint16_t parblk_seg, uint32_t parblk_off,
 
     r = load_mz(host, &cs,&ip,&ss,&sp,&psp, env, tail, dospath);
     if(r) return r;
+
+    fantasies_on_exec(dospath);
 
     if(nproc < 8){
         procs[nproc].psp = psp;

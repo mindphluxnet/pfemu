@@ -177,16 +177,105 @@ static uint8_t kbd_last = 0;
 int kbd_a20 = 1;
 static uint8_t kbc_cmd = 0;
 
+/* Break-loss repair for the Fantasies flipper fix (policy owned by
+ * src/fantasies.c, mechanics here): the tables drive each flipper from a
+ * single level bit shared by 3 keys (left: 2A/38/1D, right: 36/E0-38/E0-1D;
+ * FANTASIE.ASM KEYINT DSSK/DSSKR, live TABLE1.PRG image 0x3F34).  A lost break
+ * byte leaves the bit set so the flipper stays up.  While
+ * fantasies_fix_active():
+ *  - autorepeat makes flooding the 64-byte queue and crowding out the break
+ *    (coalesced: a make for an already-held code is dropped);
+ *  - queue-full drops taking the break instead of an older repeat make
+ *    (breaks always win by discarding the oldest byte);
+ * plus overlap repair: the guest clears the shared bit on ANY break, so
+ * releasing one of two overlapping keys for the same side wrongly drops the
+ * flipper; the still-held sibling is re-asserted with a fresh make. */
+static uint8_t kbd_held[256];
+void kbd_clear_held(void){ memset(kbd_held, 0, sizeof(kbd_held)); }
+static int kbd_free(void){ return 63 - ((kbd_tail - kbd_head) & 63); }
+static void kbd_push(uint8_t b){ int n = (kbd_tail+1)&63; kbd_buf[kbd_tail]=b; kbd_tail=n; }
+/* 1 = room for `need` bytes (evicting oldest when the fix is on), 0 = drop. */
+static int kbd_ensure(int need){
+    if(kbd_free() >= need) return 1;
+    if(!fantasies_fix_active()) return 0;
+    while(kbd_free() < need) kbd_head = (kbd_head+1)&63;
+    return 1;
+}
+/* Re-assert a still-held make without touching kbd_held (already 1). */
+static void kbd_reassert(unsigned idx){
+    uint8_t sc = (uint8_t)(idx & 0x7F);
+    if(idx & 0x80){
+        if(!kbd_ensure(2)) return;
+        kbd_push(0xE0); kbd_push(sc);
+    } else {
+        if(!kbd_ensure(1)) return;
+        kbd_push(sc);
+    }
+    pic_raise(1);
+    trc("[kbd] fantasy re-assert %s%02X\n", (idx&0x80)?"E0 ":"", sc);
+}
+
 void kbd_key(int scancode, int down){
     uint8_t sc = (uint8_t)(scancode & 0x7F);
-    int n = (kbd_tail+1) & 63;
-    if(scancode & 0xE000) {  /* extended */
-        if(n!=kbd_head){ kbd_buf[kbd_tail]=0xE0; kbd_tail=n; n=(kbd_tail+1)&63; }
+    int ext = (scancode & 0xE000) ? 1 : 0;
+    unsigned idx = (unsigned)sc | (ext ? 0x80u : 0u);
+    if(down){
+        if(kbd_held[idx]){
+            /* Autorepeat: the guest ignores it anyway (TEST/JNZ on make),
+             * and outside Fantasy tables typematic must keep working. */
+            if(fantasies_fix_active()) return;
+        } else {
+            kbd_held[idx] = 1;
+        }
+        if(ext){
+            if(!kbd_ensure(2)) return;
+            kbd_push(0xE0); kbd_push(sc);
+        } else {
+            if(!kbd_ensure(1)) return;
+            kbd_push(sc);
+        }
+        pic_raise(1);
+        return;
     }
-    if(n==kbd_head) return;
-    kbd_buf[kbd_tail] = (uint8_t)(down ? sc : (sc|0x80));
-    kbd_tail = n;
+    kbd_held[idx] = 0;
+    if(ext){
+        if(!kbd_ensure(2)) return;
+        kbd_push(0xE0); kbd_push((uint8_t)(sc|0x80));
+    } else {
+        if(!kbd_ensure(1)) return;
+        kbd_push((uint8_t)(sc|0x80));
+    }
     pic_raise(1);
+    if(!fantasies_fix_active()) return;
+    /* Same-side sibling still down?  The guest just cleared the shared bit
+     * unconditionally, so re-assert it.  Left: 2A/38/1D plain.  Right: 36
+     * plain + E0 38 / E0 1D. */
+    if(!ext && (sc==0x2A || sc==0x38 || sc==0x1D)){
+        if(kbd_held[0x2A]) kbd_reassert(0x2A);
+        else if(kbd_held[0x38]) kbd_reassert(0x38);
+        else if(kbd_held[0x1D]) kbd_reassert(0x1D);
+    } else if((!ext && sc==0x36) || (ext && (sc==0x38 || sc==0x1D))){
+        if(kbd_held[0x36]) kbd_reassert(0x36);
+        else if(kbd_held[0xB8]) kbd_reassert(0xB8);
+        else if(kbd_held[0x9D]) kbd_reassert(0x9D);
+    }
+}
+/* Focus loss: the host keeps no key state, so every held key would otherwise
+ * lose its break and (in a table) stick its flipper up.  Always active. */
+void kbd_release_all(void){
+    int i, n = 0;
+    for(i=0;i<256;i++) if(kbd_held[i]){
+        uint8_t sc = (uint8_t)(i & 0x7F);
+        kbd_held[i] = 0; n++;
+        if(i & 0x80){
+            if(!kbd_ensure(2)) break;
+            kbd_push(0xE0); kbd_push((uint8_t)(sc|0x80));
+        } else {
+            if(!kbd_ensure(1)) break;
+            kbd_push((uint8_t)(sc|0x80));
+        }
+    }
+    if(n){ pic_raise(1); trc("[kbd] focus loss: released %d keys\n", n); }
 }
 unsigned long kbd_port60_reads = 0;
 uint8_t pic_imr(void){ return pic[0].imr; }
@@ -442,5 +531,6 @@ void dev_init(void){
     pit_init();
     sound_init();
     kbd_head = kbd_tail = 0;
+    memset(kbd_held, 0, sizeof(kbd_held));
     port61 = 0;
 }

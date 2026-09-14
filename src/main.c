@@ -37,10 +37,13 @@ static int running = 1;
 static int win_w = 960, win_h = 600;
 static int integer_scale = 0;
 
+extern void kbd_release_all(void);
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
     switch(m){
     case WM_DESTROY: case WM_CLOSE: running = 0; PostQuitMessage(0); return 0;
     case WM_SIZE: win_w = LOWORD(l); win_h = HIWORD(l); return 0;
+    case WM_KILLFOCUS: kbd_release_all(); break;
+    case WM_ACTIVATE: if(LOWORD(w) == WA_INACTIVE) kbd_release_all(); break;
     case WM_ERASEBKGND: return 1;
     case WM_SYSKEYDOWN: case WM_KEYDOWN: {
         int sc = (l >> 16) & 0xFF;
@@ -266,6 +269,11 @@ int main(int argc, char **argv){
         if(!show_launcher(&lc)) return 0;
         dir = lc.dir; prog = lc.prog;
     }
+
+    /* Arm the Fantasies session (launcher choice or its CLI equivalent).
+     * Sibling games (DREAMS/ILLUSION/...) never arm it, so no Fantasies-only
+     * behaviour can leak into them however their files happen to be named. */
+    fantasies_begin_session(dir, prog);
 
     ram = (uint8_t*)calloc(RAM_SIZE,1);
     if(!ram){ fprintf(stderr,"out of memory\n"); return 1; }

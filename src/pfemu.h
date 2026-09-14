@@ -66,6 +66,8 @@ void pic_lower(int irq);
 int  pic_pending(void);               /* returns vector or -1 */
 void pic_ack(int vec);
 void kbd_key(int scancode, int down);
+void kbd_release_all(void);     /* synthesize breaks for held keys (focus loss) */
+void kbd_clear_held(void);      /* drop held-key state (game switch / fix off) */
 extern int  kbd_a20;
 
 /* ---------------------------------------------------------------- VGA ---- */
@@ -96,6 +98,16 @@ void dos_init(const char *hostdir);
 void dos_int21(void);
 int  dos_exec(const char *path, uint16_t psp_env, uint32_t cmdtail_ptr, uint32_t fcb1, uint32_t fcb2);
 extern int dos_done;
+extern int dos_no_patch;        /* -nopatch : leave manual checks in place */
+
+/* -------------------------------------------------------- game fixes ----- */
+/* Per-game behaviour lives in its own TU (src/fantasies.c, src/dreams.c);
+ * dos.c/dev.c call in, never implement game logic themselves. */
+void fantasies_begin_session(const char *dir, const char *prog);
+void fantasies_on_exec(const char *dospath);
+void fantasies_patch_image(uint32_t load_base, uint32_t imglen);
+int  fantasies_fix_active(void);
+void dreams_patch_image(uint32_t load_base, uint32_t imglen);
 
 /* ------------------------------------------------------------ platform --- */
 void plat_init(const char *title);
