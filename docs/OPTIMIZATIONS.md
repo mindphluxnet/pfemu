@@ -325,6 +325,13 @@ each 1/60 s, identical code both builds): test whether sluggishness scales
 with window size — bigger window slower means GDI-bound, in which case the
 fix is presenting less (frame skip / dirty-only present), not emulating
 faster.
+
+Follow-ups, all measured: driver quality index costs 25.0–30.5 MIPS across
+Q0–Q4 (Q3 fastest; default stays Q0, which is ear-verified as
+original-sounding — switching defaults on perf grounds alone would trade
+fidelity for ~15%). Batch 256 vs 64 is neutral-to-positive. The table-phase
+game tick agrees within normal PLL lock variation (~58 Hz both), and the
+boot-phase PLL traces are bit-identical, so pacing is unchanged.
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).
