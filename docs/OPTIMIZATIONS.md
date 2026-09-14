@@ -212,5 +212,29 @@ vs. the old double-click boots).
 - Dreams boot itself is still unverified — pending a user test run. `PD.EXE`'s
   own DOS usage was statically scanned and is fully covered (`02h 09h 0Ah`
   console, `25h/35h` vectors, `3Ch-42h` file I/O, `4Ch` exit; no EXEC/FCB/
-  exotic calls), and its entry (`cs:ip=0:0` = image start) is sane init code,
-  so if it still fails the next step is a `-t -dosdbg` trace to find where.
+  exotic calls), and its entry (`cs:ip=0:0` = image start) is sane init code.
+
+## 12. Dreams: missing `\install.sys` caused the silent exit
+
+Symptom: black window closing by itself; exit stats pristine (text mode 03h,
+untouched VRAM/PIT/vectors). A `-t -dosdbg` trace showed the real story —
+not a hang at all: `PD.EXE` hooks `INT 9`, probes the keyboard, opens
+`\install.sys`, gets "open FAILED", restores the vector and takes
+`INT 21h 4C00`. (The vsync-wait loop seen in an earlier `-xring` was normal
+frame pacing sampled at timeout, a red herring.)
+
+`\install.sys` is installer-written personalization: the literals
+`Serial No:` / `User Name:` sit next to the filename in the binary, the
+game loads the whole file first thing (loader at image `0x15C7`: open →
+size check <256 KB → chunked read → close) and bails through a silent
+cleanup+exit (`0x1B13`: mode 3, `4C00`) when the load fails. Downloads
+typically lack the file.
+
+Fix (`src/launch.c:ensure_install_sys()`): on Dreams launch, if neither
+`DREAMS/PFEMU-STATE/install.sys` nor `DREAMS/install.sys` exists, write a
+default (`Serial No:00000` / `User Name:PLAYER`, NUL-terminated, zero-padded
+to 128 bytes so any parse stays in bounds). Game reads prefer the overlay
+copy (same mechanism as `src/dos.c`), installed files stay pristine, a real
+file always wins, and users can edit in their own name. Pending user test:
+boot should now proceed past init into video/sound/menu (manual protection
+and sound-card selection expected next).

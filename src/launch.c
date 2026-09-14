@@ -27,15 +27,16 @@ typedef struct {
     const char *dir;      /* game directory (FANTASY/DREAMS/ILLUSION) */
     const char *prog;     /* program to boot */
     int has_sound_toggle; /* checkbox applies to this game */
+    int needs_install_sys;/* game requires install.sys (see below) */
 } GameDef;
 
 static const GameDef games[] = {
-    { "FANTASY",  "PINBALL.EXE", 1 },
+    { "FANTASY",  "PINBALL.EXE", 1, 0 },
     /* Dreams boots PD.EXE directly: DREAMS.COM is only a BAT2EXEC memory
      * check (CHKMEM, 530k gate), meaningless under emulation. */
-    { "DREAMS",   "PD.EXE",       0 },
+    { "DREAMS",   "PD.EXE",       0, 1 },
     /* Illusions: listed for planning; boot support is not there yet. */
-    { "ILLUSION", "illusion.exe", 1 },
+    { "ILLUSION", "illusion.exe", 1, 0 },
 };
 
 typedef struct {
@@ -99,6 +100,43 @@ int read_sound_is_sb(const char *dir){
                strncmp(name, "SB16", 4)==0 || strncmp(name, "SB20", 4)==0;
     }
     return 0;
+}
+
+/* ------------------------------------------------- install.sys stub */
+/* Pinball Dreams refuses to boot without \install.sys: PD.EXE loads it
+ * first thing (whole file into memory, serial/user parsed from it) and
+ * takes a silent INT 21h 4C00 exit when the open fails.  The file is
+ * installer-written personalization ("Serial No:" / "User Name:" literals
+ * sit next to the filename in the binary); downloads typically lack it.
+ * Provide a default through the PFEMU-STATE overlay (game reads prefer the
+ * overlay copy, same mechanism as src/dos.c) so installed files stay
+ * pristine.  Only when neither copy exists — a real one always wins.
+ * Plain text, NUL-terminated, zero-padded: whatever the parse reads stays
+ * in bounds.  Users can edit it (put their name in!). */
+static int file_exists(const char *p){
+    FILE *f = fopen(p, "rb");
+    if(f){ fclose(f); return 1; }
+    return 0;
+}
+
+static void ensure_install_sys(const char *dir){
+    char ov[600], orig[600], sub[600];
+    FILE *f;
+    static const char body[] = "Serial No:00000\r\nUser Name:PLAYER\r\n";
+    uint8_t buf[128];
+    size_t n = sizeof(body) - 1;
+    snprintf(ov, sizeof(ov), "%s/PFEMU-STATE/install.sys", dir);
+    snprintf(orig, sizeof(orig), "%s/install.sys", dir);
+    if(file_exists(ov) || file_exists(orig)) return;
+    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
+    CreateDirectoryA(sub, NULL);
+    if(n > sizeof(buf) - 1) n = sizeof(buf) - 1;
+    memset(buf, 0, sizeof(buf));
+    memcpy(buf, body, n);
+    f = fopen(ov, "wb");
+    if(!f) return;
+    fwrite(buf, 1, sizeof(buf), f);
+    fclose(f);
 }
 
 /* ------------------------------------------------------------------ UI */
@@ -173,6 +211,8 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             }
             if(games[st->sel].has_sound_toggle)
                 write_sound_cfg(games[st->sel].dir, st->sound);
+            if(games[st->sel].needs_install_sys)
+                ensure_install_sys(games[st->sel].dir);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
