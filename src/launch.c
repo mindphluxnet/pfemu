@@ -31,7 +31,9 @@ typedef struct {
 
 static const GameDef games[] = {
     { "FANTASY",  "PINBALL.EXE", 1 },
-    { "DREAMS",   "DREAMS.COM",  0 },
+    /* Dreams boots PD.EXE directly: DREAMS.COM is only a BAT2EXEC memory
+     * check (CHKMEM, 530k gate), meaningless under emulation. */
+    { "DREAMS",   "PD.EXE",       0 },
     /* Illusions: listed for planning; boot support is not there yet. */
     { "ILLUSION", "illusion.exe", 1 },
 };

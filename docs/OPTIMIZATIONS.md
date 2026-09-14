@@ -156,8 +156,9 @@ instead of guessing at its output format.
 small Win32 picker first (same C/MSVC toolchain, no new dependencies):
 
 - Radio buttons: Pinball Fantasies (`FANTASY/PINBALL.EXE`), Pinball Dreams
-  (`DREAMS/DREAMS.COM`), Pinball Illusions (listed but disabled — boot
-  support is not there yet, see §10).
+  (`DREAMS/PD.EXE` — booted directly; `DREAMS.COM` is only a BAT2EXEC memory
+  gate via `CHKMEM`, meaningless under emulation), Pinball Illusions
+  (listed but disabled — boot support is not there yet, see §10).
 - Sound checkbox (Fantasies only; greyed out for Dreams, whose sound is
   chosen in its in-game F1/F2 menu). On Launch it calls `write_sound_cfg()`:
   on = 25-byte `SBLASTER.SDR` config (name + port index 1 → 220h, IRQ index
@@ -206,6 +207,10 @@ vs. the old double-click boots).
   (`AX=1`, `CF=1`) broke that path. Implemented per RBIL (separator set,
   drive/name/ext handling, `*`→`?` fill, lowercase→uppercase, `AL` =
   0 plain / 1 wildcards / FF bad drive, `SI` to terminator).
-- Dreams boot itself is still unverified — pending a user test run; if it
-  still fails, the next step is a `-t -dosdbg` trace of the BAT2EXEC flow
-  (CHKMEM EXEC → ERRORLEVEL → PD EXEC) to find the next gap.
+  (Kept: harmless and correct, but no longer on the boot path since the
+  launcher now starts `PD.EXE` directly.)
+- Dreams boot itself is still unverified — pending a user test run. `PD.EXE`'s
+  own DOS usage was statically scanned and is fully covered (`02h 09h 0Ah`
+  console, `25h/35h` vectors, `3Ch-42h` file I/O, `4Ch` exit; no EXEC/FCB/
+  exotic calls), and its entry (`cs:ip=0:0` = image start) is sane init code,
+  so if it still fails the next step is a `-t -dosdbg` trace to find where.
