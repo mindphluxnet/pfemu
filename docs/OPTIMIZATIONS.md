@@ -230,11 +230,15 @@ size check <256 KB → chunked read → close) and bails through a silent
 cleanup+exit (`0x1B13`: mode 3, `4C00`) when the load fails. Downloads
 typically lack the file.
 
-Fix (`src/launch.c:ensure_install_sys()`): on Dreams launch, if neither
-`DREAMS/PFEMU-STATE/install.sys` nor `DREAMS/install.sys` exists, write a
-default (`Serial No:00000` / `User Name:PLAYER`, NUL-terminated, zero-padded
-to 128 bytes so any parse stays in bounds). Game reads prefer the overlay
-copy (same mechanism as `src/dos.c`), installed files stay pristine, a real
-file always wins, and users can edit in their own name. Pending user test:
-boot should now proceed past init into video/sound/menu (manual protection
-and sound-card selection expected next).
+Fix (`src/launch.c:ensure_install_sys()`): on Dreams launch, if no usable
+`install.sys` exists (neither a real one nor a 29-byte overlay copy),
+write the exact 29-byte layout into the overlay: byte 0 = install count
+(1), bytes 1-20 = username NUL-padded (`PLAYER`), bytes 21-28 = serial
+(`00000`). Game reads prefer the overlay copy (same mechanism as
+`src/dos.c`), installed files stay pristine, a real file always wins, and
+users can edit name/serial within the fixed 20/8 widths. An older
+labeled-lines guess (128 bytes, caused the garbled display) is replaced
+automatically by the size check.
+Pending user test: name/serial should now display correctly and boot
+should proceed into video/sound/menu (manual protection and sound-card
+selection expected next).

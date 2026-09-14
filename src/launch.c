@@ -105,34 +105,50 @@ int read_sound_is_sb(const char *dir){
 /* ------------------------------------------------- install.sys stub */
 /* Pinball Dreams refuses to boot without \install.sys: PD.EXE loads it
  * first thing (whole file into memory, serial/user parsed from it) and
- * takes a silent INT 21h 4C00 exit when the open fails.  The file is
- * installer-written personalization ("Serial No:" / "User Name:" literals
- * sit next to the filename in the binary); downloads typically lack it.
- * Provide a default through the PFEMU-STATE overlay (game reads prefer the
- * overlay copy, same mechanism as src/dos.c) so installed files stay
- * pristine.  Only when neither copy exists — a real one always wins.
- * Plain text, NUL-terminated, zero-padded: whatever the parse reads stays
- * in bounds.  Users can edit it (put their name in!). */
+ * takes a silent INT 21h 4C00 exit when the open fails.  The exact layout
+ * comes from the original INSTALL.COM (now in DREAMS/): it collects the
+ * username into buffer 0x730 and the serial into 0x744 — offsets inside
+ * the 29-byte file buffer at 0x72F — then bumps byte 0 (install counter,
+ * "Maximum installations reached" at 3) and writes 0x1D bytes.  So:
+ * byte 0 = install count, bytes 1-20 = username (NUL-padded, input clears
+ * the field first), bytes 21-28 = serial.  PD's garbled display with the
+ * earlier labeled-lines guess confirmed fixed offsets, and this matches.
+ *
+ * Provided through the PFEMU-STATE overlay (game reads prefer the overlay
+ * copy, same mechanism as src/dos.c) so installed files stay pristine.
+ * Only when neither copy exists — a real one always wins.  Users can edit
+ * it, but note the fixed widths (20/8, NUL-padded, 29 bytes total). */
 static int file_exists(const char *p){
     FILE *f = fopen(p, "rb");
     if(f){ fclose(f); return 1; }
     return 0;
 }
 
+static int file_size(const char *p){
+    FILE *f = fopen(p, "rb");
+    long n;
+    if(!f) return -1;
+    fseek(f, 0, SEEK_END); n = ftell(f); fclose(f);
+    return (int)n;
+}
+
 static void ensure_install_sys(const char *dir){
     char ov[600], orig[600], sub[600];
     FILE *f;
-    static const char body[] = "Serial No:00000\r\nUser Name:PLAYER\r\n";
-    uint8_t buf[128];
-    size_t n = sizeof(body) - 1;
+    uint8_t buf[29];
     snprintf(ov, sizeof(ov), "%s/PFEMU-STATE/install.sys", dir);
     snprintf(orig, sizeof(orig), "%s/install.sys", dir);
-    if(file_exists(ov) || file_exists(orig)) return;
+    /* A real file always wins.  An overlay copy with the wrong size is the
+     * earlier labeled-lines guess (128 bytes) — replace it with the exact
+     * 29-byte layout; a 29-byte overlay is left alone (user-edited). */
+    if(file_exists(orig)) return;
+    if(file_size(ov) == 29) return;
     snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
     CreateDirectoryA(sub, NULL);
-    if(n > sizeof(buf) - 1) n = sizeof(buf) - 1;
     memset(buf, 0, sizeof(buf));
-    memcpy(buf, body, n);
+    buf[0] = 1;
+    memcpy(&buf[1], "PLAYER", 6);
+    memcpy(&buf[21], "00000", 5);
     f = fopen(ov, "wb");
     if(!f) return;
     fwrite(buf, 1, sizeof(buf), f);
