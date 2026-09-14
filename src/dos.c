@@ -661,6 +661,74 @@ void dos_int21(void){
     case 0x19: AL = cur_drive; break;
     case 0x1A: dta_seg = cpu.sreg[S_DS]; dta_off = DX; break;
     case 0x25: *(uint32_t*)&ram[(uint32_t)AL*4] = ((uint32_t)cpu.sreg[S_DS]<<16) | DX; break;
+    case 0x29: {
+        /* Parse filename into FCB.  DS:SI source text, ES:DI 12-byte FCB
+         * (drive + 8 + 3 used), AL control flags: bit 0 skip leading
+         * separators, bits 1-3 fill drive/name/ext with defaults when that
+         * part is absent.  Returns AL = 0 plain, 1 wildcards (?/* seen),
+         * FF invalid drive; SI advances to the terminating character.
+         * BAT2EXEC (the DREAMS.COM launcher) parses every program name
+         * through here (AX=2903) before EXEC, so the old "unimplemented"
+         * return (AX=1, CF=1) broke it. */
+        uint32_t s = cpu.sbase[S_DS] + SI;
+        uint32_t f = cpu.sbase[S_ES] + DI;
+        int wild = 0, i, had;
+        uint8_t c;
+        if(AL & 1){
+            for(;;){ c = mem_r8(s);
+                if(c<=0x20||c=='"'||c=='+'||c==','||c==';'||c=='='||c=='['||
+                   c==']'||c==':'||c=='.'||c=='/'||c=='\\'||c=='<'||c=='>'||c=='|') s++;
+                else break; }
+        }
+        c = mem_r8(s);
+        if(((c>='A'&&c<='Z')||(c>='a'&&c<='z')) && mem_r8(s+1)==':'){
+            if(c>='a'&&c<='z') c -= 32;
+            if(c-'A'+1 > 26){ AL = 0xFF; break; }
+            mem_w8(f, (uint8_t)(c-'A'+1)); s += 2;
+        } else if(AL & 2) mem_w8(f, 0);
+        had = 0;
+        for(i=0;i<8;i++){
+            c = mem_r8(s);
+            if(c=='*'){ wild=1; had=1;
+                for(;i<8;i++) mem_w8(f+1+i,'?');
+                s++; break; }
+            if(c=='?'){ wild=1; had=1; mem_w8(f+1+i,'?'); s++; continue; }
+            if(c=='.'||c=='"'||c=='+'||c==','||c==';'||c=='='||c=='['||c==']'||
+               c==':'||c=='/'||c=='\\'||c=='<'||c=='>'||c=='|'||c<=0x20) break;
+            had=1;
+            if(c>='a'&&c<='z') c -= 32;
+            mem_w8(f+1+i,c); s++;
+        }
+        for(;;){ c = mem_r8(s);   /* skip name overflow */
+            if(c=='.'||c=='"'||c=='+'||c==','||c==';'||c=='='||c=='['||c==']'||
+               c==':'||c=='/'||c=='\\'||c=='<'||c=='>'||c=='|'||c<=0x20) break;
+            if(c=='*'||c=='?') wild=1;
+            s++; }
+        if(!had && (AL&4)){ for(i=0;i<8;i++) mem_w8(f+1+i,' '); }
+        if(mem_r8(s)=='.'){
+            s++; had = 0;
+            for(i=0;i<3;i++){
+                c = mem_r8(s);
+                if(c=='*'){ wild=1; had=1;
+                    for(;i<3;i++) mem_w8(f+9+i,'?');
+                    s++; break; }
+                if(c=='?'){ wild=1; had=1; mem_w8(f+9+i,'?'); s++; continue; }
+                if(c=='"'||c=='+'||c==','||c==';'||c=='='||c=='['||c==']'||
+                   c==':'||c=='.'||c=='/'||c=='\\'||c=='<'||c=='>'||c=='|'||c<=0x20) break;
+                had=1;
+                if(c>='a'&&c<='z') c -= 32;
+                mem_w8(f+9+i,c); s++;
+            }
+            for(;;){ c = mem_r8(s);   /* skip ext overflow */
+                if(c=='"'||c=='+'||c==','||c==';'||c=='='||c=='['||c==']'||
+                   c==':'||c=='.'||c=='/'||c=='\\'||c=='<'||c=='>'||c=='|'||c<=0x20) break;
+                if(c=='*'||c=='?') wild=1;
+                s++; }
+            if(!had && (AL&8)){ for(i=0;i<3;i++) mem_w8(f+9+i,' '); }
+        } else if(AL & 8){ for(i=0;i<3;i++) mem_w8(f+9+i,' '); }
+        SI = (uint16_t)(s - cpu.sbase[S_DS]);
+        AL = wild ? 1 : 0;
+        break; }
     case 0x2A: { time_t t = time(NULL); struct tm *lt = localtime(&t);
         CX = (uint16_t)(lt->tm_year+1900); DH=(uint8_t)(lt->tm_mon+1); DL=(uint8_t)lt->tm_mday;
         AL=(uint8_t)lt->tm_wday; break; }

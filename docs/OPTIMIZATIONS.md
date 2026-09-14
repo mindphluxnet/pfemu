@@ -190,3 +190,22 @@ vs. the old double-click boots).
   carries over. Still needed: full pmode CPU + DPMI-server surface in the
   core; first step is a stub-observability run of the real-mode part under
   the current core to confirm the archive resolves internally.
+
+## 11. Launcher follow-ups: no console window; INT 21h AH=29h (Dreams)
+
+- Double-clicking opened a console ("shell") window next to the UI because
+  the link defaulted to `/SUBSYSTEM:CONSOLE`. `build.bat` now links
+  `/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup` (keeping `main()`), and
+  `main()` reattaches to the invoker's console via
+  `AttachConsole(ATTACH_PARENT_PROCESS)` so CLI output (`-secs` stats,
+  traces) still works when run from a terminal.
+- `INT 21h AH=29h` (parse filename into FCB) implemented in `src/dos.c`:
+  `DREAMS.COM` is a BAT2EXEC-compiled batch that parses every program name
+  through `AX=2903` right before `EXEC` (`src` offsets `0x314`/`0x31C` → EXEC
+  `0x336` → exit-code `0x351`), and the old "unimplemented" return
+  (`AX=1`, `CF=1`) broke that path. Implemented per RBIL (separator set,
+  drive/name/ext handling, `*`→`?` fill, lowercase→uppercase, `AL` =
+  0 plain / 1 wildcards / FF bad drive, `SI` to terminator).
+- Dreams boot itself is still unverified — pending a user test run; if it
+  still fails, the next step is a `-t -dosdbg` trace of the BAT2EXEC flow
+  (CHKMEM EXEC → ERRORLEVEL → PD EXEC) to find the next gap.

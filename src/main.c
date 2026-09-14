@@ -195,6 +195,13 @@ int main(int argc, char **argv){
     const char *prog = "PINBALL.EXE";
     int no_launcher = 0;      /* -nolauncher: skip the picker dialog */
     int explicit_prog = 0;    /* -p / -setup names the program directly */
+    /* Windows-subsystem binary: no console of its own, so double-clicking
+     * shows only the UI.  When started from a console, reattach to it so
+     * CLI output (-secs stats, traces) still works. */
+    if(AttachConsole(ATTACH_PARENT_PROCESS)){
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+    }
     double t0, last_present = 0;
     double max_secs = 0;
     const char *shotfile = NULL;
