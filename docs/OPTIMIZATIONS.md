@@ -230,15 +230,16 @@ size check <256 KB → chunked read → close) and bails through a silent
 cleanup+exit (`0x1B13`: mode 3, `4C00`) when the load fails. Downloads
 typically lack the file.
 
-Fix (`src/launch.c:ensure_install_sys()`): on Dreams launch, if no usable
-`install.sys` exists (neither a real one nor a 29-byte overlay copy),
-write the exact 29-byte layout into the overlay: byte 0 = install count
-(1), bytes 1-20 = username NUL-padded (`PLAYER`), bytes 21-28 = serial
-(`00000`). Game reads prefer the overlay copy (same mechanism as
-`src/dos.c`), installed files stay pristine, a real file always wins, and
-users can edit name/serial within the fixed 20/8 widths. An older
-labeled-lines guess (128 bytes, caused the garbled display) is replaced
-automatically by the size check.
+Fix (`src/launch.c:ensure_install_sys()`): on Dreams launch, the GUI's User
+name / Serial fields (enabled for Dreams only, capped at 20/8 chars like
+the installer) are written as the exact 29-byte layout into the overlay:
+byte 0 = install count (1), bytes 1-20 = username NUL-padded, bytes 21-28
+= serial — then every byte `xor 0FFh`, matching `INSTALL.COM`'s write path
+(`xor al,0FFh` loop at `0x20A5`, decoded on read at `0x20B3`). A real
+installer file always wins; anything else (missing, or a stale plaintext
+guess, detected by decoding byte 0 and expecting install count 1-3) is
+rewritten. (The file stays obfuscated on disk — hand-editing means
+NOT-encoding; use the GUI fields.)
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).

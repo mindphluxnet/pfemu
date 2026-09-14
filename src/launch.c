@@ -22,6 +22,10 @@
 #define ID_NOTE      105
 #define ID_LAUNCH    106
 #define ID_QUIT      107
+#define ID_NAMELBL   108
+#define ID_NAME      109
+#define ID_SERLBL    110
+#define ID_SERIAL    111
 
 typedef struct {
     const char *dir;      /* game directory (FANTASY/DREAMS/ILLUSION) */
@@ -44,7 +48,9 @@ typedef struct {
     int sound;      /* checkbox state */
     int done;       /* dialog finished */
     int ok;         /* 1 = launch, 0 = quit */
-    HWND hSound, hNote;
+    char name[21];  /* Dreams user name (max 20) */
+    char serial[9]; /* Dreams serial (max 8) */
+    HWND hSound, hNote, hNameLbl, hName, hSerLbl, hSerial;
     HFONT hFont;
 } LaunchState;
 
@@ -109,46 +115,54 @@ int read_sound_is_sb(const char *dir){
  * comes from the original INSTALL.COM (now in DREAMS/): it collects the
  * username into buffer 0x730 and the serial into 0x744 — offsets inside
  * the 29-byte file buffer at 0x72F — then bumps byte 0 (install counter,
- * "Maximum installations reached" at 3) and writes 0x1D bytes.  So:
- * byte 0 = install count, bytes 1-20 = username (NUL-padded, input clears
- * the field first), bytes 21-28 = serial.  PD's garbled display with the
- * earlier labeled-lines guess confirmed fixed offsets, and this matches.
+ * "Maximum installations reached" at 3) and writes 0x1D bytes, but NOT
+ * before running every byte through `xor al,0FFh` (routine at 0x20A5;
+ * the read path decodes the same way at 0x20B3).  So on disk:
+ * byte 0 = NOT(install count), bytes 1-20 = NOT(username, NUL-padded),
+ * bytes 21-28 = NOT(serial).  The earlier plaintext guess displayed
+ * bitwise-inverted = "garbled".
  *
  * Provided through the PFEMU-STATE overlay (game reads prefer the overlay
  * copy, same mechanism as src/dos.c) so installed files stay pristine.
- * Only when neither copy exists — a real one always wins.  Users can edit
- * it, but note the fixed widths (20/8, NUL-padded, 29 bytes total). */
+ * A real installer file always wins; anything else (missing, or a stale
+ * plaintext guess, detected by decoding byte 0 and expecting install
+ * count 1-3) is rewritten from the GUI fields. */
 static int file_exists(const char *p){
     FILE *f = fopen(p, "rb");
     if(f){ fclose(f); return 1; }
     return 0;
 }
 
-static int file_size(const char *p){
+/* 1 when path holds a properly encoded install.sys (decoded byte 0 = sane
+ * install count). */
+static int install_sys_valid(const char *p){
     FILE *f = fopen(p, "rb");
-    long n;
-    if(!f) return -1;
-    fseek(f, 0, SEEK_END); n = ftell(f); fclose(f);
-    return (int)n;
+    int c;
+    if(!f) return 0;
+    c = fgetc(f);
+    fclose(f);
+    if(c == EOF) return 0;
+    c ^= 0xFF;
+    return c >= 1 && c <= 3;
 }
 
-static void ensure_install_sys(const char *dir){
+static void ensure_install_sys(const char *dir, const char *name,
+                               const char *serial){
     char ov[600], orig[600], sub[600];
     FILE *f;
     uint8_t buf[29];
+    int i;
     snprintf(ov, sizeof(ov), "%s/PFEMU-STATE/install.sys", dir);
     snprintf(orig, sizeof(orig), "%s/install.sys", dir);
-    /* A real file always wins.  An overlay copy with the wrong size is the
-     * earlier labeled-lines guess (128 bytes) — replace it with the exact
-     * 29-byte layout; a 29-byte overlay is left alone (user-edited). */
-    if(file_exists(orig)) return;
-    if(file_size(ov) == 29) return;
+    if(install_sys_valid(orig)) return;
+    if(install_sys_valid(ov)) return;
     snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
     CreateDirectoryA(sub, NULL);
     memset(buf, 0, sizeof(buf));
     buf[0] = 1;
-    memcpy(&buf[1], "PLAYER", 6);
-    memcpy(&buf[21], "00000", 5);
+    for(i=0;i<20 && name[i];i++) buf[1+i] = (uint8_t)name[i];
+    for(i=0;i<8 && serial[i];i++) buf[21+i] = (uint8_t)serial[i];
+    for(i=0;i<29;i++) buf[i] ^= 0xFF;
     f = fopen(ov, "wb");
     if(!f) return;
     fwrite(buf, 1, sizeof(buf), f);
@@ -196,24 +210,52 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
         st->hNote = CreateWindowExA(0,"STATIC","",
                             WS_CHILD|WS_VISIBLE,
-                            24,128,324,32,h,(HMENU)ID_NOTE,cs->hInstance,0);
+                            24,128,324,28,h,(HMENU)ID_NOTE,cs->hInstance,0);
         SendMessageA(st->hNote,WM_SETFONT,(WPARAM)st->hFont,0);
         note_for(st->hNote,0);
+        c = CreateWindowExA(0,"STATIC","User name:",
+                            WS_CHILD|WS_VISIBLE,
+                            24,158,80,16,h,(HMENU)ID_NAMELBL,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hNameLbl = c;
+        st->hName = CreateWindowExA(0,"EDIT","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,
+                            110,156,238,20,h,(HMENU)ID_NAME,cs->hInstance,0);
+        SendMessageA(st->hName,WM_SETFONT,(WPARAM)st->hFont,0);
+        SendMessageA(st->hName,EM_SETLIMITTEXT,20,0);
+        SetWindowTextA(st->hName,"PLAYER");
+        c = CreateWindowExA(0,"STATIC","Serial no:",
+                            WS_CHILD|WS_VISIBLE,
+                            24,182,80,16,h,(HMENU)ID_SERLBL,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hSerLbl = c;
+        st->hSerial = CreateWindowExA(0,"EDIT","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,
+                            110,180,238,20,h,(HMENU)ID_SERIAL,cs->hInstance,0);
+        SendMessageA(st->hSerial,WM_SETFONT,(WPARAM)st->hFont,0);
+        SendMessageA(st->hSerial,EM_SETLIMITTEXT,8,0);
+        SetWindowTextA(st->hSerial,"00000");
+        EnableWindow(st->hNameLbl,FALSE); EnableWindow(st->hName,FALSE);
+        EnableWindow(st->hSerLbl,FALSE); EnableWindow(st->hSerial,FALSE);
         c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
-                            184,176,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
+                            184,208,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         c = CreateWindowExA(0,"BUTTON","Quit",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            272,176,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
+                            272,208,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         return 0; }
     case WM_COMMAND: {
         int id = LOWORD(w);
         if(id==ID_GAME_FAN || id==ID_GAME_DRM){
+            int dreams;
             st->sel = (id==ID_GAME_DRM)?1:0;
             CheckRadioButton(h,ID_GAME_FAN,ID_GAME_ILL,id);
             EnableWindow(st->hSound, games[st->sel].has_sound_toggle);
+            dreams = games[st->sel].needs_install_sys;
+            EnableWindow(st->hNameLbl,dreams); EnableWindow(st->hName,dreams);
+            EnableWindow(st->hSerLbl,dreams); EnableWindow(st->hSerial,dreams);
             note_for(st->hNote, st->sel);
         } else if(id==ID_SOUND){
             st->sound = IsDlgButtonChecked(h,ID_SOUND)==BST_CHECKED;
@@ -227,8 +269,12 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             }
             if(games[st->sel].has_sound_toggle)
                 write_sound_cfg(games[st->sel].dir, st->sound);
-            if(games[st->sel].needs_install_sys)
-                ensure_install_sys(games[st->sel].dir);
+            if(games[st->sel].needs_install_sys){
+                GetWindowTextA(st->hName, st->name, sizeof(st->name));
+                GetWindowTextA(st->hSerial, st->serial, sizeof(st->serial));
+                st->name[20] = 0; st->serial[8] = 0;
+                ensure_install_sys(games[st->sel].dir, st->name, st->serial);
+            }
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -264,11 +310,11 @@ int show_launcher(LaunchChoice *out){
     st.sound = read_sound_is_sb(games[0].dir);
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
-                           CW_USEDEFAULT,CW_USEDEFAULT,372,244,
+                           CW_USEDEFAULT,CW_USEDEFAULT,372,276,
                            NULL,NULL,wc.hInstance,&st);
     if(!hwnd) return 0;
     sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
-    SetWindowPos(hwnd,NULL,(sw-372)/2,(sh-244)/2,0,0,SWP_NOSIZE|SWP_NOZORDER);
+    SetWindowPos(hwnd,NULL,(sw-372)/2,(sh-276)/2,0,0,SWP_NOSIZE|SWP_NOZORDER);
     ShowWindow(hwnd,SW_SHOW);
     UpdateWindow(hwnd);
     while(!st.done && GetMessageA(&msg,NULL,0,0)>0){
