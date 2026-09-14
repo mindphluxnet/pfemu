@@ -146,6 +146,32 @@ static int install_sys_valid(const char *p){
     return c >= 1 && c <= 3;
 }
 
+/* Decode an existing install.sys into the GUI fields so relaunching keeps
+ * the user's name/serial instead of resetting them.  Returns 1 on success. */
+static int read_install_sys(const char *dir, char *name, char *serial){
+    char ov[600], orig[600];
+    FILE *f = NULL;
+    uint8_t buf[29];
+    size_t n;
+    int i, j;
+    snprintf(ov, sizeof(ov), "%s/PFEMU-STATE/install.sys", dir);
+    snprintf(orig, sizeof(orig), "%s/install.sys", dir);
+    if(install_sys_valid(ov)) f = fopen(ov, "rb");
+    else if(install_sys_valid(orig)) f = fopen(orig, "rb");
+    if(!f) return 0;
+    n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    if(n < 29) return 0;
+    for(i=0;i<29;i++) buf[i] ^= 0xFF;
+    for(i=0, j=0; i<20 && buf[1+i] >= 0x20 && buf[1+i] < 0x7F; i++, j++)
+        name[j] = (char)buf[1+i];
+    name[j] = 0;
+    for(i=0, j=0; i<8 && buf[21+i] >= 0x20 && buf[21+i] < 0x7F; i++, j++)
+        serial[j] = (char)buf[21+i];
+    serial[j] = 0;
+    return 1;
+}
+
 static void ensure_install_sys(const char *dir, const char *name,
                                const char *serial){
     char ov[600], orig[600], sub[600];
@@ -223,7 +249,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             110,156,238,20,h,(HMENU)ID_NAME,cs->hInstance,0);
         SendMessageA(st->hName,WM_SETFONT,(WPARAM)st->hFont,0);
         SendMessageA(st->hName,EM_SETLIMITTEXT,20,0);
-        SetWindowTextA(st->hName,"PLAYER");
+        SetWindowTextA(st->hName,st->name);
         c = CreateWindowExA(0,"STATIC","Serial no:",
                             WS_CHILD|WS_VISIBLE,
                             24,182,80,16,h,(HMENU)ID_SERLBL,cs->hInstance,0);
@@ -234,7 +260,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             110,180,238,20,h,(HMENU)ID_SERIAL,cs->hInstance,0);
         SendMessageA(st->hSerial,WM_SETFONT,(WPARAM)st->hFont,0);
         SendMessageA(st->hSerial,EM_SETLIMITTEXT,8,0);
-        SetWindowTextA(st->hSerial,"00000");
+        SetWindowTextA(st->hSerial,st->serial);
         EnableWindow(st->hNameLbl,FALSE); EnableWindow(st->hName,FALSE);
         EnableWindow(st->hSerLbl,FALSE); EnableWindow(st->hSerial,FALSE);
         c = CreateWindowExA(0,"BUTTON","Launch",
@@ -308,6 +334,9 @@ int show_launcher(LaunchChoice *out){
     RegisterClassA(&wc);
     st.sel = 0;
     st.sound = read_sound_is_sb(games[0].dir);
+    strcpy(st.name, "PLAYER");
+    strcpy(st.serial, "00000");
+    read_install_sys("DREAMS", st.name, st.serial);
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                            CW_USEDEFAULT,CW_USEDEFAULT,372,276,

@@ -240,6 +240,9 @@ installer file always wins; anything else (missing, or a stale plaintext
 guess, detected by decoding byte 0 and expecting install count 1-3) is
 rewritten. (The file stays obfuscated on disk — hand-editing means
 NOT-encoding; use the GUI fields.)
+The GUI fields initialise from the existing file (`read_install_sys()`:
+decode, printable-only, widths enforced), so relaunching keeps the user's
+name/serial instead of resetting them.
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).
