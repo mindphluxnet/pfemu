@@ -428,3 +428,57 @@ Conclusion: DMD text choppiness is authentic behavior in the same class
 as the 30 Hz page flips — smoothing it would mean synthesizing glyph
 positions the game never drew, i.e. altering gameplay presentation, which
 is off-limits. Left alone; no code change.
+
+## 21. Table-select palette flash: majority-duration AR14 bank (`src/vga.c`)
+
+Symptom: on the table-select menu, fullscreen red→bright-green flashes,
+far more often than every few seconds; the hi-scores/credits screens are
+stable.
+
+Mechanism: the menu flips the VGA Color Select bank (AR14, 0↔1) every
+30 Hz game tick around a small glyph redraw — 2,458 toggles over ~100
+emu-sec measured headless, in strict ~7 ms / ~33 ms pairs (22% bank-1
+duty), all from the two menu-tick routines, CLI-protected and balanced.
+The window is meant to hide inside vertical blanking; at 6 MIPS it lands
+mid-frame instead, and presents sampling the instantaneous bank alias the
+transient to a fullscreen strobe. The P54S/Color-Select mapping itself was
+rechecked against the FreeVGA spec (P54S=1: DAC[5:4] from AR14[1:0],
+DAC[7:6] from AR14[3:2]) — rendering is faithful, so the defect is in
+presentation sampling, not palette decoding.
+
+Credit where due: the mechanism was pinned down with the reconstructed
+MS-DOS port source (`historicalsource/pinballfantasies`, `INTRO.ASM`) —
+`julius` ("Ceasar sätter en palett!!") loading both 16-palettes into DAC
+0–15/16–31, `CHANGE16PAL` with "set 2 palette modes (on rasterint)", and
+the `dumretf` (VBLANK, bank 1) / `creatretf` (RASTERINT, bank 0) driver
+callbacks ordered via INT 66h. It is a third-party reconstruction used as
+reference, not the original code — but the port traffic it predicts
+(AR14 pairs from the tick routines, dual-bank DAC contents with entry 8
+red vs green) matches the emulation trace exactly. Filed for future
+menu/raster work under §7 of WRITEUP-PHASE2.md.
+
+Fix, presentation-only, no game state touched: `vga_io_w` keeps a
+timestamped history of the last 16 AR14 changes, and the planar renderer
+paints the frame with whichever bank covered the majority of the last
+*complete* frame. Completeness matters: presents fire mid-frame, and a
+switch window straddling the frame start otherwise reads as a transient
+majority (first version of this fix still flashed for exactly that
+reason). No switches in a frame means no behavior change at all, so the
+tables (256-colour), text mode and the single-bank hi-scores page are
+untouched by construction; history resets on mode set.
+
+Verification: 28 consecutive headless menu screenshots pixel-stable
+(correct green PartyLand, red Speed Devils car); remaining swaps coincide
+with genuine page changes/fades only.
+
+## 22. Menu half-height letterbox: doubled planar rows (`src/vga.c`)
+
+For the record — the earlier half of the same transition complaint shipped
+without a write-up. The sidebar scrolled in filling the window height,
+then shrank to a half-height letterboxed menu. Cause: the menu is planar
+640×240 timing doubled to 480 scanlines, rendered as 240 square-pixel
+rows, while the Mode-X 320×240 intro is already square at 240 rows — but
+a period CRT shows 480 scanlines for both. Fix: the planar branch emits
+each row twice when scan-doubling is set (split-screen logic kept on
+logical rows), so 640×240 presents as full-height 640×480 like the
+hardware. `-nodbl` restores the old sampling.

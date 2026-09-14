@@ -608,6 +608,15 @@ failure.
 * `re/d16.py` — capstone 16-bit disassembler wrapper.
 * `re/scan.py` — byte scanner for INT/IN/OUT usage, for finding the hardware
   touch points in a 500 KB binary quickly.
+* The reconstructed MS-DOS port source (`historicalsource/pinballfantasies`
+  on GitHub: `INTRO.ASM`, `FANTASIE.ASM`, table sources) — a third-party
+  reconstruction, not the original code, but invaluable as a *map*: symbol
+  names and comments (`julius` loading both 16-palettes, `CHANGE16PAL` with
+  "set 2 palette modes (on rasterint)", the `dumretf`/`creatretf` VBLANK /
+  RASTERINT callbacks) predict exact port traffic that the emulation trace
+  then confirms. Solved the §21 menu palette flash in OPTIMIZATIONS.md this
+  way. Caveat: reconstructed, so trust-but-verify against live `-mem`
+  dumps — same addressing trap as above applies in reverse.
 
 One trap worth recording: the resident part of a `.SDR` is **not** at the file
 offset you expect. The driver copies its resident block down over its own
