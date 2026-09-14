@@ -415,3 +415,16 @@ trigger scrolling DMD text, share the log; `dt` then decides whether the
 choppiness is slow game pacing (design, leave alone) or something
 pathological (port defect, fair game). If scrolling text produces no
 `[dmd]` lines at all, the chunk premise is wrong and we revisit.
+
+Verdict (user-captured `dmd2.log`, ~296 emu-sec, 1507 events): during
+active scrolls `dt` clusters at 0.033-0.034 s — 79 of 104 step events in
+the t=280-297 window — i.e. exactly every 2nd emulated frame at 59.71 Hz
+(2/59.71 = 0.0335 s), with only occasional single skipped steps (0.067 s).
+That rock-steady, frame-phase-locked cadence is the signature of
+intentional timer-driven game pacing, not a port defect (a stalled or
+broken mechanism would drift or jitter). It matches the engine's own
+30 Hz flip cadence: the game logic ticks at half frame rate throughout.
+Conclusion: DMD text choppiness is authentic behavior in the same class
+as the 30 Hz page flips — smoothing it would mean synthesizing glyph
+positions the game never drew, i.e. altering gameplay presentation, which
+is off-limits. Left alone; no code change.
