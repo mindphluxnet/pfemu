@@ -221,19 +221,21 @@ static uint64_t vscan_fnv(const uint8_t *p, size_t n){
 void vga_vscan_poll(void){
     uint64_t c = cpu.cycles;
     int k, changed = 0;
+    uint64_t mask = 0;
     int vt;
     double line;
     if(!vscan_step || c - vscan_last < vscan_step) return;
     vscan_last = c;
     for(k=0;k<64;k++){
         uint64_t h = vscan_fnv(&vga_vram[k*4096], 4096);
-        if(!vscan_init || h != vscan_chunk[k]){ vscan_chunk[k] = h; changed++; }
+        if(!vscan_init || h != vscan_chunk[k]){ vscan_chunk[k] = h; changed++; mask |= (1ULL << k); }
     }
     if(!vscan_init){ vscan_init = 1; return; }
     if(!changed) return;
     if(vscan_logged++ > 100000){ vscan_step = 0; fprintf(stderr, "[vscan] auto-off\n"); return; }
     line = vga_frameline(&vt);
-    fprintf(stderr, "[vscan] t=%.6f line=%6.1f/%d n=%d\n", emu_now(), line, vt, changed);
+    fprintf(stderr, "[vscan] t=%.6f line=%6.1f/%d n=%d m=%016llX\n",
+            emu_now(), line, vt, changed, (unsigned long long)mask);
 }
 
 void vga_io_w(uint16_t p, uint8_t v){

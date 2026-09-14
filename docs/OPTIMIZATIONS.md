@@ -355,7 +355,11 @@ emulated time, scan-line phase and caller; `-vscan N` hashes VRAM in 64
 (1–2 chunks = sprite-scale, dozens = blit/fill), auto-disabling after
 100k events. Both off by default (one branch per batch when off). Also:
 stderr is now only reattached to the parent console when it isn't
-redirected, so `2>file` captures logs from the windowed binary.
+redirected, so `2>file` captures logs from the windowed binary. The scan
+also logs the 64-bit changed-chunk mask (`m=`), which localizes writes:
+low chunks are the split-screen dot-matrix region, higher chunks the
+scrolling playfield, so their timelines separate game-driven DMD updates
+from playfield draws.
 
 ## 18. Flip/vscan timeline verdict: duplicate suppression, not phase lock
 
