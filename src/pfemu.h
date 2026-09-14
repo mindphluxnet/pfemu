@@ -82,6 +82,7 @@ extern int vga_flipdbg;              /* -flipdbg: log page flips w/ phase */
 extern uint64_t vscan_step;          /* -vscan N: VRAM mutation timeline */
 void vga_vscan_poll(void);           /* per-batch sampler, no-op unless set */
 void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
+extern int vga_smooth;               /* -nosmooth disables scroll interp */
 
 /* ---------------------------------------------------------------- BIOS --- */
 void bios_init(void);

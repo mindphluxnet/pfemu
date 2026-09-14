@@ -355,7 +355,24 @@ emulated time, scan-line phase and caller; `-vscan N` hashes VRAM in 64
 (1–2 chunks = sprite-scale, dozens = blit/fill), auto-disabling after
 100k events. Both off by default (one branch per batch when off). Also:
 stderr is now only reattached to the parent console when it isn't
-redirected, so `2>file` captures logs from the windowed binary. The scan
+redirected, so `2>file` captures logs from the windowed binary.
+
+## 19. Smooth scrolling via start-address interpolation (`src/vga.c`)
+
+The §18 timeline settled it: the engine re-asserts the start address every
+other frame (30 Hz flip cadence — authentic, also on period hardware), which
+reads as stepping. Since gameplay itself is off-limits but presentation may
+be improved, presents now interpolate: `vga_render` uses a host-side blend
+of the last two published start positions by emulated time instead of the
+raw register. No game state changes — physics, logic and timing are
+untouched; only displayed rows shift smoothly between the game's own
+positions. Details: hi/lo register pairs arriving microseconds apart extend
+one flip event instead of starting a new one (no torn origins); jumps over
+half the address space are treated as wraps; history resets on mode set;
+`-nosmooth` restores raw sampling. DMD text steps are deliberately *not*
+smoothed — those are game-redrawn content pacing, i.e. gameplay, verified
+game-driven by the mask timeline (writes appear as the game makes them, not
+pipeline-batched). The scan
 also logs the 64-bit changed-chunk mask (`m=`), which localizes writes:
 low chunks are the split-screen dot-matrix region, higher chunks the
 scrolling playfield, so their timelines separate game-driven DMD updates
