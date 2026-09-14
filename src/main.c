@@ -358,6 +358,13 @@ int main(int argc, char **argv){
     printf("[pfemu] irqs: int8=%lu int9=%lu ticks=%u iflag=%d halted=%d cs:ip=%04X:%04X\n",
            irq_count[8], irq_count[9], *(unsigned short*)&ram[0x46C],
            (int)cpu.iflag, cpu.halted, cpu.sreg[S_CS], (unsigned)cpu.eip);
+    { uint32_t sstop = cpu.sbase[S_SS] + REG16(R_ESP); int i;
+      /* Top of the guest stack: a near caller's return IP sits at [SP],
+       * so a hang inside a helper (vsync wait, decode loop) still names
+       * its call site. */
+      printf("[pfemu] ss:sp=%04X:%04X stack:", cpu.sreg[S_SS], REG16(R_ESP));
+      for(i=0;i<16;i++) printf(" %04X", mem_r16((sstop + (uint32_t)(i*2)) & 0xFFFFF));
+      printf("\n"); }
     if(mem_lo){ int k; printf("[mem] %05lX:\n", mem_lo);
         for(k=0;k<256;k++){ if((k&15)==0) printf("  %05lX:", mem_lo+k);
             printf(" %02X", ram[(mem_lo+k)&0xFFFFF]); if((k&15)==15) printf("\n"); } }

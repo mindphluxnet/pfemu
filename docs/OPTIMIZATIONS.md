@@ -243,6 +243,24 @@ NOT-encoding; use the GUI fields.)
 The GUI fields initialise from the existing file (`read_install_sys()`:
 decode, printable-only, widths enforced), so relaunching keeps the user's
 name/serial instead of resetting them.
+
+## 13. Dreams post-intro stall (in diagnosis)
+
+Symptom: intro screens (`company`→`spider`→`presents`→`digital`→`pinball.vga`,
+all loading fine per `-dosdbg`) play, then black screen; the game never opens
+the next file. Exit state: mode 13h, dark palette, spinning in the CX-counted
+vsync wait (`0071:2A66`, helper `0x2A5E`), page flips 0. Ruled out: sound
+choice (No Sound hangs identically — the fancy driver-flag wait at
+`0x2A76` runs regardless), DOS buffered input (both `B4 0Ah` hits are `mul
+ah` arithmetic; the manual-word entry uses the game's own keyboard hook),
+missing files up to `pinball.vga`. The wait protocol itself is understood
+(simple direct-`3DAh` waits + driver-flag `0xB`/`0xA` pair around a cached
+byte filled by the sound ISR's `in al,3DAh` / `or [0x1C26],al`, with `INT
+90h`/CauseWay-style far calls into segment `0x2146`). Next: identify the
+stuck call site — the exit dump now prints `ss:sp` plus 16 stack words, so a
+hang inside a helper still names its near-call return address.
+(`-trap` exists but disarms on first hit, i.e. early init, so it can't catch
+a late stall; the stack dump fills that gap.)
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).
