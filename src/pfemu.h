@@ -83,6 +83,7 @@ extern uint64_t vscan_step;          /* -vscan N: VRAM mutation timeline */
 void vga_vscan_poll(void);           /* per-batch sampler, no-op unless set */
 void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
 extern int vga_smooth;               /* -nosmooth disables scroll interp */
+extern int vga_dmdlog;               /* -dmd: log DMD VRAM step cadence */
 
 /* ---------------------------------------------------------------- BIOS --- */
 void bios_init(void);

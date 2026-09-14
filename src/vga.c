@@ -194,6 +194,40 @@ static uint64_t vscan_chunk[64];
 static int vscan_init = 0;
 static unsigned long vscan_logged = 0;
 
+/* DMD step cadence (-dmd): the dot-matrix panel lives in VRAM chunks 46-47
+ * (see dmd.log mask 0000C00000000000) and ignores the CRTC start address, so
+ * viewport smoothing can't touch it.  This watches chunks 44-49 and logs
+ * every transition with delta-t since the previous DMD change: the number
+ * tells us whether choppy text is slow game pacing (design, off-limits) or
+ * something pathological (port defect, fair game).  Sampling every 4096
+ * instructions (~0.14 ms at 30 MIPS) resolves ms-scale steps. */
+int vga_dmdlog = 0;
+static uint64_t vscan_fnv(const uint8_t *p, size_t n);
+static uint64_t dmd_last_sample = 0;
+static uint64_t dmd_hash[6];
+static double dmd_last_t = 0.0;
+static int dmd_init = 0;
+static unsigned long dmd_logged = 0;
+
+static void dmd_poll(uint64_t c){
+    int k, n = 0;
+    double now, dt;
+    if(c - dmd_last_sample < 4096) return;
+    dmd_last_sample = c;
+    for(k=0;k<6;k++){
+        uint64_t h = vscan_fnv(&vga_vram[(44+k)*4096], 4096);
+        if(!dmd_init || h != dmd_hash[k]){ dmd_hash[k] = h; n++; }
+    }
+    if(!dmd_init){ dmd_init = 1; dmd_last_t = emu_now(); return; }
+    if(!n || n > 2) return;   /* bulk fills (loader, fades) are not DMD steps
+                               * and don't consume the event budget either */
+    if(dmd_logged++ > 20000){ vga_dmdlog = 0; fprintf(stderr, "[dmd] auto-off\n"); return; }
+    now = emu_now();
+    dt = now - dmd_last_t;
+    dmd_last_t = now;
+    fprintf(stderr, "[dmd] t=%.6f dt=%.4f n=%d\n", now, dt, n);
+}
+
 /* Current scan-line position in the frame, same basis as vga_status1(). */
 static double vga_frameline(int *vtotal_out){
     double per, inv, hde, q, line;
@@ -224,6 +258,7 @@ void vga_vscan_poll(void){
     uint64_t mask = 0;
     int vt;
     double line;
+    if(vga_dmdlog) dmd_poll(c);
     if(!vscan_step || c - vscan_last < vscan_step) return;
     vscan_last = c;
     for(k=0;k<64;k++){

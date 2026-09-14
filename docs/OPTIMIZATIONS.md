@@ -395,3 +395,23 @@ present block is now gated on the emulated frame index
 (`emu_time / frame period`, via the cached timing) advancing. Drops only
 occur under CPU starvation, which headroom prevents; drift (and its
 authentic occasional flicker) is preserved.
+
+## 20. DMD step-cadence logger: `-dmd` (`src/vga.c`)
+
+Follow-up to §19: the DMD panel ignores the CRTC start address (the
+split-screen region below line compare renders from fixed VRAM,
+`vga.c` split branch), and its text scrolls via game VRAM redraws — so
+viewport interpolation structurally cannot change it, and re-timing those
+redraws would be altering gameplay, which is off-limits. What remains
+legitimate is measuring: `-dmd` watches VRAM chunks 44-49 (DMD writes
+showed up as mask `0000C00000000000` in `dmd.log`) every 4096 instructions
+and logs `[dmd] t=... dt=... n=...`, where `dt` is the time since the
+previous DMD-region change — i.e. the text-step cadence. Samples touching
+more than 2 chunks are bulk fills (loader, fades), not text steps, and
+skip the 20k-event budget. Headless probe: 120M instructions, 1166 frames,
+155 events all in emu-sec 0-1 (boot sprite upload), then silence through
+the intro — so the budget survives boot easily. To use: run with `-dmd`,
+trigger scrolling DMD text, share the log; `dt` then decides whether the
+choppiness is slow game pacing (design, leave alone) or something
+pathological (port defect, fair game). If scrolling text produces no
+`[dmd]` lines at all, the chunk premise is wrong and we revisit.

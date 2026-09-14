@@ -251,6 +251,7 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
         else if(!strcmp(argv[i],"-nosmooth")) vga_smooth = 0;
+        else if(!strcmp(argv[i],"-dmd")) vga_dmdlog = 1;
         else if(!strcmp(argv[i],"-vscan") && i+1<argc) vscan_step = strtoull(argv[++i],NULL,10);
     }
     if(emu_ips <= 0.0) emu_ips = 6000000.0;
