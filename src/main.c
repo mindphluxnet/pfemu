@@ -324,9 +324,25 @@ int main(int argc, char **argv){
         }
         if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; }  /* fell behind */
 
-        if(plat_time() - last_present > 1.0/60.0){
+        /* Present one host frame per emulated CRT frame, not per wall 1/60:
+         * the game renders at its own refresh (59.71 Hz mode-X, 70.09 Hz
+         * text/mode 13h), and sampling that on an unrelated wall timer
+         * duplicates/drops frames — visible as ball flicker and jerky
+         * scrolling.  vsync_edges counts emulated retrace starts, so a new
+         * edge means a finished guest frame is live.  vga_dirty covers
+         * changing-but-unscanned content (text echo with no 3DA polling).
+         * The 8 ms floor caps the rate for fast-forward (-speed); the
+         * 0.5 s fallback keeps the window alive if scanning ever stops. */
+        { extern unsigned long vsync_edges;
+          static unsigned long last_frame = 0;
+          double since_present = plat_time() - last_present;
+          int new_frame = (vsync_edges != last_frame);
+          if(((new_frame || vga_dirty) && since_present > 0.008) ||
+             since_present > 0.5){
+            last_frame = vsync_edges;
             last_present = plat_time();
             vga_render(fb, &fbw, &fbh);
+            vga_dirty = 0;
             plat_present(fb, fbw, fbh);
             if(shot_every > 0 && real >= next_shot){
                 char nm[64];
@@ -334,7 +350,7 @@ int main(int argc, char **argv){
                 sprintf(nm, "seq%03d.ppm", shot_n++);
                 save_ppm(nm, fb, fbw, fbh);
             }
-        }
+        } }
         plat_sleep_ms(1);
     }
 

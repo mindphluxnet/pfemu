@@ -332,6 +332,21 @@ original-sounding — switching defaults on perf grounds alone would trade
 fidelity for ~15%). Batch 256 vs 64 is neutral-to-positive. The table-phase
 game tick agrees within normal PLL lock variation (~58 Hz both), and the
 boot-phase PLL traces are bit-identical, so pacing is unchanged.
+
+## 16. Present on emulated vsync, not wall 1/60 (`src/main.c`)
+
+Symptom split that throughput can't explain: timers/audio perfect, but ball
+flicker and jerky vertical scrolling. The game renders at its own refresh
+(59.71 Hz mode-X, 70.09 Hz text/mode 13h) while presents ran on an unrelated
+wall 1/60 s timer — every ~3.4 s a frame duplicated or dropped, and samples
+could land mid-frame. Now one host frame goes out per emulated retrace
+(`vsync_edges`), so frames map 1:1 with no tearing-inducing sampling;
+`vga_dirty` (now actually consumed and cleared) covers changing content that
+isn't CRT-scanned, the 8 ms floor caps fast-forward presentation, and a
+0.5 s fallback keeps the window alive if scanning stops. The dot-matrix
+pace itself is untouched: it is game-logic-driven and period-authentic
+(also slow on real 1993 hardware) — smoothing the presentation doesn't, and
+shouldn't, change what the game draws.
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).
