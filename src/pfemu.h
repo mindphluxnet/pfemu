@@ -82,6 +82,8 @@ extern int vga_dirty;
 /* ---------------------------------------------------------------- BIOS --- */
 void bios_init(void);
 void bios_call(int n);                /* dispatch for INT n from a callback stub */
+int  bios_kbuf_get(uint16_t *out);    /* type-ahead queue for DOS input */
+int  bios_kbuf_peek(uint16_t *out);
 
 /* ---------------------------------------------------------------- DOS ---- */
 void dos_init(const char *hostdir);

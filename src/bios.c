@@ -68,6 +68,9 @@ static int kbuf_peek(uint16_t *out){
     *out = *(uint16_t*)&ram[0x400 + head];
     return 1;
 }
+/* DOS buffered input (INT 21h AH=0Ah) consumes the same type-ahead queue. */
+int bios_kbuf_get(uint16_t *out){ return kbuf_get(out); }
+int bios_kbuf_peek(uint16_t *out){ return kbuf_peek(out); }
 
 /* ----------------------------------------------------------- IRQ1 (int9) */
 static void bios_int9(void){

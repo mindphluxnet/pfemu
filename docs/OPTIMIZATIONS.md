@@ -261,6 +261,29 @@ stuck call site — the exit dump now prints `ss:sp` plus 16 stack words, so a
 hang inside a helper still names its near-call return address.
 (`-trap` exists but disarms on first hit, i.e. early init, so it can't catch
 a late stall; the stack dump fills that gap.)
+
+## 14. Dreams post-intro exit: manual protection (fixed)
+
+The post-intro black screen ended in the silent cleanup+exit (`mov ax,3;
+INT 10h; 4C00` at image `0x1B13`), reached from the entry init's failure
+branch. The xring named it: PD's manual-lookup protection (routine at image
+`0x6FB3`: prints page/line/word prompts, reads the word via `INT 21h
+AH=0Ah`, uppercases and checksums it, `JE` to pass at image+`0x7020`,
+retries then silent exit on failure). Two fixes, same pattern as the
+Fantasies §5.13 protection:
+
+- `INT 21h AH=0Ah` (buffered line input) is now properly implemented in
+  `src/dos.c` (was an instant-empty stub, which guaranteed failure): reads
+  the BIOS type-ahead queue with DOS echo, Backspace erase, extended-key
+  `0x00`+scancode pairs; blocks exactly like `INT 16h AH=00` when empty
+  (stub rewind, idle, resume on IRQ) with partial input kept in the guest
+  buffer (`oa_active`, reset on `EXEC`). Needs the exported
+  `bios_kbuf_get/peek` (`src/bios.c`, `src/pfemu.h`).
+- The check itself is patched in the loaded image (`JE`→`JMP` at
+  image+`0x7020`, 10-byte signature `02 C4 E2 F6 3A 44 04 74 05 4D`),
+  memory-only, `-nopatch` restores the original prompt-and-answer behavior
+  (which now works, thanks to the `0Ah` implementation, for anyone holding
+  the manual).
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).

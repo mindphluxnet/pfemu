@@ -10,6 +10,7 @@ extern void (*cb_table[256])(void);
 extern void set_sreg(int s, uint16_t v);
 extern void cpu_no_iret(void);
 extern void bios_set_cf(int v);
+extern void bios_tty(uint8_t c);
 extern double emu_time;
 
 #define AX REG16(R_EAX)
@@ -270,6 +271,7 @@ static uint16_t cur_psp;
 static uint16_t dta_seg, dta_off;
 static uint8_t  cur_drive = 2;             /* C: */
 static uint16_t last_retcode = 0;
+static int oa_active = 0;             /* INT 21h AH=0Ah line in progress */
 
 /* --------------------------------------------------------- path mapping */
 /* ------------------------------------------------------- write overlay
@@ -469,6 +471,19 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
                 trc("[dos] manual check patched in memory at image+238208\n");
             }
         }
+        /* Pinball Dreams' manual-lookup protection works the same way: PD.EXE
+         * sums the typed word (uppercased) and takes JE to the pass path on a
+         * match, with retries then a silent exit on failure.  Turn that JE
+         * (image+0x7020) into a JMP.  Same rules: memory only, signature
+         * checked, -nopatch disables. */
+        if(!dos_no_patch && imglen > 0x7023){
+            static const uint8_t sig[10] = { 0x02,0xC4,0xE2,0xF6,0x3A,0x44,0x04,0x74,0x05,0x4D };
+            uint32_t at = (uint32_t)load*16 + 0x7019;
+            if(at + 10 <= RAM_SIZE && memcmp(&ram[at], sig, sizeof(sig)) == 0){
+                ram[at + 7] = 0xEB;                     /* JE -> JMP */
+                trc("[dos] dreams manual check patched in memory at image+0x7020\n");
+            }
+        }
 
         fseek(f, lfarlc, SEEK_SET);
         for(i=0;i<crlc;i++){
@@ -523,6 +538,7 @@ int dos_exec(const char *dospath, uint16_t parblk_seg, uint32_t parblk_off,
         nproc++;
     }
     cur_psp = psp;
+    oa_active = 0;          /* fresh input state for the new program */
     dos_snapshot_ivt();       /* so a resident child's hooks can be undone */
     /* DS/ES point at the PSP, SS:SP and CS:IP from the header */
     set_sreg(S_DS, psp); set_sreg(S_ES, psp);
@@ -653,7 +669,48 @@ void dos_int21(void){
         for(i=0;i<2000;i++){ uint8_t c = mem_r8(a+i); if(c=='$') break; bios_tty(c); }
         AL = '$';
         break; }
-    case 0x0A: { uint32_t a = cpu.sbase[S_DS] + DX; mem_w8(a+1, 0); break; }
+    case 0x0A: {
+        /* Buffered line input.  DS:DX: [0]=max chars, [1]=count (out),
+         * chars at [2..], CR-terminated (stored, not counted).  Keystrokes
+         * come from the BIOS type-ahead queue with DOS echo; Backspace
+         * erases; extended keys store as 0x00 + scancode.  Empty queue
+         * blocks exactly like INT 16h AH=00 (rewind, idle, resume on IRQ);
+         * partial input already sits in the guest buffer, and oa_active
+         * tells re-entry to resume it instead of restarting the line. */
+        uint32_t a = cpu.sbase[S_DS] + DX;
+        uint8_t maxlen = mem_r8(a);
+        uint8_t n;
+        if(!oa_active) mem_w8(a+1, 0);
+        n = mem_r8(a+1);
+        if(n > maxlen) n = maxlen;
+        for(;;){
+            uint16_t k;
+            if(!bios_kbuf_peek(&k)){
+                uint32_t sp = cpu.sbase[S_SS] + REG16(R_ESP);
+                oa_active = 1;
+                cpu.iflag = (mem_r16(sp+4) >> 9) & 1;
+                cpu.eip -= 3; cpu_no_iret(); cpu.halted = 1;
+                return;
+            }
+            bios_kbuf_get(&k);
+            { uint8_t asc = (uint8_t)(k & 0xFF);
+              uint8_t sc = (uint8_t)(k >> 8);
+              if(asc == 0x0D){
+                  mem_w8(a+2+n, 0x0D);
+                  bios_tty(0x0D); bios_tty(0x0A);
+                  break;
+              } else if(asc == 0x08){
+                  if(n){ n--; bios_tty(0x08); bios_tty(' '); bios_tty(0x08); }
+              } else if(asc == 0){
+                  if(n+2 <= maxlen){ mem_w8(a+2+n,0); mem_w8(a+2+n+1,sc); n+=2; }
+              } else if(asc >= 0x20){
+                  if(n < maxlen){ mem_w8(a+2+n,asc); n++; bios_tty(asc); }
+              } }
+            mem_w8(a+1, n);
+        }
+        mem_w8(a+1, n);
+        oa_active = 0;
+        break; }
     case 0x0B: AL = 0; break;
     case 0x0C: AL = 0; break;
     case 0x0D: break;
