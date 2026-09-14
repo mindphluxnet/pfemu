@@ -441,16 +441,28 @@ void vga_render(uint32_t *out, int *wp, int *hp){
 
     /* ---- 16-colour planar ---- */
     {
+    /* Scan-doubled planar modes (the table-select menu is 640x240 timing
+     * doubled to 480 scanlines) have tall 1:2 pixels: single-width dots
+     * horizontally, two scanlines per row vertically.  The 256-colour
+     * Mode-X playfield stays square without help because its pixels are
+     * already double-width, but planar needs each row emitted twice so the
+     * square-pixel framebuffer fills the window instead of letterboxing to
+     * half height.  On period hardware both fill the screen (480 scanlines),
+     * so without this the sidebar scroll (256-wide, full height) visibly
+     * shrinks to the letterboxed menu. */
     int rowh = maxscan * dbl;
-    int split = (lc + 1) / rowh;
+    int h_log, split_log, dup = (dbl == 2) ? 2 : 1;
     w = (cr[0x01] + 1) * 8;
-    h = vde() / rowh;
+    h_log = vde() / rowh;
+    split_log = (lc + 1) / rowh;
+    h = h_log * dup;
     if(w<16||w>1024) w=640;
     if(h<16||h>1024) h=480;
     for(y=0;y<h;y++){
+        int yl = dup == 2 ? y >> 1 : y;
         uint32_t ctr;
-        if(split < h && y >= split) ctr = (uint32_t)(y - split) * (uint32_t)(offs*2);
-        else ctr = start + (uint32_t)y*(uint32_t)(offs*2);
+        if(split_log < h_log && yl >= split_log) ctr = (uint32_t)(yl - split_log) * (uint32_t)(offs*2);
+        else ctr = start + (uint32_t)yl*(uint32_t)(offs*2);
         for(x=0;x<w;x++){
             uint32_t px = (uint32_t)x + (uint32_t)pel;
             uint32_t o = (ctr + (px>>3)) & 0xFFFF;
