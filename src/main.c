@@ -6,6 +6,7 @@
 extern void  emu_advance(void);
 extern double emu_time;
 extern double emu_ips;
+extern double emu_inv_ips;
 extern void  dev_tick(void);
 extern void  set_sreg(int s, uint16_t v);
 extern int   vga_get_mode(void);
@@ -205,6 +206,12 @@ int main(int argc, char **argv){
     for(i=1;i<argc;i++){
         if(!strcmp(argv[i],"-d") && i+1<argc) dir = argv[++i];
         else if(!strcmp(argv[i],"-p") && i+1<argc) prog = argv[++i];
+        /* -setup: boot the sound-configuration utility instead of the game.
+         * Equivalent to -p SETSOUND.EXE, but discoverable.  Pick SoundBlaster
+         * (base 220h, IRQ 7), answer its questions, and it writes SOUND.CFG;
+         * the write goes to PFEMU-STATE/ via the DOS overlay, so the
+         * installed files stay pristine.  The game then uses it on next boot. */
+        else if(!strcmp(argv[i],"-setup")) prog = "SETSOUND.EXE";
         else if(!strcmp(argv[i],"-t")){ trace_level = 1; trace_fp = fopen("pfemu.log","w"); }
         else if(!strcmp(argv[i],"-ips") && i+1<argc) emu_ips = atof(argv[++i]);
         else if(!strcmp(argv[i],"-secs") && i+1<argc) max_secs = atof(argv[++i]);
@@ -228,6 +235,8 @@ int main(int argc, char **argv){
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-speed") && i+1<argc) speed = atof(argv[++i]);
     }
+    if(emu_ips <= 0.0) emu_ips = 6000000.0;
+    emu_inv_ips = 1.0 / emu_ips;
 
     ram = (uint8_t*)calloc(RAM_SIZE,1);
     if(!ram){ fprintf(stderr,"out of memory\n"); return 1; }
@@ -266,19 +275,23 @@ int main(int argc, char **argv){
         if(max_secs > 0 && wall > max_secs) break;
         if(keyscript) run_keyscript(keyscript, real);
         int guard = 0;
-        while(emu_time < real && !cpu.shutdown && guard < 40000){
+        while(emu_time < real && !cpu.shutdown && guard < 10000){
             int n;
             if(cpu.halted){
                 /* idle: jump the clock forward to the next scheduled event */
                 cpu.cycles += (uint64_t)(emu_ips / 10000.0);
                 dev_tick();
             } else {
-                /* Run up to 64 instructions, but never past the next timer
+                /* Run up to 256 instructions, but never past the next timer
                  * deadline: IRQ0 has to land on the instruction it is due on,
-                 * not up to 64 instructions later. */
+                 * not up to a batch later.  The deadline clamp keeps timer
+                 * precision identical to the old 64-instruction batch while
+                 * the bigger batch amortises dev_tick/pic_pending over 4x
+                 * the work.  Worst-case IRQ latency (~43 us at 6 MIPS) is
+                 * far below anything the game can observe (PIT tick 55 ms). */
                 uint64_t dl = dev_next_deadline();
-                int lim = 64;
-                if(dl > cpu.cycles && dl - cpu.cycles < 64) lim = (int)(dl - cpu.cycles);
+                int lim = 256;
+                if(dl > cpu.cycles && dl - cpu.cycles < 256) lim = (int)(dl - cpu.cycles);
                 if(lim < 1) lim = 1;
                 for(n=0;n<lim;n++) cpu_step();
                 dev_tick();

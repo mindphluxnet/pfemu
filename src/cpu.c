@@ -33,17 +33,63 @@ static int no_iret;
 
 #define MASK(sz) ((sz)==32?0xFFFFFFFFu:((sz)==16?0xFFFFu:0xFFu))
 
-static uint8_t fetch8(void){ uint8_t v = mem_r8(cs_base + cpu.eip); cpu.eip = (cpu.eip+1)&0xFFFF; return v; }
-static uint16_t fetch16(void){ uint16_t v = mem_r16(cs_base + cpu.eip); cpu.eip=(cpu.eip+2)&0xFFFF; return v; }
-static uint32_t fetch32(void){ uint32_t v = mem_r32(cs_base + cpu.eip); cpu.eip=(cpu.eip+4)&0xFFFF; return v; }
+/* Local memory helpers: byte-for-byte the semantics of mem_r8/mem_w8 in
+ * vga.c (A20 + 16 MB wrap, VGA dispatch, ROM write-ignore), but inlined in
+ * this translation unit.  The interpreter executes millions of instructions
+ * per second and almost every one fetches bytes and touches memory through
+ * here, so removing the per-access cross-TU call (and the repeated
+ * mask/branch inside mem_r16/mem_r32) matters.  Behaviour is unchanged. */
+#define CPU_VGA_LO 0xA0000u
+#define CPU_VGA_HI 0xC0000u
+static inline uint8_t cpu_ld8(uint32_t a){
+    a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a >= CPU_VGA_LO && a < CPU_VGA_HI) return vga_mem_r(a);
+    return ram[a];
+}
+static inline uint16_t cpu_ld16(uint32_t a){
+    a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a + 1u >= CPU_VGA_LO && a < CPU_VGA_HI) return (uint16_t)(cpu_ld8(a) | ((uint16_t)cpu_ld8(a+1) << 8));
+    return (uint16_t)(ram[a] | ((uint16_t)ram[a+1] << 8));
+}
+static inline uint32_t cpu_ld32(uint32_t a){
+    a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a + 3u >= CPU_VGA_LO && a < CPU_VGA_HI)
+        return (uint32_t)cpu_ld8(a) | ((uint32_t)cpu_ld8(a+1) << 8) |
+               ((uint32_t)cpu_ld8(a+2) << 16) | ((uint32_t)cpu_ld8(a+3) << 24);
+    return (uint32_t)ram[a] | ((uint32_t)ram[a+1] << 8) |
+           ((uint32_t)ram[a+2] << 16) | ((uint32_t)ram[a+3] << 24);
+}
+static inline void cpu_st8(uint32_t a, uint8_t v){
+    a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a >= CPU_VGA_LO && a < CPU_VGA_HI){ vga_mem_w(a, v); return; }
+    if(a >= 0xC0000 && a < 0x100000) return;   /* ROM */
+    ram[a] = v;
+}
+static inline void cpu_st16(uint32_t a, uint16_t v){
+    a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a + 1u >= CPU_VGA_LO && a < 0x100000){ cpu_st8(a, (uint8_t)v); cpu_st8(a+1, (uint8_t)(v >> 8)); return; }
+    ram[a] = (uint8_t)v; ram[a+1] = (uint8_t)(v >> 8);
+}
+static inline void cpu_st32(uint32_t a, uint32_t v){
+    a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a + 3u >= CPU_VGA_LO && a < 0x100000){
+        cpu_st8(a, (uint8_t)v); cpu_st8(a+1, (uint8_t)(v >> 8));
+        cpu_st8(a+2, (uint8_t)(v >> 16)); cpu_st8(a+3, (uint8_t)(v >> 24)); return; }
+    ram[a] = (uint8_t)v; ram[a+1] = (uint8_t)(v >> 8);
+    ram[a+2] = (uint8_t)(v >> 16); ram[a+3] = (uint8_t)(v >> 24);
+}
+
+static uint8_t fetch8(void){ uint8_t v = cpu_ld8(cs_base + cpu.eip); cpu.eip = (cpu.eip+1)&0xFFFF; return v; }
+static uint16_t fetch16(void){ uint16_t v = cpu_ld16(cs_base + cpu.eip); cpu.eip=(cpu.eip+2)&0xFFFF; return v; }
+static uint32_t fetch32(void){ uint32_t v = cpu_ld32(cs_base + cpu.eip); cpu.eip=(cpu.eip+4)&0xFFFF; return v; }
 
 void set_sreg(int s, uint16_t v){ cpu.sreg[s]=v; cpu.sbase[s]=(uint32_t)v<<4; if(s==S_CS) cs_base=cpu.sbase[S_CS]; }
 static uint32_t sb(int s){ return cpu.sbase[segovr>=0 ? segovr : s]; }
 
-static void push16(uint16_t v){ REG16(R_ESP) -= 2; mem_w16(cpu.sbase[S_SS] + REG16(R_ESP), v); }
-static uint16_t pop16(void){ uint16_t v = mem_r16(cpu.sbase[S_SS] + REG16(R_ESP)); REG16(R_ESP)+=2; return v; }
-static void push32(uint32_t v){ REG16(R_ESP) -= 4; mem_w32(cpu.sbase[S_SS] + REG16(R_ESP), v); }
-static uint32_t pop32(void){ uint32_t v = mem_r32(cpu.sbase[S_SS] + REG16(R_ESP)); REG16(R_ESP)+=4; return v; }
+static void push16(uint16_t v){ REG16(R_ESP) -= 2; cpu_st16(cpu.sbase[S_SS] + REG16(R_ESP), v); }
+static uint16_t pop16(void){ uint16_t v = cpu_ld16(cpu.sbase[S_SS] + REG16(R_ESP)); REG16(R_ESP)+=2; return v; }
+static void push32(uint32_t v){ REG16(R_ESP) -= 4; cpu_st32(cpu.sbase[S_SS] + REG16(R_ESP), v); }
+static uint32_t pop32(void){ uint32_t v = cpu_ld32(cpu.sbase[S_SS] + REG16(R_ESP)); REG16(R_ESP)+=4; return v; }
 static void pushv(uint32_t v){ if(opsz==32) push32(v); else push16((uint16_t)v); }
 static uint32_t popv(void){ return opsz==32?pop32():pop16(); }
 
@@ -91,11 +137,11 @@ static void modrm(void){
 
 static uint32_t rdE(int sz){
     if(ea_isreg) return sz==8?REG8(rm_): sz==16?REG16(rm_):REG32(rm_);
-    return sz==8?mem_r8(ea): sz==16?mem_r16(ea):mem_r32(ea);
+    return sz==8?cpu_ld8(ea): sz==16?cpu_ld16(ea):cpu_ld32(ea);
 }
 static void wrE(int sz, uint32_t v){
     if(ea_isreg){ if(sz==8) REG8(rm_)=(uint8_t)v; else if(sz==16) REG16(rm_)=(uint16_t)v; else REG32(rm_)=v; return; }
-    if(sz==8) mem_w8(ea,(uint8_t)v); else if(sz==16) mem_w16(ea,(uint16_t)v); else mem_w32(ea,v);
+    if(sz==8) cpu_st8(ea,(uint8_t)v); else if(sz==16) cpu_st16(ea,(uint16_t)v); else cpu_st32(ea,v);
 }
 static uint32_t rdG(int sz){ return sz==8?REG8(reg_): sz==16?REG16(reg_):REG32(reg_); }
 static void wrG(int sz, uint32_t v){ if(sz==8) REG8(reg_)=(uint8_t)v; else if(sz==16) REG16(reg_)=(uint16_t)v; else REG32(reg_)=v; }
@@ -207,7 +253,7 @@ static int cond(int c){
 }
 
 void cpu_interrupt(int n, int soft){
-    uint32_t v = mem_r32((uint32_t)n*4);
+    uint32_t v = cpu_ld32((uint32_t)n*4);
     push16((uint16_t)cpu_getflags());
     push16(cpu.sreg[S_CS]);
     push16((uint16_t)cpu.eip);
@@ -224,38 +270,87 @@ static void strop(int op, int sz){
     uint32_t dsb = sb(S_DS), esb = cpu.sbase[S_ES];
     uint32_t cnt = 1, i;
     int use_rep = rep != 0;
-    if(use_rep){ cnt = adsz==16 ? REG16(R_ECX) : REG32(R_ECX); if(cnt==0) return; }
+    if(use_rep){ cnt = adsz==16 ? REG16(R_ECX) : REG32(R_ECX); if(cnt==0) return;
+        /* Bulk fast path: REP MOVS/STOS forward over plain RAM.  The game
+         * uses these for asset copies and buffer clears; the per-byte loop
+         * below costs a full decode's worth of branches per byte.  Anything
+         * touching VGA/ROM, wrapping the segment, or running backwards keeps
+         * the exact slow path.  memmove covers (unlikely) overlap. */
+        if((op == 0 || op == 2) && !cpu.df && cnt >= 16){
+            int el = sz / 8;
+            uint64_t n = ((uint64_t)cnt - 1u) * (uint64_t)el;
+            int ok = 0;
+            uint32_t s0 = 0, d0 = 0;
+            if(adsz == 16){
+                uint32_t soff = REG16(R_ESI), doff = REG16(R_EDI);
+                if((uint64_t)soff + n <= 0xFFFFu && (uint64_t)doff + n <= 0xFFFFu &&
+                   (uint64_t)dsb + soff + n < 0xA0000u && (uint64_t)esb + doff + n < 0xA0000u){
+                    s0 = dsb + soff; d0 = esb + doff; ok = 1;
+                }
+            } else {
+                uint64_t soff = REG32(R_ESI), doff = REG32(R_EDI);
+                if(soff + n < 0xA0000u && doff + n < 0xA0000u &&
+                   (uint64_t)dsb + soff + n < 0xA0000u && (uint64_t)esb + doff + n < 0xA0000u){
+                    s0 = (uint32_t)(dsb + soff); d0 = (uint32_t)(esb + doff); ok = 1;
+                }
+            }
+            if(ok){
+                size_t len = (size_t)cnt * (size_t)el;
+                if(op == 0) memmove(&ram[d0], &ram[s0], len);
+                else if(sz == 8) memset(&ram[d0], REG8(0), len);
+                else if(sz == 16){
+                    uint16_t v = REG16(0); uint32_t d;
+                    for(d = 0; d < cnt; d++){ ram[d0 + d*2] = (uint8_t)v; ram[d0 + d*2 + 1] = (uint8_t)(v >> 8); }
+                } else {
+                    uint32_t v = REG32(0); uint32_t d;
+                    for(d = 0; d < cnt; d++){
+                        ram[d0 + d*4] = (uint8_t)v; ram[d0 + d*4 + 1] = (uint8_t)(v >> 8);
+                        ram[d0 + d*4 + 2] = (uint8_t)(v >> 16); ram[d0 + d*4 + 3] = (uint8_t)(v >> 24);
+                    }
+                }
+                if(adsz == 16){
+                    REG16(R_ESI) += (uint16_t)len; REG16(R_EDI) += (uint16_t)len;
+                    REG16(R_ECX) = 0;
+                } else {
+                    REG32(R_ESI) += (uint32_t)len; REG32(R_EDI) += (uint32_t)len;
+                    REG32(R_ECX) = 0;
+                }
+                cpu.cycles += cnt;
+                return;
+            }
+        }
+    }
     for(i=0;i<cnt;i++){
         uint32_t s = adsz==16 ? REG16(R_ESI) : REG32(R_ESI);
         uint32_t d = adsz==16 ? REG16(R_EDI) : REG32(R_EDI);
         uint32_t a,b;
         switch(op){
         case 0:
-            a = sz==8?mem_r8(dsb+s): sz==16?mem_r16(dsb+s):mem_r32(dsb+s);
-            if(sz==8) mem_w8(esb+d,(uint8_t)a); else if(sz==16) mem_w16(esb+d,(uint16_t)a); else mem_w32(esb+d,a);
+            a = sz==8?cpu_ld8(dsb+s): sz==16?cpu_ld16(dsb+s):cpu_ld32(dsb+s);
+            if(sz==8) cpu_st8(esb+d,(uint8_t)a); else if(sz==16) cpu_st16(esb+d,(uint16_t)a); else cpu_st32(esb+d,a);
             break;
         case 1:
-            a = sz==8?mem_r8(dsb+s): sz==16?mem_r16(dsb+s):mem_r32(dsb+s);
-            b = sz==8?mem_r8(esb+d): sz==16?mem_r16(esb+d):mem_r32(esb+d);
+            a = sz==8?cpu_ld8(dsb+s): sz==16?cpu_ld16(dsb+s):cpu_ld32(dsb+s);
+            b = sz==8?cpu_ld8(esb+d): sz==16?cpu_ld16(esb+d):cpu_ld32(esb+d);
             alu(7,a,b,sz); break;
         case 2:
             a = sz==8?REG8(0): sz==16?REG16(0):REG32(0);
-            if(sz==8) mem_w8(esb+d,(uint8_t)a); else if(sz==16) mem_w16(esb+d,(uint16_t)a); else mem_w32(esb+d,a);
+            if(sz==8) cpu_st8(esb+d,(uint8_t)a); else if(sz==16) cpu_st16(esb+d,(uint16_t)a); else cpu_st32(esb+d,a);
             break;
         case 3:
-            a = sz==8?mem_r8(dsb+s): sz==16?mem_r16(dsb+s):mem_r32(dsb+s);
+            a = sz==8?cpu_ld8(dsb+s): sz==16?cpu_ld16(dsb+s):cpu_ld32(dsb+s);
             if(sz==8) REG8(0)=(uint8_t)a; else if(sz==16) REG16(0)=(uint16_t)a; else REG32(0)=a;
             break;
         case 4:
             a = sz==8?REG8(0): sz==16?REG16(0):REG32(0);
-            b = sz==8?mem_r8(esb+d): sz==16?mem_r16(esb+d):mem_r32(esb+d);
+            b = sz==8?cpu_ld8(esb+d): sz==16?cpu_ld16(esb+d):cpu_ld32(esb+d);
             alu(7,a,b,sz); break;
         case 5:
             a = sz==8?io_r8(REG16(R_EDX)):io_r16(REG16(R_EDX));
-            if(sz==8) mem_w8(esb+d,(uint8_t)a); else mem_w16(esb+d,(uint16_t)a);
+            if(sz==8) cpu_st8(esb+d,(uint8_t)a); else cpu_st16(esb+d,(uint16_t)a);
             break;
         case 6:
-            a = sz==8?mem_r8(dsb+s): mem_r16(dsb+s);
+            a = sz==8?cpu_ld8(dsb+s): cpu_ld16(dsb+s);
             if(sz==8) io_w8(REG16(R_EDX),(uint8_t)a); else io_w16(REG16(R_EDX),(uint16_t)a);
             break;
         }
@@ -302,9 +397,9 @@ static void op0f(void){
     case 0xA1: set_sreg(S_FS, (uint16_t)popv()); break;
     case 0xA8: pushv(cpu.sreg[S_GS]); break;
     case 0xA9: set_sreg(S_GS, (uint16_t)popv()); break;
-    case 0xB2: modrm(); { uint32_t o=mem_r16(ea); uint16_t s=mem_r16(ea+2); wrG(opsz,o); set_sreg(S_SS,s); } break;
-    case 0xB4: modrm(); { uint32_t o=mem_r16(ea); uint16_t s=mem_r16(ea+2); wrG(opsz,o); set_sreg(S_FS,s); } break;
-    case 0xB5: modrm(); { uint32_t o=mem_r16(ea); uint16_t s=mem_r16(ea+2); wrG(opsz,o); set_sreg(S_GS,s); } break;
+    case 0xB2: modrm(); { uint32_t o=cpu_ld16(ea); uint16_t s=cpu_ld16(ea+2); wrG(opsz,o); set_sreg(S_SS,s); } break;
+    case 0xB4: modrm(); { uint32_t o=cpu_ld16(ea); uint16_t s=cpu_ld16(ea+2); wrG(opsz,o); set_sreg(S_FS,s); } break;
+    case 0xB5: modrm(); { uint32_t o=cpu_ld16(ea); uint16_t s=cpu_ld16(ea+2); wrG(opsz,o); set_sreg(S_GS,s); } break;
     case 0xB6: modrm(); wrG(sz, (uint8_t)rdE(8)); break;
     case 0xB7: modrm(); wrG(sz, (uint16_t)rdE(16)); break;
     case 0xBE: modrm(); wrG(sz, (uint32_t)(int32_t)(int8_t)rdE(8)); break;
@@ -496,7 +591,7 @@ again:
     case 0x89: modrm(); sz=opsz; wrE(sz, rdG(sz)); break;
     case 0x8A: modrm(); wrG(8, rdE(8)); break;
     case 0x8B: modrm(); sz=opsz; wrG(sz, rdE(sz)); break;
-    case 0x8C: modrm(); if(ea_isreg) REG16(rm_)=cpu.sreg[reg_&7]; else mem_w16(ea, cpu.sreg[reg_&7]); break;
+    case 0x8C: modrm(); if(ea_isreg) REG16(rm_)=cpu.sreg[reg_&7]; else cpu_st16(ea, cpu.sreg[reg_&7]); break;
     case 0x8D: modrm(); wrG(opsz, ea_off); break;
     case 0x8E: modrm(); set_sreg(reg_&7, (uint16_t)rdE(16)); break;
     case 0x8F: modrm(); { uint32_t v = popv(); wrE(opsz, v); } break;
@@ -515,12 +610,12 @@ again:
     case 0x9E: cpu_setflags((cpu_getflags()&0xFFFFFF00u)|REG8(4)); break;
     case 0x9F: REG8(4) = (uint8_t)((cpu_getflags()&0xD5)|2); break;
 
-    case 0xA0: { uint32_t o = (adsz==32)?fetch32():fetch16(); REG8(0)=mem_r8(sb(S_DS)+o); break; }
+    case 0xA0: { uint32_t o = (adsz==32)?fetch32():fetch16(); REG8(0)=cpu_ld8(sb(S_DS)+o); break; }
     case 0xA1: { uint32_t o = (adsz==32)?fetch32():fetch16();
-        if(opsz==32) REG32(0)=mem_r32(sb(S_DS)+o); else REG16(0)=mem_r16(sb(S_DS)+o); break; }
-    case 0xA2: { uint32_t o = (adsz==32)?fetch32():fetch16(); mem_w8(sb(S_DS)+o, REG8(0)); break; }
+        if(opsz==32) REG32(0)=cpu_ld32(sb(S_DS)+o); else REG16(0)=cpu_ld16(sb(S_DS)+o); break; }
+    case 0xA2: { uint32_t o = (adsz==32)?fetch32():fetch16(); cpu_st8(sb(S_DS)+o, REG8(0)); break; }
     case 0xA3: { uint32_t o = (adsz==32)?fetch32():fetch16();
-        if(opsz==32) mem_w32(sb(S_DS)+o, REG32(0)); else mem_w16(sb(S_DS)+o, REG16(0)); break; }
+        if(opsz==32) cpu_st32(sb(S_DS)+o, REG32(0)); else cpu_st16(sb(S_DS)+o, REG16(0)); break; }
     case 0xA4: strop(0,8); break;
     case 0xA5: strop(0,opsz); break;
     case 0xA6: strop(1,8); break;
@@ -543,13 +638,13 @@ again:
     case 0xC1: modrm(); sz=opsz; { int c=fetch8(); wrE(sz, do_shift(reg_, rdE(sz), c, sz)); } break;
     case 0xC2: { uint16_t n=fetch16(); cpu.eip = popv() & 0xFFFF; REG16(R_ESP)+=n; break; }
     case 0xC3: cpu.eip = popv() & 0xFFFF; break;
-    case 0xC4: modrm(); { uint32_t v=mem_r16(ea); uint16_t s=mem_r16(ea+2); wrG(opsz,v); set_sreg(S_ES,s); } break;
-    case 0xC5: modrm(); { uint32_t v=mem_r16(ea); uint16_t s=mem_r16(ea+2); wrG(opsz,v); set_sreg(S_DS,s); } break;
+    case 0xC4: modrm(); { uint32_t v=cpu_ld16(ea); uint16_t s=cpu_ld16(ea+2); wrG(opsz,v); set_sreg(S_ES,s); } break;
+    case 0xC5: modrm(); { uint32_t v=cpu_ld16(ea); uint16_t s=cpu_ld16(ea+2); wrG(opsz,v); set_sreg(S_DS,s); } break;
     case 0xC6: modrm(); { uint8_t v=fetch8(); wrE(8,v); } break;
     case 0xC7: modrm(); sz=opsz; { uint32_t v=(sz==32)?fetch32():fetch16(); wrE(sz,v); } break;
     case 0xC8: { uint16_t nb=fetch16(); uint8_t lvl=fetch8(); uint16_t fp; int i;
         push16(REG16(R_EBP)); fp=REG16(R_ESP);
-        for(i=1;i<lvl;i++){ REG16(R_EBP)-=2; push16(mem_r16(cpu.sbase[S_SS]+REG16(R_EBP))); }
+        for(i=1;i<lvl;i++){ REG16(R_EBP)-=2; push16(cpu_ld16(cpu.sbase[S_SS]+REG16(R_EBP))); }
         if(lvl>0) push16(fp);
         REG16(R_EBP)=fp; REG16(R_ESP)-=nb; break; }
     case 0xC9: REG16(R_ESP)=REG16(R_EBP); REG16(R_EBP)=pop16(); break;
@@ -577,7 +672,7 @@ again:
     case 0xD5: { uint8_t base=fetch8(); REG8(0)=(uint8_t)(REG8(0)+REG8(4)*base); REG8(4)=0;
         cpu.zf=REG8(0)==0; cpu.sf=REG8(0)>>7; cpu.pf=ptab[REG8(0)]; break; }
     case 0xD6: REG8(0) = cpu.cf ? 0xFF : 0x00; break;
-    case 0xD7: REG8(0) = mem_r8(sb(S_DS) + ((REG16(R_EBX)+REG8(0))&0xFFFF)); break;
+    case 0xD7: REG8(0) = cpu_ld8(sb(S_DS) + ((REG16(R_EBX)+REG8(0))&0xFFFF)); break;
     case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: case 0xDF:
         modrm();
         trc("[cpu] x87 esc %02X at %04X:%04X\n", op, cpu.sreg[S_CS], cpu.eip);
@@ -662,10 +757,10 @@ again:
         case 0: wrE(sz, do_inc(rdE(sz),sz)); break;
         case 1: wrE(sz, do_dec(rdE(sz),sz)); break;
         case 2: { uint32_t t=rdE(sz); pushv(cpu.eip); cpu.eip=t&0xFFFF; break; }
-        case 3: { uint32_t o=mem_r16(ea); uint16_t s=mem_r16(ea+2);
+        case 3: { uint32_t o=cpu_ld16(ea); uint16_t s=cpu_ld16(ea+2);
                   pushv(cpu.sreg[S_CS]); pushv(cpu.eip); set_sreg(S_CS,s); cpu.eip=o; break; }
         case 4: cpu.eip = rdE(sz)&0xFFFF; break;
-        case 5: { uint32_t o=mem_r16(ea); uint16_t s=mem_r16(ea+2); set_sreg(S_CS,s); cpu.eip=o; break; }
+        case 5: { uint32_t o=cpu_ld16(ea); uint16_t s=cpu_ld16(ea+2); set_sreg(S_CS,s); cpu.eip=o; break; }
         case 6: pushv(rdE(sz)); break;
         } break;
 

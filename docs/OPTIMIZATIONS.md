@@ -1,0 +1,151 @@
+# pfemu performance optimizations
+
+All changes are behavior-preserving: same guest-visible semantics, less host
+work per emulated instruction. Nothing in the DOS/VGA/timing model (§5 of
+`WRITEUP-PHASE2.md`) was redefined; the game-visible pulse trains, memory
+map and interrupt timing are unchanged.
+
+Bottleneck evidence: a 5 s headless run (`-secs 5 -speed 100`) showed
+~315 M reads of port 3DAh — i.e. `vga_status1()` ran at ~63 M calls/s, each
+doing `vga_timing()` + `fmod()` + a 16-entry histogram search. Memory
+accessors (`mem_r8`, ~1 call per fetch and per data byte, plus 2–4× for
+16/32-bit) and a double division in `emu_now()`/`emu_advance()` were the
+other hot spots.
+
+## 1. Time base: multiply by the reciprocal (`src/dev.c:11,17,27`, `src/main.c:9,233`)
+
+`emu_advance()` and `emu_now()` divided by `emu_ips` on every call.
+`emu_now()` runs on every polled-register read (3DAh, PIT, port 61h), so the
+division executed tens of millions of times per second.
+
+- Added `emu_inv_ips = 1.0 / emu_ips`, refreshed once in `main()` after
+  argument parsing (`-ips` is startup-only, so no staleness risk).
+- Hot path is now one multiply: `emu_time + (cycles - last) * emu_inv_ips`.
+- `dev_next_deadline()` (`src/dev.c:420`) still multiplies by `emu_ips`
+  (already a multiply, untouched).
+
+Correctness: identical result up to one-ulp FP rounding; all downstream
+uses are threshold compares, unaffected.
+
+## 2. CRT status: cached geometry, no `fmod()`, cheap histogram (`src/vga.c`, `src/dev.c:228-270`)
+
+`vga_status1()` is the hottest function in the emulator (see above).
+
+- `vga_timing_cached()` (`src/vga.c:436`): caches frame period, inverse
+  period, totals and blanking fraction; recomputed only when a register it
+  derives from changes. Invalidation points: misc output (`src/vga.c:199`),
+  sequencer (`src/vga.c:201`), CRTC (`src/vga.c:214`), BIOS mode set via
+  `apply_regs()` (`src/vga.c:346`). Registers change on mode switches only,
+  so ~63 M recomputes/s become ~63 M cache hits/s.
+- Phase math uses multiply + truncate instead of `fmod()`/`floor()`:
+  `q = now * inv_per; q -= (int64_t)q; line = q * vtotal; frac = line - (int)line`.
+  Same for the `-oldtiming` branch (`70.086 Hz` constant). No libm calls left
+  on this path. `now` is always ≥ 0, so truncation equals `floor()`.
+- `st1_note()` (`src/dev.c:204`): was a 16-entry linear search with aging on
+  every read; now direct-mapped (`(lin >> 2) & 15`), one compare per read.
+  Collisions overwrite a slot — acceptable for a profiling histogram; the
+  exit report format is unchanged.
+
+Correctness: the bit-0/bit-3 pulse trains are mathematically the same modulo
+FP rounding far below the half-line thresholds the driver's PLL depends on
+(§5.8c: strictly-monotone staircase preserved). vsync-edge counting and the
+`st1_calls/bit0/bit3` counters are untouched.
+
+## 3. PIT counters without `fmod()` (`src/dev.c:100-155,334`)
+
+`pit_count()` had the same `fmod(now, per)/per` shape on the PIT-poll path.
+
+- Each channel caches `inv_per = PIT_HZ / reload` (refreshed in `pit_write()`,
+  initialized in `pit_init()`; reload 0 = 65536 as before).
+- `pit_count()` and the port-61h timer-2 bit (`src/dev.c:334`) use
+  multiply + truncate. One division per reload write replaces one
+  `fmod()` + one division per read.
+
+## 4. Memory access (`src/cpu.c:44-80`, `src/vga.c:488-522`)
+
+- `src/cpu.c`: new `cpu_ld8/16/32`, `cpu_st8/16/32` (`src/cpu.c:44`) —
+  same semantics as `mem_r8/w8` (A20 + 16 MB wrap, VGA dispatch, ROM
+  write-ignore), but `static inline` in the interpreter's TU, so fetch,
+  ModR/M, stack, string and far-pointer paths pay no cross-TU call.
+  16/32-bit forms do one range check instead of 2–4 nested `mem_r8` calls.
+  All `mem_*` uses inside `cpu.c` were switched over (fetch at `src/cpu.c:82`,
+  stack, `rdE`/`wrE` at `src/cpu.c:140`, string ops, `0xA0`–`0xA3`, `0xC4`,
+  `0xC5`, `0xD7`, far `call`/`jmp`, IVT fetch in `cpu_interrupt`).
+  Fetch keeps the original non-wrapping `cs_base + eip` semantics
+  (bug-compatible at the 64 KiB segment edge).
+- `src/vga.c`: `mem_r16/r32`, `mem_w16/w32` now do a single range check with
+  a direct `ram[]` fast path; the slow path (VGA window for reads,
+  VGA-or-ROM window for writes) falls back to the byte helpers. Old code
+  also treated `VGA_LO-1`/`VGA_LO-3` sloppily; the new `a + 1u >= VGA_LO`
+  form is exact and overflow-safe (`a` ≤ `0xFFFFFF`).
+- Other TUs (`bios.c`, `dos.c`, `sound.c`, `dev.c`) keep calling `mem_*`
+  (cold paths: device init, file/IVT/DTA handling, one byte per DMA sample).
+
+## 5. REP MOVS/STOS bulk path (`src/cpu.c:268-316`)
+
+`strop()` looped per byte with full helper + flag/register overhead per
+iteration. Added a fast path for `REP MOVS`/`REP STOS`, forward (`DF=0`),
+`cnt >= 16`, entirely inside plain RAM (`< 0xA0000`, no segment wrap):
+
+- MOVS → `memmove()`, byte STOS → `memset()`, word/dword STOS → tight fill loop.
+- `ESI`/`EDI`/`ECX` updates and `cpu.cycles += cnt` match the slow loop
+  exactly (`ECX` → 0, 16-bit pointer wrap preserved via `(uint16_t)` cast).
+- Anything else (backwards, VGA/ROM touch, `CMPS`/`SCAS` early-exit,
+  `LODS`, `INS`/`OUTS`) keeps the original loop. VRAM-bound copies
+  (chain-4/planar, latches) therefore still go through `vga_mem_w()`.
+
+## 6. Bigger main-loop batch (`src/main.c:272-287`, `src/dev.c:420-426`)
+
+Batch 64 → 256 instructions; `guard` 40000 → 10000 (same 2.56 M-instruction
+cap per present/ pump iteration, so UI latency is unchanged). The
+`dev_next_deadline()` clamp is unchanged, so IRQ0 still lands on the exact
+instruction; worst-case IRQ latency (~43 µs at 6 MIPS) is orders of magnitude
+below anything observable (PIT tick ≈ 55 ms). The `+64` no-deadline fallback
+in `dev_next_deadline()` became `+256` to match.
+
+## 7. Build: whole-program optimization (`build.bat:3`)
+
+`/GL` + `/link /LTCG` added to the existing `/O2` line. Lets the optimizer
+inline across TUs (e.g. `vga_mem_r/w`, `io_r8/w8`, `pic_*` into callers).
+Deliberately *not* enabled: `/fp:fast` (would loosen the FP comparisons the
+PLL lock depends on), `/arch:AVX2` (portability).
+
+## What was intentionally left alone
+
+- CPU dispatch itself (giant `switch` in `cpu_step`): a threaded/dynarec
+  core would be faster but is a rewrite with correctness risk; the changes
+  above remove the overhead *around* dispatch instead.
+- `vga_render()`: 60 Hz host-side work, negligible next to 6 MIPS of
+  interpretation; palette rebuild per frame is trivial.
+- `sb_tick()` audio path: already early-outs when silent; per-sample cost
+  (~12 kHz) is inherent.
+
+## Verification
+
+- `build.bat` compiles clean under MSVC 14.29 (`/W3`, no warnings).
+- No gameplay run was performed from this session (no GUI launched, per
+  request). Suggested checks before merging:
+  - `pfemu.exe -d game -secs 5 -speed 100` exits by itself and still reports
+    `CRT refresh ≈ 59.71 Hz`, `page flips`, `mode=12h 640x240`.
+  - PLL lock trace (`-pll N`) still settles near reload 19921 as in §5.8.
+  - Screenshot diff of intro/menu/table frames vs. pre-change build.
+  - Higher `emu_time`/instruction count for the same wall seconds = speedup.
+
+## 8. Setup shortcut: `-setup` (`src/main.c:209`)
+
+Boots `SETSOUND.EXE` instead of `PINBALL.EXE` (alias for
+`-p SETSOUND.EXE`). The game ships with `SOUND.CFG` set to `NOSOUND.SDR`,
+so this is the quick path to sound: pick SoundBlaster (base port 220h,
+IRQ 7) and the utility writes `SOUND.CFG`. The write lands in
+`PFEMU-STATE/` through the DOS write overlay (`src/dos.c`), so installed
+files stay pristine, and the game picks the driver up on its next boot.
+
+Deliberately *not* a flag that forges `SOUND.CFG` bytes directly.
+Static analysis of `SBLASTER.SDR` (unpacked MZ, disassembled the config
+parse at image `0x1870`: open, `lseek` to `0x0E`/`0x11`/`0x14`, one answer
+byte each through `& 7` lookup tables for base port, IRQ and quality)
+shows the driver only reads 3 of the 25 bytes; the remaining gap bytes are
+written by `SETSOUND.EXE`, which is LZEXE-packed, so their exact content
+was not established. Running the real utility keeps the one verified
+code path (§9: menu, keyboard and `SOUND.CFG` write all work under pfemu)
+instead of guessing at its output format.

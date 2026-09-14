@@ -20,6 +20,10 @@ static int dac_widx, dac_ridx, dac_wcomp, dac_rcomp;
 static uint8_t latch[4];
 static int bios_mode = 3;
 
+/* CRT timing cache, refreshed lazily by vga_timing_cached().  Set to 1
+ * whenever a register it derives from changes. */
+static int timing_dirty = 1;
+
 uint32_t vga_retrace_hz = 70;
 
 /* --------------------------------------------------------------- helpers */
@@ -192,9 +196,9 @@ void vga_io_w(uint16_t p, uint8_t v){
             ar[ar_idx & 0x1F] = v; ar_flipflop = 0; vga_dirty = 1;
         }
         break;
-    case 0x3C2: misc_out = v; break;
+    case 0x3C2: misc_out = v; timing_dirty = 1; break;
     case 0x3C4: sq_idx = v & 7; break;
-    case 0x3C5: sq[sq_idx & 7] = v; break;
+    case 0x3C5: sq[sq_idx & 7] = v; timing_dirty = 1; break;
     case 0x3C6: dac_mask = v; break;
     case 0x3C7: dac_ridx = v; dac_rcomp = 0; break;
     case 0x3C8: dac_widx = v; dac_wcomp = 0; break;
@@ -207,7 +211,7 @@ void vga_io_w(uint16_t p, uint8_t v){
     case 0x3B4: case 0x3D4: cr_idx = v & 63; break;
     case 0x3B5: case 0x3D5:
         if(cr_idx==0x0C && cr[0x0C]!=v) vga_startaddr_changes++;
-        cr[cr_idx & 63] = v; vga_dirty = 1; break;
+        cr[cr_idx & 63] = v; vga_dirty = 1; timing_dirty = 1; break;
     }
 }
 
@@ -339,6 +343,7 @@ static void apply_regs(const uint8_t *c, const uint8_t *s, const uint8_t *g, con
     for(i=0;i<9;i++) gc[i]=g[i];
     for(i=0;i<21;i++) ar[i]=a[i];
     ar_flipflop = 0;
+    timing_dirty = 1;
 }
 
 static const uint8_t c_text80[25] = {
@@ -420,6 +425,32 @@ void vga_timing(double *frame_period, int *vtotal_out, int *vde_out,
     *hde_frac = (double)hde / (double)htotal;
 }
 
+/* Cached copy of the above.  vga_status1() runs once per guest `in al,3DAh`
+ * - tens of millions of times per second in the game's sync loops - and the
+ * registers it derives from only change on mode set / CRTC reprogramming.
+ * Recomputing the doubles every read dominated the profile, so refresh the
+ * cache only when those registers are written (see vga_io_w/apply_regs). */
+static double timing_per, timing_hde, timing_inv_per;
+static int timing_vtotal, timing_vde, timing_vrs, timing_vre;
+
+void vga_timing_cached(double *frame_period, double *inv_period,
+                int *vtotal_out, int *vde_out,
+                int *vrs_out, int *vre_out, double *hde_frac){
+    if(timing_dirty){
+        vga_timing(&timing_per, &timing_vtotal, &timing_vde,
+                   &timing_vrs, &timing_vre, &timing_hde);
+        if(timing_per <= 0.0) timing_per = 1.0/70.0;
+        timing_inv_per = 1.0 / timing_per;
+        timing_dirty = 0;
+    }
+    *frame_period = timing_per;
+    *inv_period = timing_inv_per;
+    *vtotal_out = timing_vtotal;
+    *vde_out = timing_vde;
+    *vrs_out = timing_vrs; *vre_out = timing_vre;
+    *hde_frac = timing_hde;
+}
+
 void vga_dump(void){
     int i;
     printf("[vga] misc=%02X  seq:", misc_out);
@@ -459,13 +490,16 @@ uint8_t mem_r8(uint32_t a){
     return ram[a];
 }
 uint16_t mem_r16(uint32_t a){
+    /* One range check + one direct read.  The old version paid for two full
+     * mem_r8 calls (mask, branch, call) per 16-bit access.  ROM reads come
+     * straight from ram[], so only the VGA window needs the slow path. */
     a &= a20_mask; a &= (RAM_SIZE-1);
-    if(a >= VGA_LO-1 && a < VGA_HI) return (uint16_t)(mem_r8(a) | (mem_r8(a+1)<<8));
+    if(a + 1u >= VGA_LO && a < VGA_HI) return (uint16_t)(mem_r8(a) | (mem_r8(a+1)<<8));
     return (uint16_t)(ram[a] | (ram[a+1]<<8));
 }
 uint32_t mem_r32(uint32_t a){
     a &= a20_mask; a &= (RAM_SIZE-1);
-    if(a >= VGA_LO-3 && a < VGA_HI)
+    if(a + 3u >= VGA_LO && a < VGA_HI)
         return (uint32_t)mem_r8(a) | ((uint32_t)mem_r8(a+1)<<8) | ((uint32_t)mem_r8(a+2)<<16) | ((uint32_t)mem_r8(a+3)<<24);
     return (uint32_t)ram[a] | ((uint32_t)ram[a+1]<<8) | ((uint32_t)ram[a+2]<<16) | ((uint32_t)ram[a+3]<<24);
 }
@@ -477,12 +511,12 @@ void mem_w8(uint32_t a, uint8_t v){
 }
 void mem_w16(uint32_t a, uint16_t v){
     a &= a20_mask; a &= (RAM_SIZE-1);
-    if(a >= VGA_LO-1 && a < 0x100000){ mem_w8(a,(uint8_t)v); mem_w8(a+1,(uint8_t)(v>>8)); return; }
+    if(a + 1u >= VGA_LO && a < 0x100000){ mem_w8(a,(uint8_t)v); mem_w8(a+1,(uint8_t)(v>>8)); return; }
     ram[a]=(uint8_t)v; ram[a+1]=(uint8_t)(v>>8);
 }
 void mem_w32(uint32_t a, uint32_t v){
     a &= a20_mask; a &= (RAM_SIZE-1);
-    if(a >= VGA_LO-3 && a < 0x100000){
+    if(a + 3u >= VGA_LO && a < 0x100000){
         mem_w8(a,(uint8_t)v); mem_w8(a+1,(uint8_t)(v>>8));
         mem_w8(a+2,(uint8_t)(v>>16)); mem_w8(a+3,(uint8_t)(v>>24)); return; }
     ram[a]=(uint8_t)v; ram[a+1]=(uint8_t)(v>>8); ram[a+2]=(uint8_t)(v>>16); ram[a+3]=(uint8_t)(v>>24);

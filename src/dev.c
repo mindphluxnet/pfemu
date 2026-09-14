@@ -4,12 +4,17 @@
 
 double emu_time = 0.0;            /* emulated seconds since boot */
 double emu_ips  = 6000000.0;      /* emulated instructions per second */
+/* Reciprocal of emu_ips.  emu_now()/emu_advance() run tens of millions of
+ * times per second (every 3DAh/PIT poll folds outstanding cycles into the
+ * clock), so a multiply here replaces a double division on the hot path.
+ * Refreshed from emu_ips in main() after argument parsing. */
+double emu_inv_ips = 1.0 / 6000000.0;
 static uint64_t last_cycles = 0;
 
 void emu_advance(void){
     uint64_t d = cpu.cycles - last_cycles;
     last_cycles = cpu.cycles;
-    emu_time += (double)d / emu_ips;
+    emu_time += (double)d * emu_inv_ips;
 }
 
 /* emu_time is only folded forward every N instructions by the main loop, but
@@ -19,7 +24,7 @@ void emu_advance(void){
  * by counting horizontal blanking pulses that are only ~6 us long, so this
  * matters. */
 double emu_now(void){
-    return emu_time + (double)(cpu.cycles - last_cycles) / emu_ips;
+    return emu_time + (double)(cpu.cycles - last_cycles) * emu_inv_ips;
 }
 
 /* ------------------------------------------------------------------ PIC */
@@ -88,6 +93,7 @@ static uint8_t pic_read(int n, int a0){
 }
 
 extern void vga_timing(double*,int*,int*,int*,int*,double*);
+extern void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
 
 /* ------------------------------------------------------------------ PIT */
 #define PIT_HZ 1193182.0
@@ -95,6 +101,7 @@ typedef struct {
     uint16_t reload; uint8_t mode, rw, latched_cnt_valid;
     uint16_t latch; int rd_hi, wr_hi; uint16_t wr_tmp;
     double next_irq;
+    double inv_per;           /* PIT_HZ / effective reload: ticks per second */
     int armed;              /* mode 0: one interrupt per count written */
 } PITCH;
 static PITCH pit[3];
@@ -104,13 +111,17 @@ int pll_dbg = 0;                  /* -pll N : trace N timer-0 reloads */
 static void pit_init(void){
     int i;
     memset(pit,0,sizeof(pit));
-    for(i=0;i<3;i++){ pit[i].reload = 0; pit[i].rw = 3; pit[i].mode = 3; }
+    for(i=0;i<3;i++){ pit[i].reload = 0; pit[i].rw = 3; pit[i].mode = 3;
+                      pit[i].inv_per = PIT_HZ / 65536.0; }
     pit[0].next_irq = 65536.0 / PIT_HZ;
 }
 static uint16_t pit_count(int c){
-    double per = (pit[c].reload ? pit[c].reload : 65536) / PIT_HZ;
-    double ph = fmod(emu_now(), per) / per;
-    return (uint16_t)((1.0 - ph) * (pit[c].reload ? pit[c].reload : 65536));
+    /* phase by multiply/truncate instead of fmod(): same countdown value,
+     * no libm call on the polling path. */
+    uint32_t rel = pit[c].reload ? pit[c].reload : 65536u;
+    double q = emu_now() * pit[c].inv_per;
+    q -= (int64_t)q;
+    return (uint16_t)((1.0 - q) * (double)rel);
 }
 static void pit_write(int port, uint8_t v){
     if(port==3){
@@ -130,10 +141,11 @@ static void pit_write(int port, uint8_t v){
             nv = (uint16_t)(pit[c].wr_tmp | (v<<8)); pit[c].wr_hi = 0;
         }
         pit[c].reload = nv;
+        pit[c].inv_per = PIT_HZ / (double)(nv ? nv : 65536u);
         if(c==0){
             /* Instruction-exact, not emu_time: the sound driver's PLL starts a
              * one-shot here and counts CRT blanking pulses until it fires, so a
-             * start time quantised to the 64-instruction tick would jitter the
+             * start time quantised to the batch tick would jitter the
              * count by a third of a scanline and the loop could never settle. */
             double per = (nv ? nv : 65536) / PIT_HZ;
             pit[0].next_irq = emu_now() + per;
@@ -194,15 +206,15 @@ static uint8_t kbd_status(void){
 
 /* ---------------------------------------------------------- CRT timing  */
 
-/* tiny histogram of who reads the status register, for profiling */
+/* tiny histogram of who reads the status register, for profiling.
+ * Direct-mapped by address bits: one compare per read instead of a 16-entry
+ * search with aging.  Collisions simply overwrite a slot, which is fine for
+ * a profiling aid. */
 static uint32_t st1_site[16]; static unsigned long st1_hits[16];
 static void st1_note(uint32_t lin){
-    int i;
-    for(i=0;i<16;i++){
-        if(st1_hits[i] && st1_site[i]==lin){ st1_hits[i]++; return; }
-        if(!st1_hits[i]){ st1_site[i]=lin; st1_hits[i]=1; return; }
-    }
-    for(i=0;i<16;i++) st1_hits[i] >>= 1;    /* age the table out */
+    unsigned i = (lin >> 2) & 15;
+    if(st1_site[i] == lin) st1_hits[i]++;
+    else { st1_site[i] = lin; st1_hits[i] = 1; }
 }
 void st1_report(void){
     int i;
@@ -213,26 +225,34 @@ void st1_report(void){
 
 int vga_old_timing = 0;
 uint8_t vga_status1(void){
-    double per, hde_frac;
+    double per, inv_per, hde_frac;
     int vtotal, vde, vrs, vre;
-    double line, frac;
+    double now, q, line, frac;
     uint8_t st = 0;
     if(vga_old_timing){
         extern unsigned long st1_calls, st1_bit0, st1_bit3;
-        double p = 1.0/70.086;
-        double t = fmod(emu_now(), p) / p;
-        double l = t * 449.0;
+        double l, lf;
         uint8_t s = 0;
-        if(t >= 0.92 && t < 0.99) s |= 0x08;
-        if((l - floor(l)) > 0.82 || t >= 0.90) s |= 0x01;
+        now = emu_now();
+        q = now * 70.086;               /* 1/p, no fmod() */
+        q -= (int64_t)q;
+        l = q * 449.0;
+        lf = l - (int)l;
+        if(q >= 0.92 && q < 0.99) s |= 0x08;
+        if(lf > 0.82 || q >= 0.90) s |= 0x01;
         st1_calls++; if(s&1) st1_bit0++; if(s&8) st1_bit3++;
         st1_note((uint32_t)cpu.sbase[S_CS] + cpu.eip);
         return s;
     }
-    vga_timing(&per, &vtotal, &vde, &vrs, &vre, &hde_frac);
-    if(per <= 0.0) per = 1.0/70.0;
-    line = fmod(emu_now(), per) / per * (double)vtotal;
-    frac = line - floor(line);
+    /* Cached geometry (registers change ~never) + multiply/truncate phase
+     * instead of fmod()/floor(): identical pulse train, no libm calls. */
+    vga_timing_cached(&per, &inv_per, &vtotal, &vde, &vrs, &vre, &hde_frac);
+    (void)per;
+    now = emu_now();
+    q = now * inv_per;
+    q -= (int64_t)q;
+    line = q * (double)vtotal;
+    frac = line - (int)line;
     if(line >= vrs && line < vre) st |= 0x08;              /* vertical retrace */
     /* Bit 0 pulses once per scan line, for the whole frame.
      *
@@ -311,8 +331,9 @@ uint8_t io_r8(uint16_t p){
         uint8_t r = (uint8_t)(port61 & 0x0F);
         if(((uint64_t)t) & 1) r |= 0x10;
         {
-            double per = (pit[2].reload ? pit[2].reload : 65536) / PIT_HZ;
-            if(fmod(emu_now(), per)/per < 0.5) r |= 0x20;
+            double q = emu_now() * pit[2].inv_per;
+            q -= (int64_t)q;
+            if(q < 0.5) r |= 0x20;
         }
         return r; }
     case 0x64: return kbd_status();
@@ -398,7 +419,7 @@ void dev_tick(void){
  * can stop exactly there instead of overshooting by up to a whole batch. */
 uint64_t dev_next_deadline(void){
     double dt;
-    if(pit[0].mode == 0 && !pit[0].armed) return cpu.cycles + 64;
+    if(pit[0].mode == 0 && !pit[0].armed) return cpu.cycles + 256;
     dt = pit[0].next_irq - emu_now();
     if(dt <= 0.0) return cpu.cycles;
     if(dt > 1.0) dt = 1.0;
