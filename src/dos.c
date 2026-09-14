@@ -459,8 +459,10 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
 
         /* Game-specific image patches (memory-only, signature-checked,
          * -nopatch disables).  Implemented per game in src/fantasies.c and
-         * src/dreams.c; dos.c only dispatches. */
+         * src/dreams.c; dos.c only dispatches.  The SDR seed preset also
+         * covers sound drivers (shared family - session-gated inside). */
         fantasies_patch_image((uint32_t)load*16, imglen);
+        fantasies_patch_sdr((uint32_t)load*16, imglen);
         dreams_patch_image((uint32_t)load*16, imglen);
 
         fseek(f, lfarlc, SEEK_SET);

@@ -558,6 +558,34 @@ original behaviour. Verified equivalent: patching the file with `-nopatch`, and
 patching in memory with a pristine file, reach the same screen and accept the
 same input.
 
+## 5.14 The boot black screen, and shortening it
+
+The ~5 s of black before the first intro screen (also present on period
+hardware) breaks down, measured in emulated time at 1x: 0–1.6 s of real setup
+(EXEC chain, `.SDR` install, LBM depack with its `PBM BODY` parser), 1.6–3.8 s
+of sound-driver PLL calibration, 3.8–4.5 s of scheduler spin-up, MOD
+processing and fade-in. `TIMER.BIN` was suspected and exonerated (a ~100k
+instruction speed grade).
+
+The calibration runs the shared routine twice per driver load (so every table
+switch pays it again): pass 1 with target 0, returning the measurement floor
+(di ~= 1, saved for the tempo ratio `[6BBE]-[6BB8]` over `[6BBC]`), a frame
+measure, then pass 2 with the real line-count target, locking the PIT reload
+(~19771 here, ~19921 in an earlier run — a band, not a constant). Both passes
+sweep geometrically from the `mov di,1CE8` seed, ~110 rounds x ~17 ms.
+
+`src/fantasies.c` shortens this, Fantasies sessions only, `-nopatch`-gated,
+all derived from the image with strict bail-outs (anything unrecognised keeps
+the slow path): the seed is preset to `0x4D3B` (pass 2 then locks in ~10
+rounds), and pass 1 is NOP'd with its save cell preset to 1 — inside the
+natural 0–20 dither of that result, so the tempo ratio shifts <= 0.1%, the
+same as run-to-run jitter. Verified by `-pll` trace (lock, scheduler
+handoff), `-mem` (`[6BB8]` reads back 1), screenshot timeline (first light
+~4.5 s -> ~3.2 s) and a NOSOUND scratch-install boot; 8 of 11 drivers derive
+cleanly (ADLIB/INTERNAL/THING keep the slow path). One jitter source remains:
+a stale pending IRQ0 can spoil round 1 (~1/3 of runs), costing an extra ~0.3 s
+detour that still converges — the controller is self-correcting either way.
+
 ## 6. Debugging tools
 
 Almost all of the time went into *locating* faults, not fixing them. The
@@ -646,6 +674,11 @@ first:
    skipped. Nothing visibly depends on them.
 5. **The manual-lookup protection is patched out of the loaded image** (§5.13),
    rather than being answered. `-nopatch` turns that off.
+6. **The sound-driver PLL calibration is short-circuited** (§5.14) in
+   Fantasies sessions only: the seed is preset near the known lock band and
+   the zero-target first pass is skipped with its result preset to the
+   natural value. Saves ~1.3 s of the boot black screen. `-nopatch` restores
+   the full two-pass calibration.
 
 ---
 
