@@ -356,3 +356,21 @@ emulated time, scan-line phase and caller; `-vscan N` hashes VRAM in 64
 100k events. Both off by default (one branch per batch when off). Also:
 stderr is now only reattached to the parent console when it isn't
 redirected, so `2>file` captures logs from the windowed binary.
+
+## 18. Flip/vscan timeline verdict: duplicate suppression, not phase lock
+
+Measured with §17 (`-flipdbg -vscan 8192`, table play): flips land every
+~33 ms at scan line ~228 (mid-frame), re-asserting the same start when not
+scrolling and stepping it down while the camera follows the ball — healthy
+engine behavior, all from table code. VRAM mutates in sprite-scale chunks
+at *every* frame phase with no quiet window: background scrolls via page
+flips while sprites erase/redraw directly, so the ball hazard is structural
+and authentic on real hardware too (phase-dependent occasional flicker).
+Consequences: no sampling phase avoids the gap (the failed §16 experiment
+parked inside it); wall drift is load-bearing. The one real fix available
+without changing game code is suppressing duplicate presents — the 60 Hz
+wall timer re-showed every ~204th frame against the 59.71 Hz game — so the
+present block is now gated on the emulated frame index
+(`emu_time / frame period`, via the cached timing) advancing. Drops only
+occur under CPU starvation, which headroom prevents; drift (and its
+authentic occasional flicker) is preserved.

@@ -332,7 +332,21 @@ int main(int argc, char **argv){
         }
         if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; }  /* fell behind */
 
-        if(plat_time() - last_present > 1.0/60.0){
+        /* No duplicate presents: the game renders at 59.71 Hz but the wall
+         * timer runs at 60 Hz, so every ~3.4 s a frame went out twice
+         * (scroll judder).  Gate on the emulated frame index so each frame
+         * presents at most once; the wall phase still drifts, which matters
+         * because the ball's erase-redraw gap makes any locked phase flicker
+         * constantly (see docs §16).  Drops only happen if emulation can't
+         * keep up, which headroom prevents. */
+        { static unsigned long long last_frame = 0;
+          double per, inv, hde; int vt, vd, vrs, vre;
+          unsigned long long idx;
+          vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
+          (void)inv; (void)vt; (void)vd; (void)vrs; (void)vre; (void)hde;
+          idx = per > 0.0 ? (unsigned long long)(emu_time / per) : 0ULL;
+          if(plat_time() - last_present > 1.0/60.0 && idx != last_frame){
+            last_frame = idx;
             last_present = plat_time();
             vga_render(fb, &fbw, &fbh);
             plat_present(fb, fbw, fbh);
@@ -342,7 +356,7 @@ int main(int argc, char **argv){
                 sprintf(nm, "seq%03d.ppm", shot_n++);
                 save_ppm(nm, fb, fbw, fbh);
             }
-        }
+          } }
         plat_sleep_ms(1);
     }
 
