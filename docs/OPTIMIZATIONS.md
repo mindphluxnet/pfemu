@@ -286,6 +286,11 @@ Fantasies §5.13 protection:
   implementation, for anyone holding the manual). The two-gate form
   matters: checksumming alone still retries on a wrong-length word, which
   is exactly the observed three-prompts-then-quit.
+- Verified by playing: with both gates bypassed the game proceeds through
+  the manual check into the menu and the tables are playable. Remaining
+  known gaps for Dreams: no audio (PD uses MPU-401 MIDI/speaker paths, never
+  touches the SB ports — silent until that audio work lands) and the
+  in-game sound selection, which is cosmetic until then.
 Pending user test: name/serial should now display correctly and boot
 should proceed into video/sound/menu (manual protection and sound-card
 selection expected next).
