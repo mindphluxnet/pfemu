@@ -537,3 +537,45 @@ signature-checked like the existing SDR patches, `-nopatch` disables it.
 Scrolling is then never touched again after the launcher's initial poke, so
 it shows correctly in the menu and reaches the table unchanged. Verified
 live: launcher set to Soft, F5 menu confirmed showing Soft.
+
+## 24. Table-select palette flash, part 2: one frame of history wasn't enough (`src/vga.c`)
+
+The §21 fix (majority-duration AR14 bank) regressed - reported live with
+NOSOUND, after none of the intervening commits (§9/§23 launcher work, the
+§5.13.1 flag forge, the flipper-modifier reconciliation) had touched
+`vga.c` at all. Since the fix itself was provably unchanged, three exit-time
+counters were added first rather than guessing: `AR14 switches` (writes that
+changed the bank), `overrides` (frames where the majority pick differed from
+the instantaneous register - i.e. the fix doing something), `mode-resets`
+(`apply_regs()` calls, which wipe the switch history). User-supplied A/B
+output, same menu, same build:
+
+| | switches | overrides | override rate |
+|---|---|---|---|
+| SoundBlaster on | 1100 / 28.2 s (~39/s) | 135 | 12.3% |
+| NOSOUND | 268 / 10.0 s (~27/s) | 105 | 39.2% |
+
+Both nonzero, so the fix was firing in both cases, not disabled or reset out
+from under itself (`mode-resets` was 3 in both - once at boot, not per-tick).
+But the override rate more than triples with sound off, meaning whatever
+paces the menu's AR14 flip - almost certainly the audio driver's own
+interrupt chain, given `dumretf`/`creatretf` are driver callbacks per §21's
+`INTRO.ASM` credit - runs at a different rate and duty cycle when
+SoundBlaster isn't the one timing it. §21 only ever scored the single
+*previous complete* frame (`fstart - per`): correct when the flip is a short
+pulse deep inside one 16.7 ms frame, but not guaranteed when the pacing
+changes and a frame can land mostly on the minority bank's side even though
+it is still the minority over a couple of ticks.
+
+Fix: score the last 4 complete frames (`fstart - 4*per`) instead of 1 -
+still far under a human-visible delay, but enough to average out a single
+frame's local phase against whichever driver ends up pacing the flip,
+without needing to know its rate up front. `PALSW_N` (retained AR14-switch
+history) doubled 16 -> 32 so the wider window can't run out of slots at any
+plausible switch rate. Everything else about the mechanism - presentation
+only, `pal_sw_n` reset on real mode sets, tables (256-colour) and the
+single-bank hi-scores page untouched by construction - is unchanged from
+§21. The three counters stay in the exit report as a standing diagnostic:
+if this ever regresses again, `overrides` vs `switches` says immediately
+whether the fix is engaging at all before anyone has to reason about timing
+from scratch.

@@ -455,6 +455,9 @@ int main(int argc, char **argv){
     { extern unsigned long vga_startaddr_changes;
       printf("[pfemu] page flips=%lu (%.1f/s of emulated time)\n",
              vga_startaddr_changes, vga_startaddr_changes/(emu_time>0?emu_time:1)); }
+    { extern unsigned long vga_ar14_switches, vga_ar14_overrides, vga_mode_resets;
+      printf("[pfemu] AR14 switches=%lu overrides=%lu mode-resets=%lu\n",
+             vga_ar14_switches, vga_ar14_overrides, vga_mode_resets); }
     { extern unsigned long kbd_port60_reads; extern uint8_t pic_imr(void);
       printf("[pfemu] port60 reads=%lu  master IMR=%02X\n", kbd_port60_reads, pic_imr()); }
     printf("[pfemu] irqs: int8=%lu int9=%lu ticks=%u iflag=%d halted=%d cs:ip=%04X:%04X\n",

@@ -5,6 +5,12 @@ uint8_t vga_vram[256*1024];
 int vga_dirty = 1;
 int vga_force256 = 0, vga_nodbl = 0;
 unsigned long vga_startaddr_changes = 0;
+/* Diagnostics for the table-select palette-flash fix (see pal_sw_* below):
+ * switches = AR14 (Color Select) writes that actually changed the bank;
+ * overrides = frames where the majority-duration pick differed from the
+ * instantaneous ar[0x14] (i.e. the fix actively did something); resets =
+ * apply_regs() calls, which zero the switch history on every mode set. */
+unsigned long vga_ar14_switches = 0, vga_ar14_overrides = 0, vga_mode_resets = 0;
 
 /* ------------------------------------------------------------- registers */
 static uint8_t sq[8];        /* sequencer            3C4/3C5 */
@@ -27,7 +33,7 @@ static int bios_mode = 3;
  * Game state is untouched - only the presented frame uses the
  * majority-duration bank.  Entries are chronological; pal_sw_base is the
  * value before the oldest retained switch. */
-#define PALSW_N 16
+#define PALSW_N 32
 static uint8_t pal_sw_val[PALSW_N];
 static double pal_sw_t[PALSW_N];
 static int pal_sw_n = 0;
@@ -344,6 +350,7 @@ void vga_io_w(uint16_t p, uint8_t v){
                 pal_sw_val[pal_sw_n] = v;
                 pal_sw_t[pal_sw_n] = emu_now();
                 pal_sw_n++;
+                vga_ar14_switches++;
             }
             ar[ar_idx & 0x1F] = v; ar_flipflop = 0; vga_dirty = 1;
         }
@@ -489,10 +496,25 @@ void vga_render(uint32_t *out, int *wp, int *hp){
         (void)vt; (void)vd; (void)vrs; (void)vre; (void)hde;
         now = emu_now();
         fstart = per > 0.0 ? (double)(uint64_t)(now * inv) * per : now;
-        /* Score the last COMPLETE frame, not the partial current one:
-         * presents fire mid-frame, and a switch window straddling the frame
-         * start would otherwise read as a majority for the transient bank. */
-        fprev = fstart - per;
+        /* Score the last few COMPLETE frames, not just one and not the
+         * partial current one: presents fire mid-frame, so a switch window
+         * straddling the frame start would otherwise read as a majority for
+         * the transient bank (this is why "current" is excluded).
+         *
+         * A single prior frame turned out not to be enough: the flash came
+         * back reproducibly with the SoundBlaster driver off (NOSOUND), and
+         * exit-time counters (AR14 switches vs. how often the majority pick
+         * differed from the instantaneous register) showed a much lower
+         * switch rate and a far higher override rate without sound than
+         * with it - i.e. whatever interrupt chain paces the menu's AR14
+         * flip runs differently when the sound driver isn't the one timing
+         * it, with a less lopsided duty cycle, so a single 16.7 ms frame is
+         * no longer guaranteed to fall on the "majority" bank's side even
+         * though it still is the majority over a couple of ticks. Widening
+         * the window to several frames (~4, still far short of a
+         * human-visible delay) recovers the true duty cycle regardless of
+         * which driver ends up timing the flips. */
+        fprev = fstart - 4*per;
         {
             int i = 0, k, nw = 0;
             uint8_t cur = pal_sw_base, wv[4];
@@ -522,6 +544,7 @@ void vga_render(uint32_t *out, int *wp, int *hp){
             }
         }
     }
+    if(ar14_eff != ar[0x14]) vga_ar14_overrides++;
     w = (cr[0x01] + 1) * 8;
     h_log = vde() / rowh;
     split_log = (lc + 1) / rowh;
@@ -565,6 +588,7 @@ static void apply_regs(const uint8_t *c, const uint8_t *s, const uint8_t *g, con
     ar_flipflop = 0;
     timing_dirty = 1;
     pal_sw_n = 0; pal_sw_base = ar[0x14];   /* old banks are meaningless now */
+    vga_mode_resets++;
 }
 
 static const uint8_t c_text80[25] = {
