@@ -484,3 +484,56 @@ a period CRT shows 480 scanlines for both. Fix: the planar branch emits
 each row twice when scan-doubling is set (split-screen logic kept on
 logical rows), so 640×240 presents as full-height 640×480 like the
 hardware. `-nodbl` restores the old sampling.
+
+## 23. Launcher Scrolling choice ignored: a second clobber, fixed by removing it (`src/fantasies.c`, `src/dos.c`)
+
+Fallout from §5.13.1/the launcher-options poke (`WRITEUP-PHASE2.md`
+§5.13.1, `fantasies_intercept_cfg_open()`): every option except Scrolling
+reached the table correctly; Scrolling always came back Medium, in both
+the F5 menu and actual gameplay, regardless of what the launcher was set
+to.
+
+Cause, found by reading the reconstructed `INTRO.ASM`
+(`historicalsource/pinballfantasies`) against the same buffer the launcher
+pokes: right after the boot-time load of `PINBALL.CFG` -
+
+```
+CALL LOAD_TOGGLAREN
+JNC  TOGGLAREN_READY
+MOV  TOGGLAREN.S_SCROLLING,1      ; only this one field
+TOGGLAREN_READY:
+```
+
+`fantasies_intercept_cfg_open()` always makes that load fail (deliberately
+- an existing `PINBALL.CFG` is what wedges the sound driver's PLL
+calibration, per §5.13.1), and `OPENFILE`/`READFILE` never touch flags, so
+the real `INT 21h` carry reaches this `JNC` untouched and it always takes
+the "no config file" branch - the same branch a genuine fresh install
+takes. That branch only defaults `S_SCROLLING` (the game trusts zeroed
+memory for the other five fields), so it silently overwrites whatever
+Scrolling value was just poked, every boot. It also runs long before the
+F5 menu is ever drawn, which is why the menu displayed the wrong value too,
+not just the table.
+
+A first attempt corrected the byte only at the intro-to-table handoff (the
+one point `PINBALL.CFG` is written back to disk, immediately before
+`BEFORE_STARTING` relays the buffer to the table over `INT 65h` - see
+§5.13.1/§2.2 of `WRITEUP-PHASE2.md` for that relay). That fixed what the
+table received but left the menu showing Medium the whole session, since
+the menu reads the buffer long before that write happens - confirmed
+wrong by the user testing it live. Corrected at the source instead: static
+byte-scan of the shipped `INTRO.PRG` found
+
+```
+73 05 C6 06 A5 49 01   ; JNC +5 / MOV byte ptr [49A5h],1
+```
+
+as a unique match (one occurrence in the 345 KB image), target `49A5h`
+being the already-confirmed `TOGGLAREN` base `49A3h` + 2 = `S_SCROLLING`.
+`fantasies_patch_intro()` (called from `load_mz()` in `dos.c`, gated to
+`INTRO.PRG` only) NOPs the 5-byte `MOV`; the `JNC` is left alone, since
+either branch now falls into the same do-nothing bytes. Memory-only,
+signature-checked like the existing SDR patches, `-nopatch` disables it.
+Scrolling is then never touched again after the launcher's initial poke, so
+it shows correctly in the menu and reaches the table unchanged. Verified
+live: launcher set to Soft, F5 menu confirmed showing Soft.

@@ -313,3 +313,55 @@ int fantasies_intercept_cfg_open(const char *fname){
         options_cache[3],options_cache[4],options_cache[5]);
     return 1;
 }
+
+/* Scrolling gets clobbered by INTRO.PRG's own missing-config fallback.
+ * INTRO.ASM, right after the (always-failing, per
+ * fantasies_intercept_cfg_open above) boot-time load:
+ *   CALL LOAD_TOGGLAREN
+ *   JNC  TOGGLAREN_READY
+ *   MOV  TOGGLAREN.S_SCROLLING,1     ; <- only this one field
+ *   TOGGLAREN_READY:
+ * OPENFILE/READFILE never touch AH/DX flags, so the real INT 21h carry from
+ * our forced-failure open reaches this JNC untouched, and it always takes
+ * the "no config file" branch - the same branch a genuine fresh install
+ * takes.  That branch only defaults S_SCROLLING (the game trusts zeroed
+ * memory for the other five fields), so it silently overwrites whatever
+ * Scrolling value fantasies_intercept_cfg_open just poked, every boot,
+ * regardless of what the launcher chose - and it does it before the F5 menu
+ * is ever drawn, so the menu shows the wrong value too, not just the table.
+ * (An earlier version of this fix re-corrected the byte only at the
+ * intro-to-table handoff write, which fixed what the table saw but left the
+ * menu always showing Medium - the menu reads TOGGLAREN long before that
+ * write happens.  NOPing the clobber instead fixes both, since Scrolling is
+ * then simply never touched again after the initial poke.)
+ *
+ * Signature: JNC +5 (73 05) immediately followed by MOV byte ptr
+ * [imm16],1 (C6 06 lo hi 01) - the "TOGGLAREN_READY:" skip and the clobber
+ * it guards, tied together by the displacement (5) exactly matching the
+ * 5-byte instruction it jumps over.  Confirmed unique in the shipped
+ * INTRO.PRG by static byte-scan (one match, target 0x49A5 = the already-
+ * confirmed TOGGLAREN base 0x49A3 + 2 = S_SCROLLING).  NOPs just the MOV;
+ * the JNC is left alone, since either branch now falls into the same
+ * do-nothing bytes. */
+void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t imglen){
+    static const uint8_t sig[7] = {0x73,0x05,0xC6,0x06,0,0,0x01};
+    static const uint8_t mask[7] = {1,1,1,1,0,0,1};
+    char b[64];
+    uint32_t i, k;
+    if(!session_armed || dos_no_patch) return;
+    base_up(dospath, b, sizeof(b));
+    if(strcmp(b, "INTRO.PRG")) return;
+    if(load_base + imglen > RAM_SIZE) return;
+    for(i = 0; i + sizeof(sig) <= imglen; i++){
+        uint32_t at = load_base + i;
+        for(k = 0; k < sizeof(sig); k++)
+            if(mask[k] && ram[at+k] != sig[k]) break;
+        if(k == sizeof(sig)){
+            uint32_t mov_at = at + 2;
+            ram[mov_at]=0x90; ram[mov_at+1]=0x90; ram[mov_at+2]=0x90;
+            ram[mov_at+3]=0x90; ram[mov_at+4]=0x90;
+            trc("[fantasies] scrolling-default clobber NOPed at image+0x%X\n", i+2);
+            return;
+        }
+    }
+}

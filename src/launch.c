@@ -13,6 +13,22 @@
  * Ingame Music additionally never worked from the in-game menu at all (the
  * setting was ignored), so the launcher is the only place it works.
  *
+ * Ingame Music, once it reaches the table (see fantasies.c), only ever mutes
+ * music *during an actual ball in play* - confirmed against the reconstructed
+ * source (historicalsource/pinballfantasies on GitHub: FANTASIE.ASM,
+ * SDEV/STONES/PLAND/SHOW.ASM). Setting it Off makes the table's boot-time
+ * init call MUSIC_TOGGLE, which overwrites the shared S_SPRING/S_MAIN jingle
+ * slots with the "empty jingle" ID; every later PLAYJINGLE S_SPRING/S_MAIN
+ * (F1 start-of-game, NEW_BALL, ...) then plays silence. But the attract-mode
+ * background jingle - played the instant a table boots and again after every
+ * game-over or quit - is DEMO_MUSIC, and in all four tables that hardcodes
+ * PLAYJINGLE S_NOHIGH, a different, never-muted slot; muzik_off is never
+ * checked anywhere near it. So a table sitting idle always has music
+ * regardless of this setting - that is the original 1992 game, not a pfemu
+ * bug, and not something this option was ever wired to affect. Muting it too
+ * would mean patching S_NOHIGH's slot the same way, which needs a per-table
+ * signature scan (like fantasies_patch_sdr's) to locate - not done yet.
+ *
  * This build supports Pinball Fantasies only; sibling-game (Dreams/
  * Illusions) launcher support has been removed.
  *
