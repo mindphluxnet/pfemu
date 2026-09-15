@@ -525,7 +525,7 @@ int dos_exec(const char *dospath, uint16_t parblk_seg, uint32_t parblk_off,
     r = load_mz(host, &cs,&ip,&ss,&sp,&psp, env, tail, dospath);
     if(r) return r;
 
-    fantasies_on_exec(dospath);
+    fantasies_on_exec(dospath, cs);
 
     if(nproc < 8){
         procs[nproc].psp = psp;

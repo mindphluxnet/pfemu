@@ -5,7 +5,8 @@
  *
  *  - the INTRO.PRG manual-lookup image patch (memory-only, signature-checked,
  *    -nopatch disables);
- *  - the flipper fix session/exec gating (see below).
+ *  - the flipper fix session/exec gating (see below);
+ *  - the trainer hotkeys ('1'/'2', see fantasies_key_event below).
  *
  * Flipper background: the tables drive each flipper from a single level bit
  * shared by 3 keys (left: 2A/38/1D, right: 36/E0-38/E0-1D; FANTASIE.ASM KEYINT
@@ -26,6 +27,11 @@
 static int session_armed = 0;   /* user booted Fantasies (launcher or CLI equiv) */
 static int fix_on = 0;          /* a TABLE1-4.PRG is currently running */
 static char session_dir[512];   /* game directory, for the options file below */
+static int table_num = 0;              /* 1-4 while a table is running, else 0 */
+static uint32_t table_seg_base = 0;    /* linear address of that table's own CS */
+static int cheat_balls_default = 0;    /* launcher: apply infinite balls on table load */
+static int cheat_spring_default = 0;   /* launcher: apply ball-control mode on table load */
+static void fantasies_apply_cheat_defaults(void);  /* defined below, needs trainer_site */
 
 /* Upper-cased basename of a guest/host path (drives, slashes handled). */
 static void base_up(const char *path, char *out, size_t n){
@@ -45,6 +51,24 @@ static int is_table_prog(const char *base){
            base[5]>='1' && base[5]<='4' && memcmp(base+6,".PRG",4)==0;
 }
 
+/* Host-only launcher toggle file (src/launch.c writes it, checkboxes next to
+ * the F5-menu options): 2 bytes, [0]=infinite balls, [1]=ball control mode,
+ * nonzero = apply automatically the moment a table loads (see
+ * fantasies_on_exec below).  Independent of the live '1'/'2' hotkeys below -
+ * this only sets each table's *starting* state; the hotkeys still toggle
+ * from there same as always.  Kept out of the 6-byte pfemu_options.cfg blob
+ * since that one specifically mirrors PINBALL.CFG's own layout. */
+static void load_cheat_cfg(const char *dir){
+    char path[600];
+    FILE *f;
+    uint8_t b[2] = {0,0};
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_cheats.cfg", dir);
+    f = fopen(path, "rb");
+    if(f){ if(fread(b,1,2,f) != 2){ b[0]=0; b[1]=0; } fclose(f); }
+    cheat_balls_default = b[0] != 0;
+    cheat_spring_default = b[1] != 0;
+}
+
 /* Called once at startup after dir/prog are final (launcher or CLI).
  * dir is the game identity (the launcher maps FANTASY<->Fantasies); prog is
  * matched too so renamed install dirs and direct table boots (-p TABLE1.PRG)
@@ -58,24 +82,34 @@ void fantasies_begin_session(const char *dir, const char *prog){
         !strcmp(pb, "PINBALL.EXE") || !strcmp(pb, "INTRO.PRG") ||
         is_table_prog(pb);
     fix_on = 0;
+    table_num = 0; table_seg_base = 0;
     snprintf(session_dir, sizeof(session_dir), "%s", dir ? dir : "");
+    if(session_armed) load_cheat_cfg(session_dir);
     if(!session_armed) kbd_clear_held();
     trc("[fantasies] session %s (dir=%s prog=%s)\n",
         session_armed ? "armed" : "not armed", db, pb);
 }
 
-/* Called from dos_exec() for every program the guest (or main()) starts. */
-void fantasies_on_exec(const char *dospath){
+/* Called from dos_exec() for every program the guest (or main()) starts.
+ * cs_seg is the segment dos_exec() is about to run it at (from load_mz's
+ * header-relative CS, i.e. the same "load+cs" a table's own code and data
+ * are addressed from) - needed so fantasies_key_event() below can turn a
+ * table-relative trainer offset into a linear address. */
+void fantasies_on_exec(const char *dospath, uint16_t cs_seg){
     char b[64];
     const char *dot;
     if(!session_armed || dos_no_patch){
         if(fix_on){ fix_on = 0; kbd_clear_held(); }
+        table_num = 0; table_seg_base = 0;
         return;
     }
     base_up(dospath, b, sizeof(b));
     if(is_table_prog(b)){
         if(!fix_on) trc("[fantasies] flipper fix on (%s)\n", b);
         fix_on = 1;
+        table_num = b[5] - '0';
+        table_seg_base = (uint32_t)cs_seg * 16;
+        fantasies_apply_cheat_defaults();
         return;
     }
     dot = strrchr(b,'.');
@@ -84,6 +118,7 @@ void fantasies_on_exec(const char *dospath){
     if(dot && (!strcmp(dot,".PRG")||!strcmp(dot,".EXE")||!strcmp(dot,".COM"))){
         if(fix_on) trc("[fantasies] flipper fix off (%s)\n", b);
         fix_on = 0;
+        table_num = 0; table_seg_base = 0;
         kbd_clear_held();
     }
 }
@@ -364,4 +399,96 @@ void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t img
             return;
         }
     }
+}
+
+/* Trainer hotkeys, ported from trainer/PINTRN.COM (RAZOR DoX, 1994).
+ *
+ * That trainer is a packed real-mode TSR: it decompresses itself, waits for
+ * a keypress on its own banner, then hooks INT 33h (mouse) so that the very
+ * first AX=0 (mouse reset) call the game makes - which happens after the
+ * game has already installed its own direct, DOS-bypassing INT 9 handler,
+ * per FANTASIE.ASM - lets it read that INT 9 vector's segment and learn
+ * where the running table lives in memory, then splices its own INT 9
+ * handler in front of the game's.  From there it watches port 60h on every
+ * keystroke for two raw make codes and pokes the table directly:
+ *   02 ('1') - infinite balls: the table's own "dec byte ptr [balls_left]"
+ *       (opcode bytes FE 06 <lo> <hi>) NOPed out to a run of four 90s.
+ *   03 ('2') - "spring mode": a flag byte toggled between 00 and FF - once
+ *       set, the down-arrow (plunger) key keeps working at any point in
+ *       play, not just while the ball sits on the spring.
+ * Reverse-engineered by unpacking PINTRN.COM's self-decompressing stub and
+ * tracing the unpacked image (its own INT 9 handler, offset 0x180 in the
+ * unpacked file) under pfemu; both the balls-patch site and its "already
+ * patched" NOP pattern, and the exact 4-byte original bytes (including the
+ * counter address in the 2nd/3rd byte) the trainer restores on toggle-off,
+ * were confirmed byte-for-byte by reading them straight out of the shipped
+ * TABLE1-4.PRG.  These .PRG are COM-style images wrapped in a minimal EXE
+ * (0x200-byte header, header cs=0x10 i.e. a 0x100-byte fake PSP prefix
+ * inside the load image - see load_mz()), so "CS-relative offset X" here
+ * means linear = table_seg_base + X, table_seg_base being (load+cs)*16 for
+ * whichever TABLEn.PRG is currently running (fantasies_on_exec() records
+ * it).  The spring-mode flag site wasn't independently byte-verified (it's
+ * a plain data byte, not a recognisable instruction) - only inferred from
+ * being listed in the same table order as the balls site in PINTRN.COM - so
+ * it's marked lower-confidence than the balls patch, though both were
+ * ported unchanged from the trainer's own tables. */
+typedef struct {
+    uint16_t balls_off;      /* site of "dec byte ptr [balls_left]" (FE 06 lo hi) */
+    uint16_t balls_counter;  /* that instruction's operand: the counter's own offset */
+    uint16_t spring_off;     /* ball-on-spring control-mode flag byte (00/FF) */
+} TrainerSite;
+static const TrainerSite trainer_site[5] = {
+    {0,0,0},                     /* unused */
+    {0x0AED, 0x33DE, 0x25C7},    /* TABLE1.PRG */
+    {0x0A04, 0x33A4, 0x2170},    /* TABLE2.PRG */
+    {0x0994, 0x2C6E, 0x10B1},    /* TABLE3.PRG */
+    {0x0AD1, 0x38F4, 0x2A02},    /* TABLE4.PRG */
+};
+
+static void fantasies_toggle_balls(void){
+    const TrainerSite *s = &trainer_site[table_num];
+    uint32_t a = table_seg_base + s->balls_off;
+    if(a + 4 > RAM_SIZE) return;
+    if(ram[a]==0xFE && ram[a+1]==0x06){
+        ram[a]=0x90; ram[a+1]=0x90; ram[a+2]=0x90; ram[a+3]=0x90;
+        trc("[fantasies] infinite balls ON (table %d)\n", table_num);
+    } else if(ram[a]==0x90 && ram[a+1]==0x90 && ram[a+2]==0x90 && ram[a+3]==0x90){
+        ram[a]=0xFE; ram[a+1]=0x06;
+        ram[a+2]=(uint8_t)(s->balls_counter & 0xFF);
+        ram[a+3]=(uint8_t)(s->balls_counter >> 8);
+        trc("[fantasies] infinite balls OFF (table %d)\n", table_num);
+    }
+}
+
+static void fantasies_toggle_spring(void){
+    uint32_t a = table_seg_base + trainer_site[table_num].spring_off;
+    if(a >= RAM_SIZE) return;
+    if(ram[a]==0x00){
+        ram[a]=0xFF;
+        trc("[fantasies] spring/ball-control mode ON (table %d)\n", table_num);
+    } else if(ram[a]==0xFF){
+        ram[a]=0x00;
+        trc("[fantasies] spring/ball-control mode OFF (table %d)\n", table_num);
+    }
+}
+
+/* Called from dev.c's kbd_key() on every fresh (non-autorepeat) key make,
+ * host scancode already stripped of the E0 prefix bit. '1' and '2' are
+ * plain, unextended scancodes, so no E0 check is needed here. */
+void fantasies_key_event(int scancode, int down){
+    if(!down || !fantasies_fix_active() || !table_num || dos_no_patch) return;
+    if(scancode == 0x02) fantasies_toggle_balls();
+    else if(scancode == 0x03) fantasies_toggle_spring();
+}
+
+/* Called from fantasies_on_exec() the moment a table finishes loading: apply
+ * whichever cheats the launcher's checkboxes turned on, as that table's
+ * starting state (a fresh load is always unpatched, so no need to check
+ * current bytes first - just go straight to the "on" branch each toggle
+ * would have taken).  The '1'/'2' hotkeys work the same as always on top of
+ * this - it only sets where each table starts out. */
+static void fantasies_apply_cheat_defaults(void){
+    if(dos_no_patch || !table_num) return;
+    if(cheat_balls_default) fantasies_toggle_balls();
+    if(cheat_spring_default) fantasies_toggle_spring();
 }

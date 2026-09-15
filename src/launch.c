@@ -43,10 +43,12 @@
 #define GAME_DIR  "FANTASY"
 #define GAME_PROG "PINBALL.EXE"
 
-#define ID_SOUND     104
-#define ID_NOTE      105
-#define ID_LAUNCH    106
-#define ID_QUIT      107
+#define ID_SOUND        104
+#define ID_NOTE         105
+#define ID_LAUNCH       106
+#define ID_QUIT         107
+#define ID_CHEAT_BALLS  108
+#define ID_CHEAT_SPRING 109
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
@@ -175,13 +177,46 @@ static void write_pinball_cfg(const char *dir, const uint8_t in[6]){
     fclose(f);
 }
 
+/* Trainer cheats, ported from trainer/PINTRN.COM (see src/fantasies.c for
+ * the reverse-engineering writeup and the actual patch logic).  Separate
+ * 2-byte file from pfemu_options.cfg above since these aren't part of
+ * PINBALL.CFG's own layout - just a checkbox-per-cheat starting state that
+ * src/fantasies.c applies the moment a table loads. */
+static void read_cheats_cfg(const char *dir, int *balls, int *spring){
+    char path[600];
+    FILE *f;
+    uint8_t b[2] = {0,0};
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_cheats.cfg", dir);
+    f = fopen(path, "rb");
+    if(f){ if(fread(b,1,2,f) != 2){ b[0]=0; b[1]=0; } fclose(f); }
+    *balls = b[0] != 0;
+    *spring = b[1] != 0;
+}
+
+static void write_cheats_cfg(const char *dir, int balls, int spring){
+    char path[600], sub[600];
+    FILE *f;
+    uint8_t b[2];
+    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
+    CreateDirectoryA(sub, NULL);
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_cheats.cfg", dir);
+    f = fopen(path, "wb");
+    if(!f) return;
+    b[0] = (uint8_t)(balls ? 1 : 0);
+    b[1] = (uint8_t)(spring ? 1 : 0);
+    fwrite(b, 1, 2, f);
+    fclose(f);
+}
+
 /* ------------------------------------------------------------------ UI */
 typedef struct {
     int sound;              /* checkbox state */
     uint8_t cfg[6];         /* PINBALL.CFG option bytes */
+    int cheat_balls;         /* checkbox state: infinite balls */
+    int cheat_spring;         /* checkbox state: ball control mode */
     int done;               /* dialog finished */
     int ok;                 /* 1 = launch, 0 = quit */
-    HWND hSound, hOpt[6];
+    HWND hSound, hOpt[6], hCheatBalls, hCheatSpring;
     HFONT hFont;
 } LaunchState;
 
@@ -225,6 +260,23 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
             y += 26;
         }
+        y += 6;
+        c = CreateWindowExA(0,"STATIC","Trainer cheats (RAZOR DoX, 1994):",
+                            WS_CHILD|WS_VISIBLE,24,y,324,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        y += 20;
+        st->hCheatBalls = CreateWindowExA(0,"BUTTON","Infinite balls",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+                            24,y,324,20,h,(HMENU)ID_CHEAT_BALLS,cs->hInstance,0);
+        SendMessageA(st->hCheatBalls,WM_SETFONT,(WPARAM)st->hFont,0);
+        CheckDlgButton(h,ID_CHEAT_BALLS,st->cheat_balls?BST_CHECKED:BST_UNCHECKED);
+        y += 24;
+        st->hCheatSpring = CreateWindowExA(0,"BUTTON","Ball control mode",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+                            24,y,324,20,h,(HMENU)ID_CHEAT_SPRING,cs->hInstance,0);
+        SendMessageA(st->hCheatSpring,WM_SETFONT,(WPARAM)st->hFont,0);
+        CheckDlgButton(h,ID_CHEAT_SPRING,st->cheat_spring?BST_CHECKED:BST_UNCHECKED);
+        y += 30;
         c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
                             184,y+8,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
@@ -238,6 +290,10 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         int id = LOWORD(w);
         if(id==ID_SOUND){
             st->sound = IsDlgButtonChecked(h,ID_SOUND)==BST_CHECKED;
+        } else if(id==ID_CHEAT_BALLS){
+            st->cheat_balls = IsDlgButtonChecked(h,ID_CHEAT_BALLS)==BST_CHECKED;
+        } else if(id==ID_CHEAT_SPRING){
+            st->cheat_spring = IsDlgButtonChecked(h,ID_CHEAT_SPRING)==BST_CHECKED;
         } else if(id==ID_LAUNCH){
             int i;
             DWORD at = GetFileAttributesA(GAME_DIR);
@@ -253,6 +309,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                 st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_pinball_defaults[i] : sel);
             }
             write_pinball_cfg(GAME_DIR, st->cfg);
+            write_cheats_cfg(GAME_DIR, st->cheat_balls, st->cheat_spring);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -276,7 +333,7 @@ int show_launcher(LaunchChoice *out){
     MSG msg;
     LaunchState st;
     int sw, sh;
-    const int winw = 372, winh = 340;
+    const int winw = 372, winh = 400;
     memset(&wc,0,sizeof(wc));
     memset(&st,0,sizeof(st));
     wc.lpfnWndProc = launch_proc;
@@ -287,6 +344,7 @@ int show_launcher(LaunchChoice *out){
     RegisterClassA(&wc);
     st.sound = read_sound_is_sb(GAME_DIR);
     read_pinball_cfg(GAME_DIR, st.cfg);
+    read_cheats_cfg(GAME_DIR, &st.cheat_balls, &st.cheat_spring);
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                            CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,

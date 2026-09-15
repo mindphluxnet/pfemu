@@ -232,6 +232,7 @@ void kbd_key(int scancode, int down){
             }
         } else {
             kbd_held[idx] = 1;
+            if(!ext) fantasies_key_event(sc, 1);
         }
         if(ext){
             if(!kbd_ensure(2)){ trc("[kbd] DROP make E0 %02X (queue full)\n", sc); return; }
