@@ -558,6 +558,68 @@ original behaviour. Verified equivalent: patching the file with `-nopatch`, and
 patching in memory with a pristine file, reach the same screen and accept the
 same input.
 
+*(Superseded - see §5.13.1: this JNC→JMP edit is no longer applied. It is
+described here because it is what §5.13.1 investigates and replaces.)*
+
+## 5.13.1 The screen only had to appear once - and where PINBALL.CFG comes from
+
+Three things noticed in play sent this back open: the manual-lookup screen
+only ever appeared once per install, answering it modified `INTRO.MOD`, and a
+`PINBALL.CFG` sometimes appeared in `PFEMU-STATE/` and sometimes didn't. None
+of it is a pfemu defect - all three are the original game's own persistence,
+now visible working exactly as designed because the write-overlay (Integrity
+note, above) stopped every write from corrupting the installed files.
+
+**The "already answered" flag lives inside `INTRO.MOD` itself.** Traced live
+with `-dosdbg`: at boot, `INTRO.PRG` opens `Intro.Mod`, seeks to file offset
+252,868 (`AH=42h`, `CX:DX = 0003:DBC4`) and reads exactly 2 bytes (image
+offset `0x36643`) - the last two bytes of the 252,870-byte file, the same
+"20 bytes shorter than the header implies" tail noted in §10, and the same
+two bytes the Integrity note already knew got rewritten. Direct experiment
+pinned the semantics down: the shipped file's real tail is `2B 3F`; after
+passing the check once, the write-overlay copy's tail reads `20 01`; deleting
+that copy so `INTRO.PRG` sees the pristine `2B 3F` again reproduces the
+screen; passing it a second time writes back the identical `20 01`. So it is
+a fixed sentinel, not a checksum of what was typed: pass once and the
+sentinel gets written to the overlay copy, every later boot reads it back and
+skips the screen, and "restoring `INTRO.MOD`" (or just deleting the
+`PFEMU-STATE` copy) throws the sentinel away, which is indistinguishable from
+a fresh install as far as `INTRO.PRG` is concerned.
+
+**`PINBALL.CFG` is written exactly once, at the intro-to-table handoff.**
+Also caught with `-dosdbg`: immediately before `INTRO.PRG` terminates and the
+launcher EXECs the chosen `Table<n>.Prg`, `INTRO.PRG` does `AH=3Ch` create,
+`AH=40h` write 6 bytes, `AH=3Eh` close on `PINBALL.CFG` - the same 6-byte
+launcher-state blob from §2.2, persisted to disk at the one moment the intro
+process is about to go away. It is never written during boot and never
+written if the emulator is closed from the intro or the table-select menu;
+only picking a table and letting the handoff run creates or updates it. That
+fully explains the "occasionally": it tracks how far the session got, not
+anything nondeterministic.
+
+**Replacing the CRACK.COM-style patch.** §5.13's image patch (JNC → JMP in
+the word-matching loop) only ever forced *acceptance* of whatever was typed -
+it never touched the flag check above it, so the screen still had to be
+drawn once per fresh `INTRO.MOD`, and passing it still triggered the write.
+With the flag's storage location, read site and sentinel value now known
+exactly, `fantasies_filter_read()` (`src/fantasies.c`) intercepts the DOS
+layer instead of the loaded image: any read of exactly 2 bytes at file
+offset 252868 of `Intro.Mod`, in an armed Fantasies session, without
+`-nopatch`, is rewritten to the `20 01` sentinel before it reaches guest
+memory. `INTRO.PRG` believes the check already passed before it ever draws
+the screen - no prompt at all, from a pristine `INTRO.MOD` or not, and no
+write-back, since the write lives inside the screen code that now never
+runs. The old image patch (§5.13) is removed rather than kept alongside it.
+`-nopatch` disables the new interception the same way it disabled the old
+patch.
+
+Verified headless: reset `PFEMU-STATE` to a never-played state, booted with
+`-dosdbg`, and confirmed the interception firing, the boot reaching
+table-select and into Table 1 with zero manual-check keystrokes, and the
+overlay copy of `Intro.Mod` (created because `INTRO.PRG` opens it read/write
+regardless - unrelated to this patch) staying byte-identical to the original
+- nothing was written back.
+
 ## 5.14 The boot black screen, and shortening it
 
 The ~5 s of black before the first intro screen (also present on period
@@ -706,8 +768,9 @@ first:
    PIT.
 4. **No x87.** The intro executes a handful of x87 escapes; they are logged and
    skipped. Nothing visibly depends on them.
-5. **The manual-lookup protection is patched out of the loaded image** (§5.13),
-   rather than being answered. `-nopatch` turns that off.
+5. **The manual-lookup protection is defeated by forging its own "already
+   answered" flag** in `Intro.Mod` (§5.13.1), rather than being patched or
+   answered. `-nopatch` turns that off.
 6. ~~The sound-driver PLL calibration is short-circuited~~ — tried, reverted
    (§5.14.1): the shortcut wrote a preset result to a memory address computed
    from a constant in the `.SDR` file rather than from where the driver
@@ -737,8 +800,10 @@ first:
   in the window — everything keyboard-related works.
 * The score panel is rendered through the CRTC's split-screen (line compare)
   register and comes out as the correct amber dot-matrix display.
-* **The manual-lookup protection**, defeated in the loaded image rather than on
-  disk (§5.13). `FANTASY/INTRO.PRG` is byte-for-byte as it shipped.
+* **The manual-lookup protection**, defeated by forging the "already
+  answered" flag `INTRO.PRG` itself checks in `Intro.Mod`, rather than by
+  patching the loaded image or answering the screen (§5.13.1). Neither
+  `FANTASY/INTRO.PRG` nor `FANTASY/INTRO.MOD` is ever modified.
 * **Music, through the whole game.** With `SOUND.CFG` set to `SBLASTER.SDR`
   (base 220h, IRQ 7) the game's own MOD mixer plays through an emulated 8237
   DMA channel and Sound Blaster DSP, out to Win32 `waveOut` at 12,048 Hz —

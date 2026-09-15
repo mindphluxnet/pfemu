@@ -213,18 +213,32 @@ void fantasies_patch_sdr(uint32_t load_base, uint32_t imglen){
     }
 }
 
-/* INTRO.PRG manual-lookup protection, patched in the loaded image rather
- * than on disk (moved verbatim from dos.c): INTRO.PRG asks for a word from
- * the manual and branches on the result with a JNC; CRACK.COM (which shipped
- * with the game) turns that into a JMP.  The signature check means a
- * different build is left alone instead of being corrupted. */
-void fantasies_patch_image(uint32_t load_base, uint32_t imglen){
-    if(!dos_no_patch && imglen > 238210){
-        static const uint8_t sig[6] = { 0x81, 0xFB, 0xE7, 0x51, 0x73, 0x32 };
-        uint32_t at = load_base + 238204;
-        if(memcmp(&ram[at], sig, sizeof(sig)) == 0){
-            ram[at + 4] = 0xEB;                     /* JNC -> JMP */
-            trc("[dos] manual check patched in memory at image+238208\n");
-        }
-    }
+/* INTRO.PRG's own "have I already passed the manual check" flag, read once
+ * at boot: it opens Intro.Mod, seeks to file offset 252868 (the last two
+ * bytes of a 252,870-byte file - two bytes of the last music sample, per
+ * WRITEUP-PHASE2.md) and reads them (traced live: open/seek(0x3DBC4)/read(2)
+ * back to back, image offset 0x36643, nowhere near the sound driver's own
+ * bulk reads of the same file).  If they read back as the "passed" sentinel
+ * the screen never appears; if it correctly plays through and is answered,
+ * INTRO.PRG rewrites those two bytes to the sentinel so future boots skip
+ * it.  Confirmed by direct experiment: the shipped file's real tail is
+ * 2B 3F; after passing the check once (back when a CRACK.COM-style JNC->JMP
+ * edit in the loaded image forced acceptance of whatever was typed - see
+ * WRITEUP-PHASE2.md §5.13/§5.13.1) the write-overlay copy's tail reads
+ * 20 01; deleting that copy so INTRO.PRG sees the original 2B 3F again
+ * reproduces the screen, and passing it once more rewrites the identical
+ * 20 01 - so it is a fixed sentinel, not a checksum of what was typed.
+ *
+ * Forcing every read of exactly those two bytes to 20 01 makes INTRO.PRG
+ * believe the check already passed before it ever draws the screen, on a
+ * pristine INTRO.MOD or otherwise - no prompt, and nothing gets written
+ * back, since the code path that writes the sentinel is inside the screen
+ * that now never runs.  Replaces the old image patch entirely (removed). */
+void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len){
+    char up[16];
+    if(!session_armed || dos_no_patch || len != 2 || pos != 252868) return;
+    base_up(fname, up, sizeof(up));
+    if(strcmp(up, "INTRO.MOD")) return;
+    buf[0] = 0x20; buf[1] = 0x01;
+    trc("[fantasies] manual check flag forced to 'answered' (Intro.Mod+252868)\n");
 }

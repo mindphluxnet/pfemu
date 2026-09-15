@@ -270,7 +270,9 @@ branch. The xring named it: PD's manual-lookup protection (routine at image
 `0x6FB3`: prints page/line/word prompts, reads the word via `INT 21h
 AH=0Ah`, uppercases and checksums it, `JE` to pass at image+`0x7020`,
 retries then silent exit on failure). Two fixes, same pattern as the
-Fantasies §5.13 protection:
+original Fantasies §5.13 protection (since superseded by a DOS-layer flag
+forge - WRITEUP-PHASE2.md §5.13.1 - once it turned out Fantasies' own check
+could be defeated without touching the loaded image at all):
 
 - `INT 21h AH=0Ah` (buffered line input) is now properly implemented in
   `src/dos.c` (was an instant-empty stub, which guaranteed failure): reads

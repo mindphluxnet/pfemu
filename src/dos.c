@@ -469,8 +469,15 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
 
         /* Game-specific image patches (memory-only, signature-checked,
          * -nopatch disables).  Implemented per game in src/fantasies.c and
-         * src/dreams.c; dos.c only dispatches. */
-        fantasies_patch_image((uint32_t)load*16, imglen);
+         * src/dreams.c; dos.c only dispatches.
+         *
+         * Fantasies' manual-lookup check is no longer handled here: the old
+         * CRACK.COM-style JNC->JMP edit only forced acceptance of whatever
+         * was typed at the screen, so the screen still appeared once per
+         * fresh INTRO.MOD and still rewrote it on "success".  Replaced by
+         * fantasies_filter_read() (called from the AH=3Fh handler below),
+         * which makes INTRO.PRG believe the check already passed before it
+         * ever draws the screen - see WRITEUP-PHASE2.md §5.13.1. */
         dreams_patch_image((uint32_t)load*16, imglen);
         /* fantasies_patch_sdr() (SDR PLL seed preset + pass-1 skip) is
          * disabled: it computes a "poke" address from a segment immediate
@@ -836,8 +843,10 @@ void dos_int21(void){
         if(h>=64 || !fh[h].used){ AX=6; bios_set_cf(1); break; }
         {
             static uint8_t buf[65536];
+            long pos = ftell(fh[h].f);
             size_t got = fread(buf, 1, n, fh[h].f);
             uint32_t i;
+            fantasies_filter_read(fh[h].name, pos, buf, (int)got);
             for(i=0;i<got;i++) mem_w8(a+i, buf[i]);
             AX = (uint16_t)got; bios_set_cf(0);
         }
