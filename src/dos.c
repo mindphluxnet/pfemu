@@ -804,8 +804,20 @@ void dos_int21(void){
     case 0x3B: bios_set_cf(0); break;
     case 0x3C: case 0x3D: {
         char name[260], host[512];
-        int h = alloc_handle();
+        int h;
         read_dosstr(cpu.sbase[S_DS] + DX, name, sizeof(name));
+        /* Fantasies only, AH=3Dh (open existing) only: pretend PINBALL.CFG
+         * isn't there and poke the launcher's chosen options straight into
+         * INTRO.PRG's own buffer instead.  See fantasies.c - this keeps
+         * boot-time instruction timing identical to a fresh install (the
+         * one case already proven not to wedge the sound driver's PLL
+         * calibration), regardless of what's actually on disk. */
+        if(AH==0x3D && fantasies_intercept_cfg_open(name)){
+            AX = 2; bios_set_cf(1);
+            trc("[dos] open '%s' intercepted (Fantasies options poke)\n", name);
+            break;
+        }
+        h = alloc_handle();
         dos_path(name, host, sizeof(host));
         if(h<0){ AX = 4; bios_set_cf(1); break; }
         {

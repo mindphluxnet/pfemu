@@ -108,6 +108,7 @@ void fantasies_begin_session(const char *dir, const char *prog);
 void fantasies_on_exec(const char *dospath);
 void fantasies_patch_sdr(uint32_t load_base, uint32_t imglen);
 void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len);
+int  fantasies_intercept_cfg_open(const char *fname);
 int  fantasies_fix_active(void);
 int  fantasies_session_armed(void);
 void dreams_patch_image(uint32_t load_base, uint32_t imglen);

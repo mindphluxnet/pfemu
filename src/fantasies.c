@@ -25,6 +25,7 @@
 
 static int session_armed = 0;   /* user booted Fantasies (launcher or CLI equiv) */
 static int fix_on = 0;          /* a TABLE1-4.PRG is currently running */
+static char session_dir[512];   /* game directory, for the options file below */
 
 /* Upper-cased basename of a guest/host path (drives, slashes handled). */
 static void base_up(const char *path, char *out, size_t n){
@@ -57,6 +58,7 @@ void fantasies_begin_session(const char *dir, const char *prog){
         !strcmp(pb, "PINBALL.EXE") || !strcmp(pb, "INTRO.PRG") ||
         is_table_prog(pb);
     fix_on = 0;
+    snprintf(session_dir, sizeof(session_dir), "%s", dir ? dir : "");
     if(!session_armed) kbd_clear_held();
     trc("[fantasies] session %s (dir=%s prog=%s)\n",
         session_armed ? "armed" : "not armed", db, pb);
@@ -241,4 +243,73 @@ void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len){
     if(strcmp(up, "INTRO.MOD")) return;
     buf[0] = 0x20; buf[1] = 0x01;
     trc("[fantasies] manual check flag forced to 'answered' (Intro.Mod+252868)\n");
+}
+
+/* Launcher options, poked straight into INTRO.PRG's memory instead of going
+ * through PINBALL.CFG on disk.
+ *
+ * Why: INTRO.PRG reads PINBALL.CFG once at boot (DS:49A3, 6 bytes - the same
+ * buffer the F5 options menu edits and the intro-to-table handoff writes
+ * back, WRITEUP-PHASE2.md Sec 2.2/5.13.1).  Confirmed by direct A/B testing
+ * (many repeated table loads, unmodified emulator, nothing else changed):
+ * whenever that boot-time read finds a file and succeeds, the extra DOS
+ * calls it costs (open+read+close vs. the single failed open of a fresh
+ * install) are enough to reliably keep the table's own sound-driver PLL
+ * calibration from ever converging - the reload search just never locks,
+ * regardless of what's actually in the file.  A fresh install, where the
+ * open always fails, never does this.  (A watchdog that detected the wedge
+ * from inside vga_status1/pit_write and kicked the emulated clock forward
+ * was tried; A/B testing showed it made things *worse* than doing nothing -
+ * it was tripping on legitimate PIT activity and destabilising boots that
+ * would have converged fine on their own - so it was removed rather than
+ * tuned further.  This interception is the actual, measured fix.)  So
+ * rather than writing PINBALL.CFG and hoping the resonance doesn't hit, the
+ * launcher writes its choices to a host-only file DOS never sees, and this
+ * makes every boot-time PINBALL.CFG open fail exactly like a fresh install
+ * always has - while poking the launcher's values into the same buffer the
+ * moment that open would have happened, so the menu (if opened) and the
+ * table handoff both see them.
+ * Zero extra guest instructions either way, so boot timing is identical to
+ * the one case already proven reliable.
+ *
+ * Byte layout (index = display order in the F5 menu, confirmed empirically
+ * by dumping this buffer against what the menu showed for each):
+ *   0 Balls        0=3      1=5
+ *   1 Angle        0=High   1=Low
+ *   2 Scrolling    0=Hard   1=Medium  2=Soft
+ *   3 Ingame Music 0=On     1=Off
+ *   4 Resolution   0=Normal 1=High
+ *   5 Color Mode   0=Color  1=Mono
+ * This is also the game's own hardcoded default (options_cache below). */
+#define PINBALL_CFG_BUF_OFFSET 0x49A3
+static uint8_t options_cache[6] = {0,0,1,0,0,0};
+static int options_loaded = 0;
+
+static void load_options_cache(void){
+    static const uint8_t defaults[6] = {0,0,1,0,0,0};
+    char path[600];
+    FILE *f;
+    options_loaded = 1;
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", session_dir);
+    f = fopen(path, "rb");
+    if(!f) return;
+    if(fread(options_cache, 1, 6, f) != 6)
+        memcpy(options_cache, defaults, 6);
+    fclose(f);
+}
+
+int fantasies_intercept_cfg_open(const char *fname){
+    char up[16];
+    uint32_t a;
+    int i;
+    if(!session_armed || dos_no_patch) return 0;
+    base_up(fname, up, sizeof(up));
+    if(strcmp(up, "PINBALL.CFG")) return 0;
+    if(!options_loaded) load_options_cache();
+    a = cpu.sbase[S_DS] + PINBALL_CFG_BUF_OFFSET;
+    for(i=0;i<6;i++) mem_w8(a+(uint32_t)i, options_cache[i]);
+    trc("[fantasies] options poked at %05X: %02X %02X %02X %02X %02X %02X\n", a,
+        options_cache[0],options_cache[1],options_cache[2],
+        options_cache[3],options_cache[4],options_cache[5]);
+    return 1;
 }

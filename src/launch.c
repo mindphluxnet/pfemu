@@ -1,11 +1,20 @@
-/* Win32 launcher: game picker + sound toggle, shown once at startup.
+/* Win32 launcher: startup dialog for Pinball Fantasies.
  *
- * The emulator used to boot straight into Pinball Fantasies.  This dialog
- * lets the user pick the game (Fantasies/Dreams/Illusions) and, for the
- * games with Frontline-style sound drivers, turn SoundBlaster sound on or
- * off without running the SETSOUND utility: the checkbox writes SOUND.CFG
- * directly into the game's PFEMU-STATE/ overlay directory, so the installed
- * files are never touched and the game picks it up on its next boot.
+ * Lets the user turn SoundBlaster sound on/off (writes SOUND.CFG, read
+ * directly by the game) and set every option from the game's own F5
+ * in-game menu, without ever having to open that menu.  Unlike SOUND.CFG,
+ * the options are NOT written to PINBALL.CFG for the game to read - see the
+ * big comment above read_pinball_cfg() below for why, and src/fantasies.c
+ * for the other half (the boot-time interception that actually applies
+ * them).  Short version: an existing PINBALL.CFG at boot can wedge the
+ * sound driver's PLL calibration into a busy-wait that never terminates,
+ * a pfemu timing-emulation issue rather than a bug in the values, so they
+ * go into a host-only file instead and get poked into memory directly.
+ * Ingame Music additionally never worked from the in-game menu at all (the
+ * setting was ignored), so the launcher is the only place it works.
+ *
+ * This build supports Pinball Fantasies only; sibling-game (Dreams/
+ * Illusions) launcher support has been removed.
  *
  * main() skips the dialog for explicit/automated runs (see -nolauncher,
  * -p, -setup, -secs handling there).
@@ -15,44 +24,14 @@
 #include <stdio.h>
 #include "pfemu.h"
 
-#define ID_GAME_FAN  101
-#define ID_GAME_DRM  102
-#define ID_GAME_ILL  103
+#define GAME_DIR  "FANTASY"
+#define GAME_PROG "PINBALL.EXE"
+
 #define ID_SOUND     104
 #define ID_NOTE      105
 #define ID_LAUNCH    106
 #define ID_QUIT      107
-#define ID_NAMELBL   108
-#define ID_NAME      109
-#define ID_SERLBL    110
-#define ID_SERIAL    111
-
-typedef struct {
-    const char *dir;      /* game directory (FANTASY/DREAMS/ILLUSION) */
-    const char *prog;     /* program to boot */
-    int has_sound_toggle; /* checkbox applies to this game */
-    int needs_install_sys;/* game requires install.sys (see below) */
-} GameDef;
-
-static const GameDef games[] = {
-    { "FANTASY",  "PINBALL.EXE", 1, 0 },
-    /* Dreams boots PD.EXE directly: DREAMS.COM is only a BAT2EXEC memory
-     * check (CHKMEM, 530k gate), meaningless under emulation. */
-    { "DREAMS",   "PD.EXE",       0, 1 },
-    /* Illusions: listed for planning; boot support is not there yet. */
-    { "ILLUSION", "illusion.exe", 1, 0 },
-};
-
-typedef struct {
-    int sel;        /* index into games[] */
-    int sound;      /* checkbox state */
-    int done;       /* dialog finished */
-    int ok;         /* 1 = launch, 0 = quit */
-    char name[21];  /* Dreams user name (max 20) */
-    char serial[9]; /* Dreams serial (max 8) */
-    HWND hSound, hNote, hNameLbl, hName, hSerLbl, hSerial;
-    HFONT hFont;
-} LaunchState;
+#define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
 /* Sound off: byte-identical to what SETSOUND writes for NOSOUND.SDR. */
@@ -108,101 +87,87 @@ int read_sound_is_sb(const char *dir){
     return 0;
 }
 
-/* ------------------------------------------------- install.sys stub */
-/* Pinball Dreams refuses to boot without \install.sys: PD.EXE loads it
- * first thing (whole file into memory, serial/user parsed from it) and
- * takes a silent INT 21h 4C00 exit when the open fails.  The exact layout
- * comes from the original INSTALL.COM (now in DREAMS/): it collects the
- * username into buffer 0x730 and the serial into 0x744 — offsets inside
- * the 29-byte file buffer at 0x72F — then bumps byte 0 (install counter,
- * "Maximum installations reached" at 3) and writes 0x1D bytes, but NOT
- * before running every byte through `xor al,0FFh` (routine at 0x20A5;
- * the read path decodes the same way at 0x20B3).  So on disk:
- * byte 0 = NOT(install count), bytes 1-20 = NOT(username, NUL-padded),
- * bytes 21-28 = NOT(serial).  The earlier plaintext guess displayed
- * bitwise-inverted = "garbled".
+/* --------------------------------------------------- launcher options I/O
  *
- * Provided through the PFEMU-STATE overlay (game reads prefer the overlay
- * copy, same mechanism as src/dos.c) so installed files stay pristine.
- * A real installer file always wins; anything else (missing, or a stale
- * plaintext guess, detected by decoding byte 0 and expecting install
- * count 1-3) is rewritten from the GUI fields. */
-static int file_exists(const char *p){
-    FILE *f = fopen(p, "rb");
-    if(f){ fclose(f); return 1; }
-    return 0;
-}
+ * These six option bytes mirror the layout of the 6-byte blob INTRO.PRG's
+ * own F5 menu edits in place and writes to PINBALL.CFG at the intro-to-
+ * table handoff (WRITEUP-PHASE2.md Sec 2.2, 5.13.1) - but this launcher
+ * does NOT write PINBALL.CFG itself.  Whenever INTRO.PRG's boot-time read of
+ * an *existing* PINBALL.CFG succeeds, the extra DOS calls that costs versus
+ * a fresh install (where the open just fails) are frequently enough to keep
+ * a table's sound-driver PLL calibration from ever converging - a pfemu
+ * timing-emulation issue, not a bug in these values.  Confirmed by direct
+ * A/B testing: the unmodified emulator reliably loads tables when
+ * PINBALL.CFG has never existed, and reliably wedges once one exists and
+ * gets read at boot, regardless of what's in it.  (A watchdog that detected
+ * the wedge and kicked the emulated clock forward was tried and measured
+ * worse than doing nothing - it was tripping on legitimate PIT activity
+ * unrelated to the calibration and destabilising boots that would have
+ * converged fine on their own, so it was removed rather than tuned
+ * further.)  So the launcher writes these bytes to a host-only file DOS
+ * never opens; src/fantasies.c makes every boot-time PINBALL.CFG open fail
+ * like a fresh install always has, and pokes these bytes into INTRO.PRG's
+ * own buffer at that exact moment instead - zero extra guest instructions,
+ * so boot timing stays identical to the one case already proven reliable.
+ *
+ * Byte order and values confirmed empirically, one option at a time, by
+ * dumping the live in-memory buffer (DS:49A3 in INTRO.PRG, so linear 062E3)
+ * against what the F5 menu displayed for each:
+ *
+ *   0  Balls          0 = 3          1 = 5
+ *   1  Angle          0 = High       1 = Low
+ *   2  Scrolling      0 = Hard       1 = Medium   2 = Soft
+ *   3  Ingame Music   0 = On         1 = Off
+ *   4  Resolution     0 = Normal     1 = High
+ *   5  Color Mode     0 = Color      1 = Mono
+ *
+ * This is also the game's own hardcoded default (a fresh install with no
+ * PINBALL.CFG on disk boots with the buffer already at 00 00 01 00 00 00). */
+static const uint8_t cfg_pinball_defaults[6] = {0,0,1,0,0,0};
 
-/* 1 when path holds a properly encoded install.sys (decoded byte 0 = sane
- * install count). */
-static int install_sys_valid(const char *p){
-    FILE *f = fopen(p, "rb");
-    int c;
-    if(!f) return 0;
-    c = fgetc(f);
-    fclose(f);
-    if(c == EOF) return 0;
-    c ^= 0xFF;
-    return c >= 1 && c <= 3;
-}
+typedef struct { const char *label; const char *values[3]; int n; } OptDef;
+static const OptDef opts[6] = {
+    { "Balls:",        {"3","5",NULL},                 2 },
+    { "Angle:",        {"High","Low",NULL},             2 },
+    { "Scrolling:",    {"Hard","Medium","Soft"},         3 },
+    { "Ingame Music:", {"On","Off",NULL},                2 },
+    { "Resolution:",   {"Normal","High",NULL},           2 },
+    { "Color Mode:",   {"Color","Mono",NULL},            2 },
+};
 
-/* Decode an existing install.sys into the GUI fields so relaunching keeps
- * the user's name/serial instead of resetting them.  Returns 1 on success. */
-static int read_install_sys(const char *dir, char *name, char *serial){
-    char ov[600], orig[600];
-    FILE *f = NULL;
-    uint8_t buf[29];
-    size_t n;
-    int i, j;
-    snprintf(ov, sizeof(ov), "%s/PFEMU-STATE/install.sys", dir);
-    snprintf(orig, sizeof(orig), "%s/install.sys", dir);
-    if(install_sys_valid(ov)) f = fopen(ov, "rb");
-    else if(install_sys_valid(orig)) f = fopen(orig, "rb");
-    if(!f) return 0;
-    n = fread(buf, 1, sizeof(buf), f);
-    fclose(f);
-    if(n < 29) return 0;
-    for(i=0;i<29;i++) buf[i] ^= 0xFF;
-    for(i=0, j=0; i<20 && buf[1+i] >= 0x20 && buf[1+i] < 0x7F; i++, j++)
-        name[j] = (char)buf[1+i];
-    name[j] = 0;
-    for(i=0, j=0; i<8 && buf[21+i] >= 0x20 && buf[21+i] < 0x7F; i++, j++)
-        serial[j] = (char)buf[21+i];
-    serial[j] = 0;
-    return 1;
-}
-
-static void ensure_install_sys(const char *dir, const char *name,
-                               const char *serial){
-    char ov[600], orig[600], sub[600];
+/* Host-only staging file: read by src/fantasies.c's boot-time interception,
+ * never opened by the guest. */
+static void read_pinball_cfg(const char *dir, uint8_t out[6]){
+    char path[600];
     FILE *f;
-    uint8_t buf[29];
-    int i;
-    snprintf(ov, sizeof(ov), "%s/PFEMU-STATE/install.sys", dir);
-    snprintf(orig, sizeof(orig), "%s/install.sys", dir);
-    if(install_sys_valid(orig)) return;
-    if(install_sys_valid(ov)) return;
+    size_t n = 0;
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", dir);
+    f = fopen(path, "rb");
+    if(f){ n = fread(out, 1, 6, f); fclose(f); }
+    if(n < 6) memcpy(out, cfg_pinball_defaults, 6);
+}
+
+static void write_pinball_cfg(const char *dir, const uint8_t in[6]){
+    char path[600], sub[600];
+    FILE *f;
     snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
     CreateDirectoryA(sub, NULL);
-    memset(buf, 0, sizeof(buf));
-    buf[0] = 1;
-    for(i=0;i<20 && name[i];i++) buf[1+i] = (uint8_t)name[i];
-    for(i=0;i<8 && serial[i];i++) buf[21+i] = (uint8_t)serial[i];
-    for(i=0;i<29;i++) buf[i] ^= 0xFF;
-    f = fopen(ov, "wb");
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", dir);
+    f = fopen(path, "wb");
     if(!f) return;
-    fwrite(buf, 1, sizeof(buf), f);
+    fwrite(in, 1, 6, f);
     fclose(f);
 }
 
 /* ------------------------------------------------------------------ UI */
-static void note_for(HWND hNote, int sel){
-    if(sel==1)
-        SetWindowTextA(hNote, "Dreams: sound is chosen in-game (F1/F2 menu).");
-    else
-        SetWindowTextA(hNote, "On: SoundBlaster 220h/IRQ 7. Off: silent.\r\n"
-                              "Writes SOUND.CFG, game files stay pristine.");
-}
+typedef struct {
+    int sound;              /* checkbox state */
+    uint8_t cfg[6];         /* PINBALL.CFG option bytes */
+    int done;               /* dialog finished */
+    int ok;                 /* 1 = launch, 0 = quit */
+    HWND hSound, hOpt[6];
+    HFONT hFont;
+} LaunchState;
 
 static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     LaunchState *st = (LaunchState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
@@ -210,97 +175,68 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     case WM_CREATE: {
         CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
         HWND c;
+        int i, y;
         SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         st = (LaunchState*)cs->lpCreateParams;
         st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-        c = CreateWindowExA(0,"STATIC","Game:",WS_CHILD|WS_VISIBLE,
+        c = CreateWindowExA(0,"STATIC","Pinball Fantasies",WS_CHILD|WS_VISIBLE,
                             12,12,336,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        c = CreateWindowExA(0,"BUTTON","Pinball Fantasies",
-                            WS_CHILD|WS_VISIBLE|WS_GROUP|WS_TABSTOP|BS_AUTORADIOBUTTON,
-                            24,32,324,20,h,(HMENU)ID_GAME_FAN,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        c = CreateWindowExA(0,"BUTTON","Pinball Dreams",
-                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
-                            24,54,324,20,h,(HMENU)ID_GAME_DRM,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        c = CreateWindowExA(0,"BUTTON","Pinball Illusions (not yet supported)",
-                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON|WS_DISABLED,
-                            24,76,324,20,h,(HMENU)ID_GAME_ILL,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        CheckRadioButton(h,ID_GAME_FAN,ID_GAME_ILL,ID_GAME_FAN);
         st->hSound = CreateWindowExA(0,"BUTTON","Sound on (SoundBlaster)",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,104,324,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
+                            24,36,324,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
         SendMessageA(st->hSound,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
-        st->hNote = CreateWindowExA(0,"STATIC","",
+        c = CreateWindowExA(0,"STATIC",
+                            "On: SoundBlaster 220h/IRQ 7. Off: silent.\r\n"
+                            "Writes SOUND.CFG, game files stay pristine.",
                             WS_CHILD|WS_VISIBLE,
-                            24,128,324,28,h,(HMENU)ID_NOTE,cs->hInstance,0);
-        SendMessageA(st->hNote,WM_SETFONT,(WPARAM)st->hFont,0);
-        note_for(st->hNote,0);
-        c = CreateWindowExA(0,"STATIC","User name:",
-                            WS_CHILD|WS_VISIBLE,
-                            24,158,80,16,h,(HMENU)ID_NAMELBL,cs->hInstance,0);
+                            24,60,324,28,h,(HMENU)ID_NOTE,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        st->hNameLbl = c;
-        st->hName = CreateWindowExA(0,"EDIT","",
-                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,
-                            110,156,238,20,h,(HMENU)ID_NAME,cs->hInstance,0);
-        SendMessageA(st->hName,WM_SETFONT,(WPARAM)st->hFont,0);
-        SendMessageA(st->hName,EM_SETLIMITTEXT,20,0);
-        SetWindowTextA(st->hName,st->name);
-        c = CreateWindowExA(0,"STATIC","Serial no:",
-                            WS_CHILD|WS_VISIBLE,
-                            24,182,80,16,h,(HMENU)ID_SERLBL,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        st->hSerLbl = c;
-        st->hSerial = CreateWindowExA(0,"EDIT","",
-                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,
-                            110,180,238,20,h,(HMENU)ID_SERIAL,cs->hInstance,0);
-        SendMessageA(st->hSerial,WM_SETFONT,(WPARAM)st->hFont,0);
-        SendMessageA(st->hSerial,EM_SETLIMITTEXT,8,0);
-        SetWindowTextA(st->hSerial,st->serial);
-        EnableWindow(st->hNameLbl,FALSE); EnableWindow(st->hName,FALSE);
-        EnableWindow(st->hSerLbl,FALSE); EnableWindow(st->hSerial,FALSE);
+        y = 96;
+        for(i=0;i<6;i++){
+            int k;
+            c = CreateWindowExA(0,"STATIC",opts[i].label,WS_CHILD|WS_VISIBLE,
+                                24,y+3,100,16,h,0,cs->hInstance,0);
+            SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+            st->hOpt[i] = CreateWindowExA(0,"COMBOBOX","",
+                                WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|
+                                CBS_DROPDOWNLIST,
+                                128,y,120,200,h,(HMENU)(INT_PTR)(ID_OPT_FIRST+i),cs->hInstance,0);
+            SendMessageA(st->hOpt[i],WM_SETFONT,(WPARAM)st->hFont,0);
+            for(k=0;k<opts[i].n;k++)
+                SendMessageA(st->hOpt[i],CB_ADDSTRING,0,(LPARAM)opts[i].values[k]);
+            SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
+            y += 26;
+        }
         c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
-                            184,208,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
+                            184,y+8,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         c = CreateWindowExA(0,"BUTTON","Quit",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            272,208,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
+                            272,y+8,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         return 0; }
     case WM_COMMAND: {
         int id = LOWORD(w);
-        if(id==ID_GAME_FAN || id==ID_GAME_DRM){
-            int dreams;
-            st->sel = (id==ID_GAME_DRM)?1:0;
-            CheckRadioButton(h,ID_GAME_FAN,ID_GAME_ILL,id);
-            EnableWindow(st->hSound, games[st->sel].has_sound_toggle);
-            dreams = games[st->sel].needs_install_sys;
-            EnableWindow(st->hNameLbl,dreams); EnableWindow(st->hName,dreams);
-            EnableWindow(st->hSerLbl,dreams); EnableWindow(st->hSerial,dreams);
-            note_for(st->hNote, st->sel);
-        } else if(id==ID_SOUND){
+        if(id==ID_SOUND){
             st->sound = IsDlgButtonChecked(h,ID_SOUND)==BST_CHECKED;
         } else if(id==ID_LAUNCH){
-            DWORD at = GetFileAttributesA(games[st->sel].dir);
+            int i;
+            DWORD at = GetFileAttributesA(GAME_DIR);
             if(at==INVALID_FILE_ATTRIBUTES || !(at&FILE_ATTRIBUTE_DIRECTORY)){
                 MessageBoxA(h,"Game directory not found.\n"
                               "Run from the pfemu folder.",
                             "pfemu",MB_OK|MB_ICONERROR);
                 return 0;
             }
-            if(games[st->sel].has_sound_toggle)
-                write_sound_cfg(games[st->sel].dir, st->sound);
-            if(games[st->sel].needs_install_sys){
-                GetWindowTextA(st->hName, st->name, sizeof(st->name));
-                GetWindowTextA(st->hSerial, st->serial, sizeof(st->serial));
-                st->name[20] = 0; st->serial[8] = 0;
-                ensure_install_sys(games[st->sel].dir, st->name, st->serial);
+            write_sound_cfg(GAME_DIR, st->sound);
+            for(i=0;i<6;i++){
+                LRESULT sel = SendMessageA(st->hOpt[i],CB_GETCURSEL,0,0);
+                st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_pinball_defaults[i] : sel);
             }
+            write_pinball_cfg(GAME_DIR, st->cfg);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -324,6 +260,7 @@ int show_launcher(LaunchChoice *out){
     MSG msg;
     LaunchState st;
     int sw, sh;
+    const int winw = 372, winh = 340;
     memset(&wc,0,sizeof(wc));
     memset(&st,0,sizeof(st));
     wc.lpfnWndProc = launch_proc;
@@ -332,18 +269,15 @@ int show_launcher(LaunchChoice *out){
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
     RegisterClassA(&wc);
-    st.sel = 0;
-    st.sound = read_sound_is_sb(games[0].dir);
-    strcpy(st.name, "PLAYER");
-    strcpy(st.serial, "00000");
-    read_install_sys("DREAMS", st.name, st.serial);
+    st.sound = read_sound_is_sb(GAME_DIR);
+    read_pinball_cfg(GAME_DIR, st.cfg);
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
-                           CW_USEDEFAULT,CW_USEDEFAULT,372,276,
+                           CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,
                            NULL,NULL,wc.hInstance,&st);
     if(!hwnd) return 0;
     sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
-    SetWindowPos(hwnd,NULL,(sw-372)/2,(sh-276)/2,0,0,SWP_NOSIZE|SWP_NOZORDER);
+    SetWindowPos(hwnd,NULL,(sw-winw)/2,(sh-winh)/2,0,0,SWP_NOSIZE|SWP_NOZORDER);
     ShowWindow(hwnd,SW_SHOW);
     UpdateWindow(hwnd);
     while(!st.done && GetMessageA(&msg,NULL,0,0)>0){
@@ -354,7 +288,7 @@ int show_launcher(LaunchChoice *out){
     }
     UnregisterClassA("pfemu-launcher",wc.hInstance);
     if(!st.ok) return 0;
-    out->dir = games[st.sel].dir;
-    out->prog = games[st.sel].prog;
+    out->dir = GAME_DIR;
+    out->prog = GAME_PROG;
     return 1;
 }
