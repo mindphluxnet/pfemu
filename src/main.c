@@ -429,6 +429,7 @@ int main(int argc, char **argv){
             last_frame = idx;
             last_present = plat_time();
             vga_render(fb, &fbw, &fbh);
+            fantasies_draw_osd(fb, fbw, fbh);
             plat_present(fb, fbw, fbh);
             if(shot_every > 0 && real >= next_shot){
                 char nm[64];

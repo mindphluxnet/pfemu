@@ -47,8 +47,7 @@
 #define ID_NOTE         105
 #define ID_LAUNCH       106
 #define ID_QUIT         107
-#define ID_CHEAT_BALLS  108
-#define ID_CHEAT_SPRING 109
+#define ID_CHEAT_ENABLE 108
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
@@ -180,8 +179,16 @@ static void write_pinball_cfg(const char *dir, const uint8_t in[6]){
 /* Trainer cheats, ported from trainer/PINTRN.COM (see src/fantasies.c for
  * the reverse-engineering writeup and the actual patch logic).  Separate
  * 2-byte file from pfemu_options.cfg above since these aren't part of
- * PINBALL.CFG's own layout - just a checkbox-per-cheat starting state that
- * src/fantasies.c applies the moment a table loads. */
+ * PINBALL.CFG's own layout - just a starting state that src/fantasies.c
+ * applies the moment a table loads.  One checkbox in the UI ("Enable
+ * trainer") drives both bytes together - infinite balls and ball control
+ * mode are still two independent patches underneath (and the '1'/'2'
+ * hotkeys still toggle them independently in-game), but there's no real
+ * reason to make the user tick two boxes to turn "the trainer" on, so both
+ * get written identically here.  Reading them back separately (rather than
+ * assuming they match) means a config saved by an older build of this
+ * launcher, with only one of the two set, still shows the checkbox checked
+ * instead of silently discarding half of it. */
 static void read_cheats_cfg(const char *dir, int *balls, int *spring){
     char path[600];
     FILE *f;
@@ -212,11 +219,10 @@ static void write_cheats_cfg(const char *dir, int balls, int spring){
 typedef struct {
     int sound;              /* checkbox state */
     uint8_t cfg[6];         /* PINBALL.CFG option bytes */
-    int cheat_balls;         /* checkbox state: infinite balls */
-    int cheat_spring;         /* checkbox state: ball control mode */
+    int cheat_enable;        /* checkbox state: trainer (infinite balls + ball control) */
     int done;               /* dialog finished */
     int ok;                 /* 1 = launch, 0 = quit */
-    HWND hSound, hOpt[6], hCheatBalls, hCheatSpring;
+    HWND hSound, hOpt[6], hCheatEnable;
     HFONT hFont;
 } LaunchState;
 
@@ -261,22 +267,18 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             y += 26;
         }
         y += 6;
-        c = CreateWindowExA(0,"STATIC","Trainer cheats (RAZOR DoX, 1994):",
-                            WS_CHILD|WS_VISIBLE,24,y,324,16,h,0,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hCheatEnable = CreateWindowExA(0,"BUTTON","Enable trainer (RAZOR DoX, 1994)",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+                            24,y,324,20,h,(HMENU)ID_CHEAT_ENABLE,cs->hInstance,0);
+        SendMessageA(st->hCheatEnable,WM_SETFONT,(WPARAM)st->hFont,0);
+        CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
         y += 20;
-        st->hCheatBalls = CreateWindowExA(0,"BUTTON","Infinite balls",
-                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,y,324,20,h,(HMENU)ID_CHEAT_BALLS,cs->hInstance,0);
-        SendMessageA(st->hCheatBalls,WM_SETFONT,(WPARAM)st->hFont,0);
-        CheckDlgButton(h,ID_CHEAT_BALLS,st->cheat_balls?BST_CHECKED:BST_UNCHECKED);
-        y += 24;
-        st->hCheatSpring = CreateWindowExA(0,"BUTTON","Ball control mode",
-                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,y,324,20,h,(HMENU)ID_CHEAT_SPRING,cs->hInstance,0);
-        SendMessageA(st->hCheatSpring,WM_SETFONT,(WPARAM)st->hFont,0);
-        CheckDlgButton(h,ID_CHEAT_SPRING,st->cheat_spring?BST_CHECKED:BST_UNCHECKED);
-        y += 30;
+        c = CreateWindowExA(0,"STATIC",
+                            "Infinite balls, and full ball control from the\r\n"
+                            "down-arrow key ('1'/'2' toggle each in-game too).",
+                            WS_CHILD|WS_VISIBLE,24,y,324,28,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        y += 34;
         c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
                             184,y+8,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
@@ -290,10 +292,8 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         int id = LOWORD(w);
         if(id==ID_SOUND){
             st->sound = IsDlgButtonChecked(h,ID_SOUND)==BST_CHECKED;
-        } else if(id==ID_CHEAT_BALLS){
-            st->cheat_balls = IsDlgButtonChecked(h,ID_CHEAT_BALLS)==BST_CHECKED;
-        } else if(id==ID_CHEAT_SPRING){
-            st->cheat_spring = IsDlgButtonChecked(h,ID_CHEAT_SPRING)==BST_CHECKED;
+        } else if(id==ID_CHEAT_ENABLE){
+            st->cheat_enable = IsDlgButtonChecked(h,ID_CHEAT_ENABLE)==BST_CHECKED;
         } else if(id==ID_LAUNCH){
             int i;
             DWORD at = GetFileAttributesA(GAME_DIR);
@@ -309,7 +309,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                 st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_pinball_defaults[i] : sel);
             }
             write_pinball_cfg(GAME_DIR, st->cfg);
-            write_cheats_cfg(GAME_DIR, st->cheat_balls, st->cheat_spring);
+            write_cheats_cfg(GAME_DIR, st->cheat_enable, st->cheat_enable);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -344,7 +344,9 @@ int show_launcher(LaunchChoice *out){
     RegisterClassA(&wc);
     st.sound = read_sound_is_sb(GAME_DIR);
     read_pinball_cfg(GAME_DIR, st.cfg);
-    read_cheats_cfg(GAME_DIR, &st.cheat_balls, &st.cheat_spring);
+    { int balls, spring;
+      read_cheats_cfg(GAME_DIR, &balls, &spring);
+      st.cheat_enable = balls || spring; }
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                            CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,

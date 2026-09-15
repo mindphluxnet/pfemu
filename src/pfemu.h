@@ -111,10 +111,13 @@ void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len);
 void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_pause_tick(void);
+void fantasies_spring_tick(void);
+void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t imglen);
 int  fantasies_intercept_cfg_open(const char *fname);
 int  fantasies_fix_active(void);
 int  fantasies_session_armed(void);
 void fantasies_key_event(int scancode, int down);
+void fantasies_draw_osd(uint32_t *fb, int w, int h);
 void dreams_patch_image(uint32_t load_base, uint32_t imglen);
 
 /* ------------------------------------------------------------ platform --- */

@@ -481,6 +481,7 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         dreams_patch_image((uint32_t)load*16, imglen);
         fantasies_patch_intro(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_pause(dospath, (uint32_t)load*16, imglen);
+        fantasies_patch_spring(dospath, (uint32_t)load*16, imglen);
         /* fantasies_patch_sdr() (SDR PLL seed preset + pass-1 skip) is
          * disabled: it computes a "poke" address from a segment immediate
          * baked into the .SDR file (confirmed unaffected by the relocation

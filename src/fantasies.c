@@ -24,14 +24,16 @@
  */
 #include "pfemu.h"
 
+extern double emu_time;
+
 static int session_armed = 0;   /* user booted Fantasies (launcher or CLI equiv) */
 static int fix_on = 0;          /* a TABLE1-4.PRG is currently running */
 static char session_dir[512];   /* game directory, for the options file below */
 static int table_num = 0;              /* 1-4 while a table is running, else 0 */
 static uint32_t table_seg_base = 0;    /* linear address of that table's own CS */
-static int cheat_balls_default = 0;    /* launcher: apply infinite balls on table load */
-static int cheat_spring_default = 0;   /* launcher: apply ball-control mode on table load */
-static void fantasies_apply_cheat_defaults(void);  /* defined below, needs trainer_site */
+static int trainer_enabled = 0;        /* launcher: arm the '1'/'2' hotkeys below */
+static int spring_cheat_on = 0;        /* our own state for the '2' toggle - see below */
+static void fantasies_osd_clear(void); /* defined below, near the OSD drawer */
 
 /* Upper-cased basename of a guest/host path (drives, slashes handled). */
 static void base_up(const char *path, char *out, size_t n){
@@ -51,13 +53,17 @@ static int is_table_prog(const char *base){
            base[5]>='1' && base[5]<='4' && memcmp(base+6,".PRG",4)==0;
 }
 
-/* Host-only launcher toggle file (src/launch.c writes it, checkboxes next to
- * the F5-menu options): 2 bytes, [0]=infinite balls, [1]=ball control mode,
- * nonzero = apply automatically the moment a table loads (see
- * fantasies_on_exec below).  Independent of the live '1'/'2' hotkeys below -
- * this only sets each table's *starting* state; the hotkeys still toggle
- * from there same as always.  Kept out of the 6-byte pfemu_options.cfg blob
- * since that one specifically mirrors PINBALL.CFG's own layout. */
+/* Host-only launcher toggle file (src/launch.c writes it, the "Enable
+ * trainer" checkbox): 2 identical bytes (old layout, kept so a config saved
+ * by an earlier build of the launcher - which had two separate checkboxes -
+ * still reads as "enabled" if either was on).  Nonzero just ARMS the '1'/'2'
+ * hotkeys in fantasies_key_event() below; it does not itself turn either
+ * cheat on.  Every fresh table load is the game's own unpatched image (see
+ * fantasies_on_exec below - it no longer pre-applies anything), so with the
+ * trainer enabled, both cheats still start OFF and stay off until the
+ * player actually presses '1' or '2'.  Kept out of the 6-byte
+ * pfemu_options.cfg blob since that one specifically mirrors PINBALL.CFG's
+ * own layout. */
 static void load_cheat_cfg(const char *dir){
     char path[600];
     FILE *f;
@@ -65,8 +71,7 @@ static void load_cheat_cfg(const char *dir){
     snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_cheats.cfg", dir);
     f = fopen(path, "rb");
     if(f){ if(fread(b,1,2,f) != 2){ b[0]=0; b[1]=0; } fclose(f); }
-    cheat_balls_default = b[0] != 0;
-    cheat_spring_default = b[1] != 0;
+    trainer_enabled = (b[0] != 0) || (b[1] != 0);
 }
 
 /* Called once at startup after dir/prog are final (launcher or CLI).
@@ -101,6 +106,8 @@ void fantasies_on_exec(const char *dospath, uint16_t cs_seg){
     if(!session_armed || dos_no_patch){
         if(fix_on){ fix_on = 0; kbd_clear_held(); }
         table_num = 0; table_seg_base = 0;
+        spring_cheat_on = 0;
+        fantasies_osd_clear();
         return;
     }
     base_up(dospath, b, sizeof(b));
@@ -109,7 +116,8 @@ void fantasies_on_exec(const char *dospath, uint16_t cs_seg){
         fix_on = 1;
         table_num = b[5] - '0';
         table_seg_base = (uint32_t)cs_seg * 16;
-        fantasies_apply_cheat_defaults();
+        spring_cheat_on = 0;
+        fantasies_osd_clear();
         return;
     }
     dot = strrchr(b,'.');
@@ -119,6 +127,8 @@ void fantasies_on_exec(const char *dospath, uint16_t cs_seg){
         if(fix_on) trc("[fantasies] flipper fix off (%s)\n", b);
         fix_on = 0;
         table_num = 0; table_seg_base = 0;
+        spring_cheat_on = 0;
+        fantasies_osd_clear();
         kbd_clear_held();
     }
 }
@@ -587,82 +597,271 @@ void fantasies_pause_tick(void){
  * keystroke for two raw make codes and pokes the table directly:
  *   02 ('1') - infinite balls: the table's own "dec byte ptr [balls_left]"
  *       (opcode bytes FE 06 <lo> <hi>) NOPed out to a run of four 90s.
- *   03 ('2') - "spring mode": a flag byte toggled between 00 and FF - once
- *       set, the down-arrow (plunger) key keeps working at any point in
- *       play, not just while the ball sits on the spring.
+ *   03 ('2') - forces SPRING_VALID TRUE (see fantasies_patch_spring below):
+ *       the down-arrow (plunger) key keeps "launching" the ball at any point
+ *       in play, not just while it's actually sitting on the spring.
  * Reverse-engineered by unpacking PINTRN.COM's self-decompressing stub and
  * tracing the unpacked image (its own INT 9 handler, offset 0x180 in the
- * unpacked file) under pfemu; both the balls-patch site and its "already
- * patched" NOP pattern, and the exact 4-byte original bytes (including the
- * counter address in the 2nd/3rd byte) the trainer restores on toggle-off,
- * were confirmed byte-for-byte by reading them straight out of the shipped
+ * unpacked file) under pfemu; the balls-patch site, its "already patched"
+ * NOP pattern, and the exact 4-byte original bytes (including the counter
+ * address in the 2nd/3rd byte) the trainer restores on toggle-off were all
+ * confirmed byte-for-byte by reading them straight out of the shipped
  * TABLE1-4.PRG.  These .PRG are COM-style images wrapped in a minimal EXE
  * (0x200-byte header, header cs=0x10 i.e. a 0x100-byte fake PSP prefix
  * inside the load image - see load_mz()), so "CS-relative offset X" here
  * means linear = table_seg_base + X, table_seg_base being (load+cs)*16 for
  * whichever TABLEn.PRG is currently running (fantasies_on_exec() records
- * it).  The spring-mode flag site wasn't independently byte-verified (it's
- * a plain data byte, not a recognisable instruction) - only inferred from
- * being listed in the same table order as the balls site in PINTRN.COM - so
- * it's marked lower-confidence than the balls patch, though both were
- * ported unchanged from the trainer's own tables. */
+ * it). */
 typedef struct {
     uint16_t balls_off;      /* site of "dec byte ptr [balls_left]" (FE 06 lo hi) */
     uint16_t balls_counter;  /* that instruction's operand: the counter's own offset */
-    uint16_t spring_off;     /* ball-on-spring control-mode flag byte (00/FF) */
-} TrainerSite;
-static const TrainerSite trainer_site[5] = {
-    {0,0,0},                     /* unused */
-    {0x0AED, 0x33DE, 0x25C7},    /* TABLE1.PRG */
-    {0x0A04, 0x33A4, 0x2170},    /* TABLE2.PRG */
-    {0x0994, 0x2C6E, 0x10B1},    /* TABLE3.PRG */
-    {0x0AD1, 0x38F4, 0x2A02},    /* TABLE4.PRG */
+} BallsSite;
+static const BallsSite balls_site[5] = {
+    {0,0},                /* unused */
+    {0x0AED, 0x33DE},     /* TABLE1.PRG */
+    {0x0A04, 0x33A4},     /* TABLE2.PRG */
+    {0x0994, 0x2C6E},     /* TABLE3.PRG */
+    {0x0AD1, 0x38F4},     /* TABLE4.PRG */
 };
 
-static void fantasies_toggle_balls(void){
-    const TrainerSite *s = &trainer_site[table_num];
+/* SPRING_VALID's linear address per table, located by fantasies_patch_spring()
+ * below; 0 = not found for that table (toggle becomes a no-op). */
+static uint32_t spring_valid_addr[5] = {0,0,0,0,0};
+
+/* Locates SPRING_VALID - historicalsource/pinballfantasies FANTASIE.ASM: "the
+ * ball on the spring may be launched" flag, checked by SPRINGUP right before
+ * it applies the down-arrow's launch speed (SETBALLSPEED) and skipped
+ * straight past that when FALSE.  WHEN_NEW_BALL_RESET sets it TRUE when a
+ * fresh ball is readied on the spring, but it's not a one-shot latch: every
+ * table's own switch handlers keep it live for real - each of PLAND.ASM,
+ * SDEV.ASM, SHOW.ASM and STONES.ASM has a "SPRING INVALID" bygel (a
+ * playfield-switch callback, Swedish "bygel" = sensor/relay) that sets it
+ * back FALSE the instant the ball rolls past the sensor at the spring
+ * lane's exit, and a "SPRING VALID" bygel elsewhere that sets it TRUE again
+ * when a ball re-enters the lane.  So it's continuously driven by gameplay,
+ * not just set once at ball start.
+ *
+ * Forcing it permanently TRUE is exactly PINTRN.COM's "spring mode": with
+ * it pinned, every down-arrow press launches the ball, wherever it actually
+ * is on the table - but "pinned" has to mean *continuously* re-asserted,
+ * because the exit-lane bygel above will clear it again the moment the ball
+ * leaves the spring lane, same as it does in an uncheated game.  A one-shot
+ * poke here undoes itself after exactly one launch, which is what "ball
+ * control mode seems to be disabled automatically after launching a ball"
+ * turned out to be - not a wrong address, just a plain write racing a
+ * switch handler that fires during play.  fantasies_spring_tick() below is
+ * the fix: while spring_cheat_on is set, it re-forces the byte TRUE every
+ * dev_tick(), the same "poll and correct" approach fantasies_pause_tick()
+ * already uses for LAST_WAS_VB.  fantasies_toggle_spring() also no longer
+ * infers on/off from the byte's current value - TRUE is SPRING_VALID's own
+ * everyday "ball's on the spring" state (true again within moments of
+ * booting a table, ball 1 already readied), indistinguishable from our
+ * forced-on state by value alone, which was the second bug: pressing '2'
+ * for the first time was reading that ordinary TRUE and toggling it "off".
+ * spring_cheat_on is our own state instead, set by the hotkey and cleared
+ * whenever a table (re)loads (fantasies_on_exec above).
+ *
+ * DATA's own runtime segment is recovered the same way
+ * fantasies_patch_pause() above already recovers it - majority vote over
+ * every `push imm16 / pop ds` (68 xx xx 1F) site in the image, DATA being by
+ * far the most common target - and the flag's DATA-relative offset is read
+ * straight out of WHEN_NEW_BALL_RESET's own signature: a long, distinctive
+ * run of six consecutive immediate-value stores that starts every fresh
+ * ball (LASTCHECK=0, SPRING_VALID=TRUE, SHIFTPRESSED=FALSE, KEYTASK=offset
+ * DUMRET, JINGLE_READY_ANIM=TRUE, JINGLE_READY_LOGIC=TRUE). Confirmed unique
+ * (exactly one match) by static byte-scan against all four shipped
+ * TABLE1-4.PRG.  (The very first version of this fix treated the flag as
+ * CS-relative like the balls-counter site above - also wrong, since
+ * SPRING_VALID actually lives in DATA, not CODE; fixed before this one.) */
+void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t imglen){
+    static const uint8_t sig[32] = {
+        0xC7,0x06,0,0,0x00,0x00,       /* mov word ptr [LASTCHECK],0 */
+        0xC6,0x06,0,0,0xFF,            /* mov byte ptr [SPRING_VALID],true  <- offset wanted */
+        0xC6,0x06,0,0,0x00,            /* mov byte ptr [SHIFTPRESSED],false */
+        0xC7,0x06,0,0,0,0,             /* mov word ptr [KEYTASK],offset DUMRET */
+        0xC6,0x06,0,0,0xFF,            /* mov byte ptr [JINGLE_READY_ANIM],true */
+        0xC6,0x06,0,0,0xFF };          /* mov byte ptr [JINGLE_READY_LOGIC],true */
+    static const uint8_t mask[32] = {
+        1,1,0,0,1,1,
+        1,1,0,0,1,
+        1,1,0,0,1,
+        1,1,0,0,0,0,
+        1,1,0,0,1,
+        1,1,0,0,1 };
+    char b[64];
+    uint32_t i;
+    uint16_t cand_val[64]; uint32_t cand_cnt[64]; int ncand = 0;
+    uint32_t data_seg = 0, best = 0;
+    int tn;
+
+    if(!session_armed || dos_no_patch) return;
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)) return;
+    tn = b[5] - '0';
+    if(load_base + imglen > RAM_SIZE || imglen < sizeof(sig)) return;
+
+    for(i = 0; i + 4 <= imglen; i++){
+        if(ram[load_base+i] == 0x68 && ram[load_base+i+3] == 0x1F){
+            uint16_t v = img_u16(load_base, i+1);
+            int j;
+            for(j = 0; j < ncand; j++) if(cand_val[j] == v) break;
+            if(j == ncand){ if(ncand < 64){ cand_val[ncand]=v; cand_cnt[ncand]=1; ncand++; } }
+            else cand_cnt[j]++;
+        }
+    }
+    for(i = 0; i < (uint32_t)ncand; i++)
+        if(cand_cnt[i] > best){ best = cand_cnt[i]; data_seg = cand_val[i]; }
+    if(!data_seg || best < 8){
+        trc("[fantasies] spring-valid fix: DATA segment not confidently found (table %d), leaving unpatched\n", tn);
+        return;
+    }
+
+    for(i = 0; i + sizeof(sig) <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        for(k = 0; k < sizeof(sig); k++)
+            if(mask[k] && ram[at+k] != sig[k]) break;
+        if(k == sizeof(sig)){
+            uint16_t off = img_u16(load_base, i + 8);
+            spring_valid_addr[tn] = data_seg*16 + off;
+            trc("[fantasies] spring-valid located (table %d): %05X (data_seg=%04X off=%04X)\n",
+                tn, spring_valid_addr[tn], data_seg, off);
+            return;
+        }
+    }
+    trc("[fantasies] spring-valid fix: signature not found (table %d), leaving unpatched\n", tn);
+}
+
+/* Returns 1 if now ON, 0 if now OFF, -1 if the image didn't match either
+ * known state (nothing touched) - callers use this to decide whether/what
+ * to show on the OSD. */
+static int fantasies_toggle_balls(void){
+    const BallsSite *s = &balls_site[table_num];
     uint32_t a = table_seg_base + s->balls_off;
-    if(a + 4 > RAM_SIZE) return;
+    if(a + 4 > RAM_SIZE) return -1;
     if(ram[a]==0xFE && ram[a+1]==0x06){
         ram[a]=0x90; ram[a+1]=0x90; ram[a+2]=0x90; ram[a+3]=0x90;
         trc("[fantasies] infinite balls ON (table %d)\n", table_num);
+        return 1;
     } else if(ram[a]==0x90 && ram[a+1]==0x90 && ram[a+2]==0x90 && ram[a+3]==0x90){
         ram[a]=0xFE; ram[a+1]=0x06;
         ram[a+2]=(uint8_t)(s->balls_counter & 0xFF);
         ram[a+3]=(uint8_t)(s->balls_counter >> 8);
         trc("[fantasies] infinite balls OFF (table %d)\n", table_num);
+        return 0;
+    }
+    return -1;
+}
+
+/* Own-state toggle, not a byte-value inference - see the comment above
+ * fantasies_patch_spring() for why reading SPRING_VALID itself can't tell
+ * "ball's legitimately on the spring" from "we forced this on".  Writes the
+ * byte both ways: forcing TRUE on is what fantasies_spring_tick() then
+ * holds, but turning off has to force FALSE too, not just stop holding it -
+ * otherwise the last-forced TRUE simply sits there (nothing else was due to
+ * clear it right then) and the cheat's actual effect - down-arrow launching
+ * the ball anywhere - keeps working even though the toggle says OFF. */
+static int fantasies_toggle_spring(void){
+    uint32_t a = spring_valid_addr[table_num];
+    if(!a || a >= RAM_SIZE) return -1;
+    spring_cheat_on = !spring_cheat_on;
+    ram[a] = spring_cheat_on ? 0xFF : 0x00;
+    trc("[fantasies] ball control mode %s (table %d)\n",
+        spring_cheat_on ? "ON" : "OFF", table_num);
+    return spring_cheat_on;
+}
+
+/* Called from dev_tick() - far more often than once per emulated video
+ * frame, same as fantasies_pause_tick() above.  While spring_cheat_on is
+ * set, re-forces SPRING_VALID back to TRUE every tick, so the table's own
+ * "ball left the spring lane" switch handler (which clears it FALSE as part
+ * of ordinary gameplay - see fantasies_patch_spring()'s comment) can never
+ * make the cheat's effect disappear mid-play. Logs only the correction
+ * itself, not every tick that finds nothing to do. */
+void fantasies_spring_tick(void){
+    uint32_t a;
+    if(!fantasies_fix_active() || !table_num || !spring_cheat_on) return;
+    a = spring_valid_addr[table_num];
+    if(!a || a >= RAM_SIZE) return;
+    if(ram[a] != 0xFF){
+        ram[a] = 0xFF;
+        trc("[fantasies] ball control mode re-asserted (table %d)\n", table_num);
     }
 }
 
-static void fantasies_toggle_spring(void){
-    uint32_t a = table_seg_base + trainer_site[table_num].spring_off;
-    if(a >= RAM_SIZE) return;
-    if(ram[a]==0x00){
-        ram[a]=0xFF;
-        trc("[fantasies] spring/ball-control mode ON (table %d)\n", table_num);
-    } else if(ram[a]==0xFF){
-        ram[a]=0x00;
-        trc("[fantasies] spring/ball-control mode OFF (table %d)\n", table_num);
+/* Host-only on-screen notification for the two hotkeys below: drawn straight
+ * into the presented framebuffer by fantasies_draw_osd() (called from
+ * main.c right after vga_render(), so it's independent of whatever video
+ * page/mode the game itself is using), not through anything the guest can
+ * see or overwrite. */
+static char osd_text[48] = "";
+static double osd_until = 0;
+
+static void fantasies_osd_show(const char *text){
+    snprintf(osd_text, sizeof(osd_text), "%s", text);
+    osd_until = emu_time + 1.6;
+}
+
+static void fantasies_osd_clear(void){
+    osd_text[0] = 0;
+    osd_until = 0;
+}
+
+void fantasies_draw_osd(uint32_t *fb, int w, int h){
+    extern const uint8_t vga_font8x8[256*8];
+    int scale, len, tw, th, x0, y0, i, x, y;
+    if(!osd_text[0] || emu_time >= osd_until) return;
+    if(!fb || w <= 0 || h <= 0) return;
+    len = (int)strlen(osd_text);
+    scale = (w >= 160 && (len+1)*8*2 + 8 <= w) ? 2 : 1;
+    tw = len*8*scale + 8*scale;
+    if(tw > w) tw = w;
+    th = 8*scale + 6*scale;
+    x0 = (w - tw) / 2;
+    if(x0 < 0) x0 = 0;
+    y0 = h - th - 6*scale;
+    if(y0 < 0) y0 = 0;
+    for(y=0; y<th; y++){
+        for(x=0; x<tw; x++){
+            int px = x0+x, py = y0+y;
+            if(px>=0 && px<w && py>=0 && py<h) fb[py*w+px] = 0x00181818u;
+        }
+    }
+    for(i=0; i<len; i++){
+        uint8_t ch = (uint8_t)osd_text[i];
+        int cx = x0 + 4*scale + i*8*scale;
+        int cy = y0 + 3*scale;
+        int r, c2, sx, sy;
+        for(r=0; r<8; r++){
+            uint8_t bits = vga_font8x8[ch*8+r];
+            for(c2=0; c2<8; c2++){
+                if(!((bits >> (7-c2)) & 1)) continue;
+                for(sy=0; sy<scale; sy++){
+                    for(sx=0; sx<scale; sx++){
+                        int px = cx + c2*scale + sx, py = cy + r*scale + sy;
+                        if(px>=0 && px<w && py>=0 && py<h) fb[py*w+px] = 0x00FFE040u;
+                    }
+                }
+            }
+        }
     }
 }
 
 /* Called from dev.c's kbd_key() on every fresh (non-autorepeat) key make,
  * host scancode already stripped of the E0 prefix bit. '1' and '2' are
- * plain, unextended scancodes, so no E0 check is needed here. */
+ * plain, unextended scancodes, so no E0 check is needed here.  Gated on
+ * trainer_enabled (the launcher's "Enable trainer" checkbox, see
+ * load_cheat_cfg above): unchecked, both hotkeys are completely inert - not
+ * just "cheats start off", but no keypress here ever touches memory at
+ * all - same as before this feature existed. */
 void fantasies_key_event(int scancode, int down){
-    if(!down || !fantasies_fix_active() || !table_num || dos_no_patch) return;
-    if(scancode == 0x02) fantasies_toggle_balls();
-    else if(scancode == 0x03) fantasies_toggle_spring();
-}
-
-/* Called from fantasies_on_exec() the moment a table finishes loading: apply
- * whichever cheats the launcher's checkboxes turned on, as that table's
- * starting state (a fresh load is always unpatched, so no need to check
- * current bytes first - just go straight to the "on" branch each toggle
- * would have taken).  The '1'/'2' hotkeys work the same as always on top of
- * this - it only sets where each table starts out. */
-static void fantasies_apply_cheat_defaults(void){
-    if(dos_no_patch || !table_num) return;
-    if(cheat_balls_default) fantasies_toggle_balls();
-    if(cheat_spring_default) fantasies_toggle_spring();
+    int r;
+    if(!down || !trainer_enabled || !fantasies_fix_active() || !table_num || dos_no_patch)
+        return;
+    if(scancode == 0x02){
+        r = fantasies_toggle_balls();
+        if(r >= 0) fantasies_osd_show(r ? "INFINITE BALLS: ON" : "INFINITE BALLS: OFF");
+    } else if(scancode == 0x03){
+        r = fantasies_toggle_spring();
+        if(r >= 0) fantasies_osd_show(r ? "BALL CONTROL: ON" : "BALL CONTROL: OFF");
+    }
 }
