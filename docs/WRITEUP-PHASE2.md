@@ -586,6 +586,40 @@ cleanly (ADLIB/INTERNAL/THING keep the slow path). One jitter source remains:
 a stale pending IRQ0 can spoil round 1 (~1/3 of runs), costing an extra ~0.3 s
 detour that still converges — the controller is self-correcting either way.
 
+### 5.14.1 Reverted: the pass-1 skip corrupted memory outside the driver
+
+The verification above (screenshot timeline, `-mem`, a NOSOUND boot) missed
+the case that mattered: it never checked a *table's* own driver load, and
+never compared a sound-enabled boot's doc-check screen pixel-for-pixel
+against a silent one. Both broke. With a sound driver loaded, the intro's
+manual-lookup ("doc-check") screen rendered with visibly corrupted text; with
+sound on, Table 4 crashed on load with corrupted graphics. `-nopatch` (which
+disables this shortcut along with the other two Fantasies patches) made both
+symptoms disappear, which is what pointed back here.
+
+Root cause: `fantasies_patch_sdr()`'s pass-1 skip doesn't just NOP the call
+and preset a register — it computes a *memory* address (`dsbase*16 + dcell`)
+and writes a preset result there, so the driver's own calibration code reads
+back the value it would have computed itself. `dsbase` comes from a `push
+imm16 / pop ds` immediate baked into the `.SDR` file — traced live at
+`[01E2:6BB8]` (linear `0x089D8`) for `SBLASTER.SDR`, identically whether the
+intro or a table loaded it, and identically before and after checking
+whether it needed relocation (it didn't: the value is a fixed constant in
+the file, not a relocation-table entry, so it has nothing to do with where
+*this* EXEC's driver or caller actually landed in memory). That fixed address
+happens to fall inside whichever process is resident there at the time: the
+intro's own memory when the intro loads the driver (corrupting a couple of
+bytes near the doc-check text — the "harmless-looking" case the original
+verification happened to land on), or a table's own live code/data when the
+table loads its bundled copy of the same driver (an instant crash).
+
+Disabled: `dos.c` no longer calls `fantasies_patch_sdr()` (the function stays
+in the tree, unused, since the signature/offset reverse-engineering is
+expensive to redo). The full two-pass calibration always runs now — back to
+the ~5 s boot black screen `-nopatch` used to restore. Re-enabling the
+shortcut needs the poke address checked against the actual owning process's
+MCB block before writing, not just pattern-matched out of the file.
+
 ## 6. Debugging tools
 
 Almost all of the time went into *locating* faults, not fixing them. The
@@ -674,11 +708,12 @@ first:
    skipped. Nothing visibly depends on them.
 5. **The manual-lookup protection is patched out of the loaded image** (§5.13),
    rather than being answered. `-nopatch` turns that off.
-6. **The sound-driver PLL calibration is short-circuited** (§5.14) in
-   Fantasies sessions only: the seed is preset near the known lock band and
-   the zero-target first pass is skipped with its result preset to the
-   natural value. Saves ~1.3 s of the boot black screen. `-nopatch` restores
-   the full two-pass calibration.
+6. ~~The sound-driver PLL calibration is short-circuited~~ — tried, reverted
+   (§5.14.1): the shortcut wrote a preset result to a memory address computed
+   from a constant in the `.SDR` file rather than from where the driver
+   actually landed, corrupting the doc-check screen with sound on and
+   crashing Table 4. The full two-pass calibration always runs now; the ~5 s
+   boot black screen is back to its original length.
 
 ---
 

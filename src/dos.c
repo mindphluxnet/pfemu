@@ -457,14 +457,6 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         fseek(f, (long)hdrsize, SEEK_SET);
         if(fread(&ram[(uint32_t)load*16], 1, imglen, f) != imglen){ }
 
-        /* Game-specific image patches (memory-only, signature-checked,
-         * -nopatch disables).  Implemented per game in src/fantasies.c and
-         * src/dreams.c; dos.c only dispatches.  The SDR seed preset also
-         * covers sound drivers (shared family - session-gated inside). */
-        fantasies_patch_image((uint32_t)load*16, imglen);
-        fantasies_patch_sdr((uint32_t)load*16, imglen);
-        dreams_patch_image((uint32_t)load*16, imglen);
-
         fseek(f, lfarlc, SEEK_SET);
         for(i=0;i<crlc;i++){
             uint8_t rb[4]; uint16_t ro, rs; uint32_t a;
@@ -474,6 +466,27 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
             *(uint16_t*)&ram[a] = (uint16_t)(*(uint16_t*)&ram[a] + load);
         }
         fclose(f);
+
+        /* Game-specific image patches (memory-only, signature-checked,
+         * -nopatch disables).  Implemented per game in src/fantasies.c and
+         * src/dreams.c; dos.c only dispatches. */
+        fantasies_patch_image((uint32_t)load*16, imglen);
+        dreams_patch_image((uint32_t)load*16, imglen);
+        /* fantasies_patch_sdr() (SDR PLL seed preset + pass-1 skip) is
+         * disabled: it computes a "poke" address from a segment immediate
+         * baked into the .SDR file (confirmed unaffected by the relocation
+         * loop above - traced at 0x01E2 for SBLASTER.SDR both before and
+         * after moving this call past it), not from anything tied to where
+         * THIS EXEC's driver or caller actually landed in memory.  That
+         * fixed address happened to fall inside whichever process was
+         * resident there at the time - harmless-looking cosmetic corruption
+         * when it landed in the intro's own memory, an instant crash when a
+         * table's own .SDR load put it inside the table's live code/data.
+         * Confirmed by the user: both the doc-check screen corruption (with
+         * a sound driver loaded) and the Table 4 crash disappear under
+         * -nopatch, which is what disables this. Re-enabling it needs the
+         * poke address validated against the actual owning process's MCB
+         * block before writing, not just pattern-matched from the file. */
         *out_cs = (uint16_t)(load + cs);
         *out_ip = ip;
         *out_ss = (uint16_t)(load + ss);

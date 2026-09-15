@@ -96,6 +96,21 @@ int fantasies_session_armed(void){
 
 /* Sound-driver PLL seed preset.
  *
+ * DISABLED (not called from dos.c): the pass-1 skip below pokes a preset
+ * result into a memory cell addressed by a segment immediate baked into the
+ * .SDR file (the `push imm16 / pop ds` picked up by the `dsp`/`dsbase` search
+ * a bit further down).  That segment is a fixed value from the file, not
+ * derived from where this particular EXEC's driver or caller landed in
+ * memory, so the poke address is only right for whichever process happens to
+ * sit at that fixed spot - the intro, when it does, or a table's own memory
+ * when its own .SDR load computes the same fixed address instead.  Confirmed
+ * by the user as the cause of both the doc-check screen's visual corruption
+ * (only with a sound driver loaded) and Table 4's instant crash: both went
+ * away under -nopatch, which is what disables this function.  Kept here,
+ * unused, because the reverse-engineered signature/offsets are expensive to
+ * redo; re-enabling needs the poke address validated against the actual
+ * owning process's MCB block first.
+ *
  * Every .SDR driver calibrates the PIT tick to the monitor at load: starting
  * from DI=0x1CE8 it counts 3DAh bit-0 edges per mode-0 one-shot and walks the
  * reload up geometrically until the count matches ten times (locks ~19771
@@ -192,7 +207,8 @@ void fantasies_patch_sdr(uint32_t load_base, uint32_t imglen){
         ram[at+9] = 0x90; ram[at+10] = 0x90; ram[at+11] = 0x90; ram[at+12] = 0x90;
         ram[poke] = 0x01; ram[poke+1] = 0x00;
         trc("[fantasies] sdr pass-1 calibration skipped at image+0x%X"
-            " ([%04X] preset 1)\n", i + 6, dcell);
+            " ([%04X] preset 1) load_base=%05X dsbase=%04X poke_lin=%05X\n",
+            i + 6, dcell, load_base, dsbase, poke);
         return;
     }
 }
