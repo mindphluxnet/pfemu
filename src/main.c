@@ -63,6 +63,34 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
     return DefWindowProc(h,m,w,l);
 }
 
+/* Confirmed via -t trace: Windows can simply never deliver a WM_KEYUP for a
+ * held modifier key - no WM_KILLFOCUS, no other message loss, the release
+ * just never arrives at wndproc. Fantasies' flippers are bound to the Shift
+ * keys, so a swallowed release there strands the shared flipper bit up
+ * exactly like a lost break byte would, except dev.c's queue/PIC logic never
+ * even saw an event to lose - the OS never sent one. kbd_release_all()
+ * already recovers this on focus loss; this is the same idea run every
+ * frame instead of only then, by checking the handful of scancodes the
+ * flipper fix cares about against live hardware state and forcing a break
+ * the moment they disagree, instead of waiting for the window to lose
+ * focus (which may never happen before the next press). */
+static void kbd_reconcile_physical(void){
+    static const struct { int sc, ext; int vk; } keys[] = {
+        {0x2A,0,VK_LSHIFT},   {0x36,0,VK_RSHIFT},
+        {0x1D,0,VK_LCONTROL}, {0x1D,1,VK_RCONTROL},
+        {0x38,0,VK_LMENU},    {0x38,1,VK_RMENU},
+    };
+    size_t i;
+    for(i=0;i<sizeof(keys)/sizeof(keys[0]);i++){
+        unsigned idx = (unsigned)keys[i].sc | (keys[i].ext ? 0x80u : 0u);
+        if(kbd_held_get(idx) && !(GetAsyncKeyState(keys[i].vk) & 0x8000)){
+            trc("[kbd] reconcile: %s%02X marked held but not physically down - forcing break\n",
+                keys[i].ext?"E0 ":"", keys[i].sc);
+            kbd_key(keys[i].sc | (keys[i].ext?0xE000:0), 0);
+        }
+    }
+}
+
 /* Build 8x16 and 8x8 character bitmaps from a host fixed-pitch font so text
  * mode (DOS messages, the sound-setup screen) is readable. */
 static void build_fonts(void){
@@ -99,9 +127,50 @@ static void build_fonts(void){
     DeleteObject(bm); DeleteObject(f); DeleteDC(mdc);
 }
 
+/* Windows' StickyKeys/FilterKeys/ToggleKeys accessibility shortcuts are the
+ * real cause of the "flipper gets stuck up" reports: Pinball Fantasies'
+ * default flipper keys are the Shift keys, and holding one down for the ~8s
+ * FilterKeys threshold - an ordinary "trap the ball on the flipper" move, not
+ * frantic play - makes the OS itself swallow the eventual key-up (and/or pop
+ * a system dialog) before our window ever sees WM_KEYUP. No byte is lost in
+ * dev.c's keyboard queue; the break never arrives from the OS at all, so
+ * kbd_held[] (and the guest's shared flipper bit) never clears. Standard
+ * fix, per Microsoft's own guidance for games that bind gameplay to Shift:
+ * disable the shortcut-activation of these features while the window has
+ * focus, restoring whatever the user had on exit. */
+static STICKYKEYS saved_sticky = { sizeof(STICKYKEYS), 0 };
+static TOGGLEKEYS saved_toggle = { sizeof(TOGGLEKEYS), 0 };
+static FILTERKEYS saved_filter = { sizeof(FILTERKEYS), 0 };
+static void restore_accessibility_shortcuts(void){
+    SystemParametersInfoA(SPI_SETSTICKYKEYS, sizeof(STICKYKEYS), &saved_sticky, 0);
+    SystemParametersInfoA(SPI_SETTOGGLEKEYS, sizeof(TOGGLEKEYS), &saved_toggle, 0);
+    SystemParametersInfoA(SPI_SETFILTERKEYS, sizeof(FILTERKEYS), &saved_filter, 0);
+}
+static void suppress_accessibility_shortcuts(void){
+    STICKYKEYS sk; TOGGLEKEYS tk; FILTERKEYS fk;
+    SystemParametersInfoA(SPI_GETSTICKYKEYS, sizeof(sk), &sk, 0);
+    SystemParametersInfoA(SPI_GETTOGGLEKEYS, sizeof(tk), &tk, 0);
+    SystemParametersInfoA(SPI_GETFILTERKEYS, sizeof(fk), &fk, 0);
+    saved_sticky = sk; saved_toggle = tk; saved_filter = fk;
+    atexit(restore_accessibility_shortcuts);
+    if(!(sk.dwFlags & SKF_STICKYKEYSON)){
+        sk.dwFlags &= (DWORD)~(SKF_HOTKEYACTIVE|SKF_CONFIRMHOTKEY);
+        SystemParametersInfoA(SPI_SETSTICKYKEYS, sizeof(sk), &sk, 0);
+    }
+    if(!(tk.dwFlags & TKF_TOGGLEKEYSON)){
+        tk.dwFlags &= (DWORD)~(TKF_HOTKEYACTIVE|TKF_CONFIRMHOTKEY);
+        SystemParametersInfoA(SPI_SETTOGGLEKEYS, sizeof(tk), &tk, 0);
+    }
+    if(!(fk.dwFlags & FKF_FILTERKEYSON)){
+        fk.dwFlags &= (DWORD)~(FKF_HOTKEYACTIVE|FKF_CONFIRMHOTKEY);
+        SystemParametersInfoA(SPI_SETFILTERKEYS, sizeof(fk), &fk, 0);
+    }
+}
+
 void plat_init(const char *title){
     WNDCLASSA wc;
     RECT r;
+    suppress_accessibility_shortcuts();
     memset(&wc,0,sizeof(wc));
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandle(NULL);
@@ -310,6 +379,7 @@ int main(int argc, char **argv){
         double wall = plat_time() - t0;
         double real = wall * speed;
         if(max_secs > 0 && wall > max_secs) break;
+        kbd_reconcile_physical();
         if(keyscript) run_keyscript(keyscript, real);
         int guard = 0;
         while(emu_time < real && !cpu.shutdown && guard < 10000){

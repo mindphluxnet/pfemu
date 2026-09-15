@@ -192,6 +192,7 @@ static uint8_t kbc_cmd = 0;
  * flipper; the still-held sibling is re-asserted with a fresh make. */
 static uint8_t kbd_held[256];
 void kbd_clear_held(void){ memset(kbd_held, 0, sizeof(kbd_held)); }
+int kbd_held_get(unsigned idx){ return idx < 256 && kbd_held[idx]; }
 static int kbd_free(void){ return 63 - ((kbd_tail - kbd_head) & 63); }
 static void kbd_push(uint8_t b){ int n = (kbd_tail+1)&63; kbd_buf[kbd_tail]=b; kbd_tail=n; }
 /* 1 = room for `need` bytes (evicting oldest when the fix is on), 0 = drop. */
@@ -219,19 +220,24 @@ void kbd_key(int scancode, int down){
     uint8_t sc = (uint8_t)(scancode & 0x7F);
     int ext = (scancode & 0xE000) ? 1 : 0;
     unsigned idx = (unsigned)sc | (ext ? 0x80u : 0u);
+    trc("[kbd] host %s%02X %s (held=%d fix=%d free=%d)\n", ext?"E0 ":"", sc,
+        down?"down":"up", kbd_held[idx], fantasies_fix_active(), kbd_free());
     if(down){
         if(kbd_held[idx]){
             /* Autorepeat: the guest ignores it anyway (TEST/JNZ on make),
              * and outside Fantasy tables typematic must keep working. */
-            if(fantasies_fix_active()) return;
+            if(fantasies_fix_active()){
+                trc("[kbd] autorepeat %s%02X coalesced\n", ext?"E0 ":"", sc);
+                return;
+            }
         } else {
             kbd_held[idx] = 1;
         }
         if(ext){
-            if(!kbd_ensure(2)) return;
+            if(!kbd_ensure(2)){ trc("[kbd] DROP make E0 %02X (queue full)\n", sc); return; }
             kbd_push(0xE0); kbd_push(sc);
         } else {
-            if(!kbd_ensure(1)) return;
+            if(!kbd_ensure(1)){ trc("[kbd] DROP make %02X (queue full)\n", sc); return; }
             kbd_push(sc);
         }
         pic_raise(1);
@@ -239,10 +245,10 @@ void kbd_key(int scancode, int down){
     }
     kbd_held[idx] = 0;
     if(ext){
-        if(!kbd_ensure(2)) return;
+        if(!kbd_ensure(2)){ trc("[kbd] DROP break E0 %02X (queue full)\n", (sc|0x80)); return; }
         kbd_push(0xE0); kbd_push((uint8_t)(sc|0x80));
     } else {
-        if(!kbd_ensure(1)) return;
+        if(!kbd_ensure(1)){ trc("[kbd] DROP break %02X (queue full)\n", (sc|0x80)); return; }
         kbd_push((uint8_t)(sc|0x80));
     }
     pic_raise(1);
@@ -280,12 +286,14 @@ void kbd_release_all(void){
 unsigned long kbd_port60_reads = 0;
 uint8_t pic_imr(void){ return pic[0].imr; }
 static uint8_t kbd_read60(void){
+    int had_byte = (kbd_head!=kbd_tail);
     kbd_port60_reads++;
-    trc("[kbd] port60 read by %04X:%04X (IVT9=%08X)\n", cpu.sreg[S_CS], (unsigned)cpu.eip, mem_r32(9*4));
-    if(kbd_head!=kbd_tail){
+    if(had_byte){
         kbd_last = kbd_buf[kbd_head];
         kbd_head = (kbd_head+1)&63;
     }
+    trc("[kbd] port60 read by %04X:%04X (IVT9=%08X) -> %02X%s\n", cpu.sreg[S_CS],
+        (unsigned)cpu.eip, mem_r32(9*4), kbd_last, had_byte?"":" (stale, queue was empty)");
     if(kbd_head!=kbd_tail) pic_raise(1); else pic_lower(1);
     return kbd_last;
 }

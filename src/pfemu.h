@@ -68,6 +68,7 @@ void pic_ack(int vec);
 void kbd_key(int scancode, int down);
 void kbd_release_all(void);     /* synthesize breaks for held keys (focus loss) */
 void kbd_clear_held(void);      /* drop held-key state (game switch / fix off) */
+int  kbd_held_get(unsigned idx);/* idx = scancode | (ext ? 0x80 : 0) */
 extern int  kbd_a20;
 
 /* ---------------------------------------------------------------- VGA ---- */
