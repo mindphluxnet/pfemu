@@ -109,6 +109,8 @@ void fantasies_on_exec(const char *dospath, uint16_t cs_seg);
 void fantasies_patch_sdr(uint32_t load_base, uint32_t imglen);
 void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len);
 void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_pause_tick(void);
 int  fantasies_intercept_cfg_open(const char *fname);
 int  fantasies_fix_active(void);
 int  fantasies_session_armed(void);

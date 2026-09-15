@@ -401,6 +401,180 @@ void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t img
     }
 }
 
+/* Pause/resume VBLANK<->raster-interrupt handshake race ("ball stuck after
+ * pause" in the original team's own preserved TODO list, FANTASIE.ASM's
+ * header COMMENT block: "?BALL STUCK AFTER PAUSE").
+ *
+ * Ball physics is split across two independently-firing interrupts that
+ * hand off to each other once per frame via a single shared flag,
+ * LAST_WAS_VB: VBLANK_INT does phase 1 and sets it TRUE ("phase 2 owed");
+ * LATE_RASTER_INTERRUPT, firing later the same frame, only runs phase 2 if
+ * it's TRUE, and clears it back to FALSE when done. Both handlers bail out
+ * immediately if INTERRUPTS_ON is FALSE - the software gate checkpause()
+ * uses to freeze gameplay while paused - but LATE_RASTER_INTERRUPT checks
+ * INTERRUPTS_ON *before* it would ever reach the LAST_WAS_VB=FALSE reset.
+ * Pause is requested from the foreground main loop, asynchronously to both
+ * interrupts, so this interleaving is possible on real hardware (and under
+ * any emulator that fires timer IRQs asynchronously to the CPU stream,
+ * i.e. any correct one):
+ *
+ *   1. VBLANK_INT runs to completion, sets LAST_WAS_VB=TRUE.
+ *   2. The main loop processes the pause keystroke before this frame's
+ *      LATE_RASTER_INTERRUPT has fired; checkpause() sets INTERRUPTS_ON=
+ *      FALSE and busy-waits.
+ *   3. LATE_RASTER_INTERRUPT fires, sees INTERRUPTS_ON=FALSE, bails before
+ *      ever reaching the LAST_WAS_VB=FALSE reset. The flag is now wedged
+ *      TRUE for the whole pause (harmless while paused - both handlers keep
+ *      bailing on the same check).
+ *   4. On resume, VBLANK_INT's own "is phase 2 still owed?" check
+ *      (CMP LAST_WAS_VB,TRUE / JE bail) makes it skip phase 1 for that
+ *      frame. The next LATE_RASTER_INTERRUPT normally self-heals - TRUE is
+ *      what lets *it* proceed, and it clears the flag when done - unless
+ *      that one recovery tick is itself gated off (re-pausing inside the
+ *      same narrow window, or the SLOWCNT frame-skip throttle landing on
+ *      it), in which case the wedge persists another full cycle and can
+ *      compound.
+ *
+ * Fix: rather than editing the game's code (which would mean inserting
+ * bytes, not just flipping ones already there), poke LAST_WAS_VB back to
+ * FALSE ourselves the instant pause ends, so the next VBLANK_INT always
+ * finds a clean handshake. PAUSEFLAG, not INTERRUPTS_ON, is the trigger:
+ * it is TRUE for exactly the pause's duration (set by the pause key, and
+ * cleared only by checkpause()'s own resume paths) and touched nowhere
+ * else in the engine. INTERRUPTS_ON is also saved/cleared/restored around a
+ * handful of short, unrelated critical sections elsewhere (the light-
+ * flashing code), which could otherwise produce a spurious FALSE->TRUE blip
+ * unrelated to pause and trip this fix at the wrong moment.
+ *
+ * Byte offsets for INTERRUPTS_ON/PAUSEFLAG (DS-relative, in the engine's
+ * shared DATA segment) and LAST_WAS_VB (CS-relative, a data byte living
+ * inline in CODE next to VBLANK_INT/LATE_RASTER_INTERRUPT) are found by
+ * signature, not hardcoded: PAUSEFLAG's offset is read straight out of
+ * checkpause()'s own resume sequence, and LAST_WAS_VB's out of
+ * LATE_RASTER_INTERRUPT's normal-completion tail. DATA's own runtime
+ * segment is recovered the way fantasies_patch_sdr() already recovers a
+ * driver's segment: by majority vote over every `push imm16 / pop ds`
+ * (68 xx xx 1F) site in the image - DATA is by far the most common target,
+ * used by nearly every routine in the engine. All three signatures were
+ * verified against the shipped TABLE1-4.PRG (identical shape in all four;
+ * the actual offsets differ table to table, as expected since each table's
+ * own code/data size shifts everything after it). */
+static uint32_t pause_addr_pauseflag[5]   = {0,0,0,0,0};  /* index = table_num */
+static uint32_t pause_addr_last_was_vb[5] = {0,0,0,0,0};
+static int      pause_prev_flag[5]        = {0,0,0,0,0};
+
+void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t imglen){
+    /* mov cx,0 / mov ax,4 / mov bx,3 / int 66h / IF_ERROR 1,OUTOFMEMORY /
+     * IF_ERROR 2,INIT_ERR / call RESTORE_AFTER_PAUSE /
+     * mov interrupts_on,true / mov pauseflag,false  (checkpause() resume) */
+    static const uint8_t sigA[44] = {
+        0xB9,0x00,0x00, 0xB8,0x04,0x00, 0xBB,0x03,0x00, 0xCD,0x66,
+        0x3C,0x01,0x75,0x06,0x90,0x90,0x90,0xE9,0x00,0x00,
+        0x3C,0x02,0x75,0x06,0x90,0x90,0x90,0xE9,0x00,0x00,
+        0xE8,0x00,0x00,
+        0xC6,0x06,0x00,0x00,0xFF,
+        0xC6,0x06,0x00,0x00,0x00 };
+    static const uint8_t maskA[44] = {
+        1,1,1, 1,1,1, 1,1,1, 1,1,
+        1,1,1,1,1,1,1,1,0,0,
+        1,1,1,1,1,1,1,1,0,0,
+        1,0,0,
+        1,1,0,0,1,
+        1,1,0,0,1 };
+    /* mov cs:last_was_vb,false / mov inside_rastint,false / mov ax,12345 /
+     * retf  (LATE_RASTER_INTERRUPT's normal-completion tail) */
+    static const uint8_t sigB[15] = {
+        0x2E,0xC6,0x06,0x00,0x00,0x00,
+        0xC6,0x06,0x00,0x00,0x00,
+        0xB8,0x39,0x30, 0xCB };
+    static const uint8_t maskB[15] = {
+        1,1,1,0,0,1,
+        1,1,0,0,1,
+        1,1,1, 1 };
+    char b[64];
+    uint32_t i, pa = (uint32_t)-1, pb = (uint32_t)-1;
+    uint16_t off_pf, off_lwv;
+    uint16_t cand_val[64]; uint32_t cand_cnt[64]; int ncand = 0;
+    uint32_t data_seg = 0, best = 0, cs_base;
+    int tn;
+
+    if(!session_armed || dos_no_patch) return;
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)) return;
+    tn = b[5] - '0';
+    if(load_base + imglen > RAM_SIZE || imglen < sizeof(sigA)) return;
+
+    for(i = 0; i + sizeof(sigA) <= imglen; i++){
+        uint32_t at = load_base + i, k2;
+        for(k2 = 0; k2 < sizeof(sigA); k2++)
+            if(maskA[k2] && ram[at+k2] != sigA[k2]) break;
+        if(k2 == sizeof(sigA)){ pa = i; break; }
+    }
+    for(i = 0; i + sizeof(sigB) <= imglen; i++){
+        uint32_t at = load_base + i, k2;
+        for(k2 = 0; k2 < sizeof(sigB); k2++)
+            if(maskB[k2] && ram[at+k2] != sigB[k2]) break;
+        if(k2 == sizeof(sigB)){ pb = i; break; }
+    }
+    if(pa == (uint32_t)-1 || pb == (uint32_t)-1){
+        trc("[fantasies] pause-race fix: signature not found (table %d), leaving unpatched\n", tn);
+        return;
+    }
+    off_pf  = img_u16(load_base, pa + 41);
+    off_lwv = img_u16(load_base, pb + 3);
+
+    for(i = 0; i + 4 <= imglen; i++){
+        if(ram[load_base+i] == 0x68 && ram[load_base+i+3] == 0x1F){
+            uint16_t v = img_u16(load_base, i+1);
+            int j;
+            for(j = 0; j < ncand; j++) if(cand_val[j] == v) break;
+            if(j == ncand){ if(ncand < 64){ cand_val[ncand]=v; cand_cnt[ncand]=1; ncand++; } }
+            else cand_cnt[j]++;
+        }
+    }
+    for(i = 0; i < (uint32_t)ncand; i++)
+        if(cand_cnt[i] > best){ best = cand_cnt[i]; data_seg = cand_val[i]; }
+    if(!data_seg || best < 8){
+        trc("[fantasies] pause-race fix: DATA segment not confidently found (table %d), leaving unpatched\n", tn);
+        return;
+    }
+
+    /* CS-relative: table_seg_base isn't valid yet at this call site (it's
+     * only updated by fantasies_on_exec(), which runs after load_mz()
+     * returns) - derive it locally the same way dos_exec() will: the
+     * shipped TABLE1-4.PRG all use header.cs=0x10 (a 0x100-byte fake-PSP
+     * prefix inside the load image, per fantasies_patch_sdr()'s own comment
+     * above), so cs_seg*16 == load_base + 0x100. */
+    cs_base = load_base + 0x100;
+
+    pause_addr_pauseflag[tn]   = data_seg*16 + off_pf;
+    pause_addr_last_was_vb[tn] = cs_base + off_lwv;
+    pause_prev_flag[tn] = 0;
+    trc("[fantasies] pause-race fix armed (table %d): pauseflag=%05X last_was_vb=%05X\n",
+        tn, pause_addr_pauseflag[tn], pause_addr_last_was_vb[tn]);
+}
+
+/* Called from dev_tick() - far more often than once per emulated video
+ * frame. Polls PAUSEFLAG for a TRUE->FALSE edge (pause just ended) and
+ * forces LAST_WAS_VB back to FALSE at that instant, so the very next
+ * VBLANK_INT always finds a clean handshake instead of possibly finding it
+ * wedged TRUE from before the pause. See the race writeup above
+ * fantasies_patch_pause(). */
+void fantasies_pause_tick(void){
+    uint32_t a_pf, a_lwv;
+    int cur;
+    if(!fantasies_fix_active() || !table_num) return;
+    a_pf  = pause_addr_pauseflag[table_num];
+    a_lwv = pause_addr_last_was_vb[table_num];
+    if(!a_pf || !a_lwv) return;
+    cur = mem_r8(a_pf) != 0;
+    if(pause_prev_flag[table_num] && !cur){
+        mem_w8(a_lwv, 0);
+        trc("[fantasies] pause ended: last_was_vb forced clear (table %d)\n", table_num);
+    }
+    pause_prev_flag[table_num] = cur;
+}
+
 /* Trainer hotkeys, ported from trainer/PINTRN.COM (RAZOR DoX, 1994).
  *
  * That trainer is a packed real-mode TSR: it decompresses itself, waits for
