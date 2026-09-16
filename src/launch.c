@@ -40,7 +40,14 @@
 #include <stdio.h>
 #include "pfemu.h"
 
-#define GAME_DIR  "FANTASY"
+/* Two known installs, picked between at the top of the dialog when both are
+ * present: the original 1992 floppy release and the 1995 CD-ROM "Deluxe"
+ * re-release (see src/fantasies.c for what differs between them under the
+ * hood - the flipper/pause/spring fixes locate themselves by signature scan
+ * either way, so both run through the same patches once booted). Both ship
+ * PINBALL.EXE as the boot program. */
+#define GAME_DIR_FLOPPY "FANTASY"
+#define GAME_DIR_DELUXE "FANTASYDX"
 #define GAME_PROG "PINBALL.EXE"
 
 #define ID_SOUND        104
@@ -49,6 +56,8 @@
 #define ID_QUIT         107
 #define ID_CHEAT_ENABLE 108
 #define ID_FULLSCREEN   109
+#define ID_VER_FLOPPY   110
+#define ID_VER_DELUXE   111
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
@@ -250,9 +259,36 @@ typedef struct {
     int fullscreen;          /* checkbox state: start the window fullscreen */
     int done;               /* dialog finished */
     int ok;                 /* 1 = launch, 0 = quit */
-    HWND hSound, hOpt[6], hCheatEnable, hFullscreen;
+    int has_floppy, has_deluxe; /* which install(s) were found on disk */
+    int deluxe;              /* radio state: 0 = floppy (FANTASY), 1 = Deluxe (FANTASYDX) */
+    int ver_y;                /* top of the version radio row, 0 if not shown (one install only) */
+    HWND hSound, hOpt[6], hCheatEnable, hFullscreen, hVerFloppy, hVerDeluxe;
     HFONT hFont;
 } LaunchState;
+
+static const char *cur_game_dir(const LaunchState *st){
+    return st->deluxe ? GAME_DIR_DELUXE : GAME_DIR_FLOPPY;
+}
+
+/* Re-reads every per-install setting for whichever directory is now selected
+ * and pushes it into the already-created controls - used both at dialog
+ * startup and whenever the version radio buttons flip, so switching versions
+ * never leaves a stale FANTASY checkbox state applied to FANTASYDX. */
+static void reload_for_dir(HWND h, LaunchState *st){
+    const char *dir = cur_game_dir(st);
+    int i, balls, spring;
+    st->sound = read_sound_is_sb(dir);
+    read_pinball_cfg(dir, st->cfg);
+    read_cheats_cfg(dir, &balls, &spring);
+    st->cheat_enable = balls || spring;
+    st->fullscreen = read_fullscreen_cfg(dir);
+    if(st->hSound){
+        CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
+        for(i=0;i<6;i++) SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
+        CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
+        CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
+    }
+}
 
 static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     LaunchState *st = (LaunchState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
@@ -260,25 +296,42 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     case WM_CREATE: {
         CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
         HWND c;
-        int i, y;
+        int i, y, base;
         SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         st = (LaunchState*)cs->lpCreateParams;
         st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
         c = CreateWindowExA(0,"STATIC","Pinball Fantasies",WS_CHILD|WS_VISIBLE,
                             12,12,336,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        base = 0;
+        if(st->has_floppy && st->has_deluxe){
+            /* Only shown when both installs are found side by side - a lone
+             * install just boots straight in, same as before this feature. */
+            st->ver_y = 32;
+            st->hVerFloppy = CreateWindowExA(0,"BUTTON","Floppy (1992)",
+                                WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON|WS_GROUP,
+                                24,st->ver_y,150,20,h,(HMENU)ID_VER_FLOPPY,cs->hInstance,0);
+            SendMessageA(st->hVerFloppy,WM_SETFONT,(WPARAM)st->hFont,0);
+            st->hVerDeluxe = CreateWindowExA(0,"BUTTON","Deluxe CD-ROM (1995)",
+                                WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
+                                180,st->ver_y,168,20,h,(HMENU)ID_VER_DELUXE,cs->hInstance,0);
+            SendMessageA(st->hVerDeluxe,WM_SETFONT,(WPARAM)st->hFont,0);
+            CheckDlgButton(h,ID_VER_FLOPPY,st->deluxe?BST_UNCHECKED:BST_CHECKED);
+            CheckDlgButton(h,ID_VER_DELUXE,st->deluxe?BST_CHECKED:BST_UNCHECKED);
+            base = 28;
+        }
         st->hSound = CreateWindowExA(0,"BUTTON","Sound on (SoundBlaster)",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,36,324,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
+                            24,36+base,324,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
         SendMessageA(st->hSound,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
         c = CreateWindowExA(0,"STATIC",
                             "On: SoundBlaster 220h/IRQ 7. Off: silent.\r\n"
                             "Writes SOUND.CFG, game files stay pristine.",
                             WS_CHILD|WS_VISIBLE,
-                            24,60,324,28,h,(HMENU)ID_NOTE,cs->hInstance,0);
+                            24,60+base,324,28,h,(HMENU)ID_NOTE,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        y = 96;
+        y = 96+base;
         for(i=0;i<6;i++){
             int k;
             c = CreateWindowExA(0,"STATIC",opts[i].label,WS_CHILD|WS_VISIBLE,
@@ -330,23 +383,27 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             st->cheat_enable = IsDlgButtonChecked(h,ID_CHEAT_ENABLE)==BST_CHECKED;
         } else if(id==ID_FULLSCREEN){
             st->fullscreen = IsDlgButtonChecked(h,ID_FULLSCREEN)==BST_CHECKED;
+        } else if(id==ID_VER_FLOPPY || id==ID_VER_DELUXE){
+            st->deluxe = (id==ID_VER_DELUXE);
+            reload_for_dir(h, st);
         } else if(id==ID_LAUNCH){
             int i;
-            DWORD at = GetFileAttributesA(GAME_DIR);
+            const char *dir = cur_game_dir(st);
+            DWORD at = GetFileAttributesA(dir);
             if(at==INVALID_FILE_ATTRIBUTES || !(at&FILE_ATTRIBUTE_DIRECTORY)){
                 MessageBoxA(h,"Game directory not found.\n"
                               "Run from the pfemu folder.",
                             "pfemu",MB_OK|MB_ICONERROR);
                 return 0;
             }
-            write_sound_cfg(GAME_DIR, st->sound);
+            write_sound_cfg(dir, st->sound);
             for(i=0;i<6;i++){
                 LRESULT sel = SendMessageA(st->hOpt[i],CB_GETCURSEL,0,0);
                 st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_pinball_defaults[i] : sel);
             }
-            write_pinball_cfg(GAME_DIR, st->cfg);
-            write_cheats_cfg(GAME_DIR, st->cheat_enable, st->cheat_enable);
-            write_fullscreen_cfg(GAME_DIR, st->fullscreen);
+            write_pinball_cfg(dir, st->cfg);
+            write_cheats_cfg(dir, st->cheat_enable, st->cheat_enable);
+            write_fullscreen_cfg(dir, st->fullscreen);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -370,7 +427,8 @@ int show_launcher(LaunchChoice *out){
     MSG msg;
     LaunchState st;
     int sw, sh;
-    const int winw = 372, winh = 430;
+    int winw = 372, winh = 430;
+    DWORD atf, atd;
     memset(&wc,0,sizeof(wc));
     memset(&st,0,sizeof(st));
     wc.lpfnWndProc = launch_proc;
@@ -379,12 +437,19 @@ int show_launcher(LaunchChoice *out){
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
     RegisterClassA(&wc);
-    st.sound = read_sound_is_sb(GAME_DIR);
-    read_pinball_cfg(GAME_DIR, st.cfg);
-    { int balls, spring;
-      read_cheats_cfg(GAME_DIR, &balls, &spring);
-      st.cheat_enable = balls || spring; }
-    st.fullscreen = read_fullscreen_cfg(GAME_DIR);
+    atf = GetFileAttributesA(GAME_DIR_FLOPPY);
+    atd = GetFileAttributesA(GAME_DIR_DELUXE);
+    st.has_floppy = atf!=INVALID_FILE_ATTRIBUTES && (atf&FILE_ATTRIBUTE_DIRECTORY);
+    st.has_deluxe = atd!=INVALID_FILE_ATTRIBUTES && (atd&FILE_ATTRIBUTE_DIRECTORY);
+    st.deluxe = st.has_floppy ? 0 : 1;   /* prefer the floppy default when both exist */
+    if(st.has_floppy && st.has_deluxe) winh += 28;
+    { const char *dir = cur_game_dir(&st);
+      int balls, spring;
+      st.sound = read_sound_is_sb(dir);
+      read_pinball_cfg(dir, st.cfg);
+      read_cheats_cfg(dir, &balls, &spring);
+      st.cheat_enable = balls || spring;
+      st.fullscreen = read_fullscreen_cfg(dir); }
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                            CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,
@@ -402,7 +467,7 @@ int show_launcher(LaunchChoice *out){
     }
     UnregisterClassA("pfemu-launcher",wc.hInstance);
     if(!st.ok) return 0;
-    out->dir = GAME_DIR;
+    out->dir = cur_game_dir(&st);
     out->prog = GAME_PROG;
     out->fullscreen = st.fullscreen;
     return 1;

@@ -6,7 +6,10 @@
  *  - the INTRO.PRG manual-lookup image patch (memory-only, signature-checked,
  *    -nopatch disables);
  *  - the flipper fix session/exec gating (see below);
- *  - the trainer hotkeys ('1'/'2', see fantasies_key_event below).
+ *  - the trainer hotkeys ('1'/'2', see fantasies_key_event below);
+ *  - Pinball Fantasies Deluxe's (1995 CD-ROM release) boot-time CD-present
+ *    check, faked so a from-disk-only install reads as "CD found" (see
+ *    fantasies_open_cdmarker below).
  *
  * Flipper background: the tables drive each flipper from a single level bit
  * shared by 3 keys (left: 2A/38/1D, right: 36/E0-38/E0-1D; FANTASIE.ASM KEYINT
@@ -30,7 +33,6 @@ static int session_armed = 0;   /* user booted Fantasies (launcher or CLI equiv)
 static int fix_on = 0;          /* a TABLE1-4.PRG is currently running */
 static char session_dir[512];   /* game directory, for the options file below */
 static int table_num = 0;              /* 1-4 while a table is running, else 0 */
-static uint32_t table_seg_base = 0;    /* linear address of that table's own CS */
 static int trainer_enabled = 0;        /* launcher: arm the '1'/'2' hotkeys below */
 static int spring_cheat_on = 0;        /* our own state for the '2' toggle - see below */
 static void fantasies_osd_clear(void); /* defined below, near the OSD drawer */
@@ -87,7 +89,7 @@ void fantasies_begin_session(const char *dir, const char *prog){
         !strcmp(pb, "PINBALL.EXE") || !strcmp(pb, "INTRO.PRG") ||
         is_table_prog(pb);
     fix_on = 0;
-    table_num = 0; table_seg_base = 0;
+    table_num = 0;
     snprintf(session_dir, sizeof(session_dir), "%s", dir ? dir : "");
     if(session_armed) load_cheat_cfg(session_dir);
     if(!session_armed) kbd_clear_held();
@@ -95,17 +97,13 @@ void fantasies_begin_session(const char *dir, const char *prog){
         session_armed ? "armed" : "not armed", db, pb);
 }
 
-/* Called from dos_exec() for every program the guest (or main()) starts.
- * cs_seg is the segment dos_exec() is about to run it at (from load_mz's
- * header-relative CS, i.e. the same "load+cs" a table's own code and data
- * are addressed from) - needed so fantasies_key_event() below can turn a
- * table-relative trainer offset into a linear address. */
-void fantasies_on_exec(const char *dospath, uint16_t cs_seg){
+/* Called from dos_exec() for every program the guest (or main()) starts. */
+void fantasies_on_exec(const char *dospath){
     char b[64];
     const char *dot;
     if(!session_armed || dos_no_patch){
         if(fix_on){ fix_on = 0; kbd_clear_held(); }
-        table_num = 0; table_seg_base = 0;
+        table_num = 0;
         spring_cheat_on = 0;
         fantasies_osd_clear();
         return;
@@ -115,7 +113,6 @@ void fantasies_on_exec(const char *dospath, uint16_t cs_seg){
         if(!fix_on) trc("[fantasies] flipper fix on (%s)\n", b);
         fix_on = 1;
         table_num = b[5] - '0';
-        table_seg_base = (uint32_t)cs_seg * 16;
         spring_cheat_on = 0;
         fantasies_osd_clear();
         return;
@@ -126,7 +123,7 @@ void fantasies_on_exec(const char *dospath, uint16_t cs_seg){
     if(dot && (!strcmp(dot,".PRG")||!strcmp(dot,".EXE")||!strcmp(dot,".COM"))){
         if(fix_on) trc("[fantasies] flipper fix off (%s)\n", b);
         fix_on = 0;
-        table_num = 0; table_seg_base = 0;
+        table_num = 0;
         spring_cheat_on = 0;
         fantasies_osd_clear();
         kbd_clear_held();
@@ -359,6 +356,37 @@ int fantasies_intercept_cfg_open(const char *fname){
     return 1;
 }
 
+/* Pinball Fantasies DELUXE (the 1995 CD-ROM release) only: PINBALL.EXE's
+ * boot-time CD-present check.  That release's INSTALL.COM only copies
+ * PINBALL.EXE and the sound drivers to the hard drive; INTRO.PRG/TABLE*.PRG/
+ * the .MOD music stay on the CD-ROM, referenced by hardcoded absolute paths
+ * (\21stcent\pfd\..., \21stcent\soundsys\... - see dos_path()'s comment).
+ * INSTALL.COM's own last step runs CD_DRIVE.EXE, which writes a "cd.nfo"
+ * marker into \21stcent\ on the hard drive recording which drive letter the
+ * CD-ROM is on; PINBALL.EXE's very first act (CHDIR \21stcent, then a plain
+ * relative OPEN "cd.nfo") is just checking that marker exists - confirmed by
+ * disassembling PINBALL.EXE's boot sequence and CD_DRIVE.EXE's own strings
+ * (both name "cd.nfo" and "\21stcent"). No CD drive is emulated here, so
+ * that marker never gets written for real; fake its presence instead,
+ * exactly like fantasies_intercept_cfg_open() above fakes PINBALL.CFG's
+ * absence, so a from-disk install (this emulator's only kind) reads as
+ * "CD found". The byte value itself is never a validity check - on real
+ * hardware it only ever fed a "select this drive" call, and dos_path()
+ * ignores drive letters entirely - so any placeholder value works. */
+FILE *fantasies_open_cdmarker(const char *fname){
+    char up[16];
+    FILE *f;
+    if(!session_armed || dos_no_patch) return NULL;
+    base_up(fname, up, sizeof(up));
+    if(strcmp(up, "CD.NFO")) return NULL;
+    f = tmpfile();
+    if(!f) return NULL;
+    fputc('C', f);
+    rewind(f);
+    trc("[fantasies] cd.nfo presence faked (Deluxe CD-ROM check)\n");
+    return f;
+}
+
 /* Scrolling gets clobbered by INTRO.PRG's own missing-config fallback.
  * INTRO.ASM, right after the (always-failing, per
  * fantasies_intercept_cfg_open above) boot-time load:
@@ -549,12 +577,11 @@ void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t img
         return;
     }
 
-    /* CS-relative: table_seg_base isn't valid yet at this call site (it's
-     * only updated by fantasies_on_exec(), which runs after load_mz()
-     * returns) - derive it locally the same way dos_exec() will: the
-     * shipped TABLE1-4.PRG all use header.cs=0x10 (a 0x100-byte fake-PSP
-     * prefix inside the load image, per fantasies_patch_sdr()'s own comment
-     * above), so cs_seg*16 == load_base + 0x100. */
+    /* CS-relative: the shipped TABLE1-4.PRG all use header.cs=0x10 (a
+     * 0x100-byte fake-PSP prefix inside the load image, per
+     * fantasies_patch_sdr()'s own comment above), so the table's own CS is
+     * always load_base + 0x100 regardless of the segment dos_exec() ends up
+     * running it at. */
     cs_base = load_base + 0x100;
 
     pause_addr_pauseflag[tn]   = data_seg*16 + off_pf;
@@ -606,23 +633,83 @@ void fantasies_pause_tick(void){
  * NOP pattern, and the exact 4-byte original bytes (including the counter
  * address in the 2nd/3rd byte) the trainer restores on toggle-off were all
  * confirmed byte-for-byte by reading them straight out of the shipped
- * TABLE1-4.PRG.  These .PRG are COM-style images wrapped in a minimal EXE
- * (0x200-byte header, header cs=0x10 i.e. a 0x100-byte fake PSP prefix
- * inside the load image - see load_mz()), so "CS-relative offset X" here
- * means linear = table_seg_base + X, table_seg_base being (load+cs)*16 for
- * whichever TABLEn.PRG is currently running (fantasies_on_exec() records
- * it). */
-typedef struct {
-    uint16_t balls_off;      /* site of "dec byte ptr [balls_left]" (FE 06 lo hi) */
-    uint16_t balls_counter;  /* that instruction's operand: the counter's own offset */
-} BallsSite;
-static const BallsSite balls_site[5] = {
-    {0,0},                /* unused */
-    {0x0AED, 0x33DE},     /* TABLE1.PRG */
-    {0x0A04, 0x33A4},     /* TABLE2.PRG */
-    {0x0994, 0x2C6E},     /* TABLE3.PRG */
-    {0x0AD1, 0x38F4},     /* TABLE4.PRG */
-};
+ * TABLE1-4.PRG - originally as a fixed per-table offset table, since only the
+ * floppy release existed yet. Located by signature instead now (see
+ * fantasies_patch_balls() below), the same way fantasies_patch_pause() and
+ * fantasies_patch_spring() already locate their own targets: Pinball
+ * Fantasies Deluxe's TABLE1-4.PRG carry the identical instruction sequence,
+ * just relocated by a couple hundred bytes (the Deluxe binaries are a
+ * separate build, not merely the floppy files with a different loader glued
+ * on), so a fixed offset silently missed on Deluxe - harmlessly, since
+ * fantasies_toggle_balls() checks the opcode bytes before writing, but it
+ * never worked there either. */
+/* balls_addr[table_num] is the linear address of the "dec byte ptr
+ * [balls_left]" instruction's own opcode byte (FE 06 lo hi), located by
+ * fantasies_patch_balls() below; 0 = not found for that table (the '1'
+ * hotkey becomes a no-op, same as an unrecognized-image fallback everywhere
+ * else in this file). balls_counter_val[table_num] is that instruction's
+ * operand - the counter's own linear-address low/high bytes - restored
+ * verbatim when toggling the cheat back off. */
+static uint32_t balls_addr[5] = {0,0,0,0,0};
+static uint16_t balls_counter_val[5] = {0,0,0,0,0};
+
+/* Locates the balls-left decrement.  FANTASIE.ASM's ball-lost handler reads
+ * some other flag, jumps over the increment path (74 0A ...), then runs two
+ * back-to-back "dec byte ptr [x]" stores on two different counters: the first
+ * (a different flag entirely) is immediately followed by a short jump (EB),
+ * the second - the one that actually counts balls left - is immediately
+ * followed by a re-read of it (A0 lo hi = mov al,[same address+1]) and then a
+ * compare against the just-decremented counter itself (38 06 lo hi = cmp
+ * [that counter],al) guarding a "did it just hit zero" branch (77 = ja).
+ * That second dec/compare pair is what PINTRN.COM's own balls-patch site
+ * targets. The two flanking single-byte jump displacements and the two
+ * addresses read from immediates are wildcarded; everything else (13 opcode
+ * bytes) is fixed and confirmed unique by static byte-scan against all four
+ * shipped TABLE1-4.PRG, floppy and Deluxe alike. */
+void fantasies_patch_balls(const char *dospath, uint32_t load_base, uint32_t imglen){
+    static const uint8_t sig[22] = {
+        0x90,0x90,0x90,                 /* NOP padding before the ball-lost handler */
+        0xFE,0x06,0,0,                  /* dec byte ptr [some other flag]  <- not this one */
+        0xEB,0,                         /* jmp short +disp */
+        0x90,
+        0xFE,0x06,0,0,                  /* dec byte ptr [balls_left]  <- offset wanted */
+        0xA0,0,0,                       /* mov al,[balls_left+1] (same counter, next byte) */
+        0x38,0x06,0,0,                  /* cmp [balls_left],al */
+        0x77 };                         /* ja +disp */
+    static const uint8_t mask[22] = {
+        1,1,1,
+        1,1,0,0,
+        1,0,
+        1,
+        1,1,0,0,
+        1,0,0,
+        1,1,0,0,
+        1 };
+    char b[64];
+    uint32_t i;
+    int tn;
+
+    if(!session_armed || dos_no_patch) return;
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)) return;
+    tn = b[5] - '0';
+    if(load_base + imglen > RAM_SIZE || imglen < sizeof(sig)) return;
+
+    for(i = 0; i + sizeof(sig) <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        for(k = 0; k < sizeof(sig); k++)
+            if(mask[k] && ram[at+k] != sig[k]) break;
+        if(k == sizeof(sig)){
+            balls_addr[tn] = load_base + i + 10;
+            balls_counter_val[tn] = img_u16(load_base, i + 12);
+            trc("[fantasies] infinite-balls site located (table %d): %05X counter=%04X\n",
+                tn, balls_addr[tn], balls_counter_val[tn]);
+            return;
+        }
+    }
+    balls_addr[tn] = 0;
+    trc("[fantasies] infinite-balls fix: signature not found (table %d), leaving unpatched\n", tn);
+}
 
 /* SPRING_VALID's linear address per table, located by fantasies_patch_spring()
  * below; 0 = not found for that table (toggle becomes a no-op). */
@@ -735,17 +822,17 @@ void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t im
  * known state (nothing touched) - callers use this to decide whether/what
  * to show on the OSD. */
 static int fantasies_toggle_balls(void){
-    const BallsSite *s = &balls_site[table_num];
-    uint32_t a = table_seg_base + s->balls_off;
-    if(a + 4 > RAM_SIZE) return -1;
+    uint32_t a = balls_addr[table_num];
+    if(!a || a + 4 > RAM_SIZE) return -1;
     if(ram[a]==0xFE && ram[a+1]==0x06){
         ram[a]=0x90; ram[a+1]=0x90; ram[a+2]=0x90; ram[a+3]=0x90;
         trc("[fantasies] infinite balls ON (table %d)\n", table_num);
         return 1;
     } else if(ram[a]==0x90 && ram[a+1]==0x90 && ram[a+2]==0x90 && ram[a+3]==0x90){
+        uint16_t counter = balls_counter_val[table_num];
         ram[a]=0xFE; ram[a+1]=0x06;
-        ram[a+2]=(uint8_t)(s->balls_counter & 0xFF);
-        ram[a+3]=(uint8_t)(s->balls_counter >> 8);
+        ram[a+2]=(uint8_t)(counter & 0xFF);
+        ram[a+3]=(uint8_t)(counter >> 8);
         trc("[fantasies] infinite balls OFF (table %d)\n", table_num);
         return 0;
     }

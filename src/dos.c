@@ -312,19 +312,22 @@ static int copy_to_overlay(const char *src, const char *dst){
     return 1;
 }
 
+/* This DOS layer never tracks real subdirectories (CHDIR is a no-op success,
+ * MKDIR/RMDIR don't exist - see the AH=3Bh/47h handlers below): every game
+ * file lives directly under gamedir, same as overlay_path() below already
+ * assumes. Pinball Fantasies Deluxe (the CD-ROM release) hardcodes absolute
+ * guest paths for its data files - "\21stcent\pfd\table1.hi",
+ * "\21stcent\soundsys\Sound.Cfg", etc. (the install layout INSTALL.COM
+ * creates on the CD-ROM version's target hard drive) - where the floppy
+ * release just used bare filenames. Taking the basename regardless of any
+ * leading path resolves both the same way, onto the one flat gamedir. */
 static void dos_path(const char *in, char *out, size_t n){
     const char *p = in;
-    char tmp[512]; size_t i = 0;
+    const char *base;
     if(p[0] && p[1]==':') p += 2;
-    while(*p && i < sizeof(tmp)-1){
-        char c = *p++;
-        tmp[i++] = (c=='\\') ? '/' : c;
-    }
-    tmp[i] = 0;
-    if(tmp[0]=='/')
-        snprintf(out, n, "%s%s", gamedir, tmp);
-    else
-        snprintf(out, n, "%s/%s", gamedir, tmp);
+    base = p;
+    for(; *p; p++) if(*p=='\\' || *p=='/') base = p+1;
+    snprintf(out, n, "%s/%s", gamedir, base);
 }
 static void read_dosstr(uint32_t a, char *out, int n){
     int i;
@@ -482,6 +485,7 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         fantasies_patch_intro(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_pause(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_spring(dospath, (uint32_t)load*16, imglen);
+        fantasies_patch_balls(dospath, (uint32_t)load*16, imglen);
         /* fantasies_patch_sdr() (SDR PLL seed preset + pass-1 skip) is
          * disabled: it computes a "poke" address from a segment immediate
          * baked into the .SDR file (confirmed unaffected by the relocation
@@ -527,7 +531,7 @@ int dos_exec(const char *dospath, uint16_t parblk_seg, uint32_t parblk_off,
     r = load_mz(host, &cs,&ip,&ss,&sp,&psp, env, tail, dospath);
     if(r) return r;
 
-    fantasies_on_exec(dospath, cs);
+    fantasies_on_exec(dospath);
 
     if(nproc < 8){
         procs[nproc].psp = psp;
@@ -819,6 +823,18 @@ void dos_int21(void){
             AX = 2; bios_set_cf(1);
             trc("[dos] open '%s' intercepted (Fantasies options poke)\n", name);
             break;
+        }
+        if(AH==0x3D){
+            FILE *virt = fantasies_open_cdmarker(name);
+            if(virt){
+                h = alloc_handle();
+                if(h<0){ fclose(virt); AX = 4; bios_set_cf(1); break; }
+                fh[h].f = virt; fh[h].used = 1;
+                snprintf(fh[h].name,sizeof(fh[h].name),"%s",name);
+                AX = (uint16_t)h; bios_set_cf(0);
+                trc("[dos] open '%s' intercepted (virtual, handle %d)\n", name, h);
+                break;
+            }
         }
         h = alloc_handle();
         dos_path(name, host, sizeof(host));
