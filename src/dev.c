@@ -115,11 +115,89 @@ static void pit_init(void){
                       pit[i].inv_per = PIT_HZ / 65536.0; }
     pit[0].next_irq = 65536.0 / PIT_HZ;
 }
+/* Counter reads under -matdbg: how many of channel 0's mode-0 reads came back
+ * as a small wrapped (negative) count, which is the only shape the sound
+ * driver's ISR can use - see the comment in pit_count() below. */
+unsigned long pit0_m0_reads = 0, pit0_m0_wrapped = 0, pit0_irqs = 0;
+/* On by default.  It was held back while pfemu's interrupt latency was a
+ * whole instruction batch, because the exact reading hands the driver a real
+ * latency to subtract and a 46 us one turned small inter-task deltas into a
+ * negative delay - a ~55 ms one-shot, and a table-select screen change that
+ * could be left with a dead timer.  Both sources of that latency are now
+ * bounded (the main loop's batch clamp, and PIT0_UNARMED_BATCH below), so the
+ * correction is the few microseconds it is on hardware.  -nopitm0 goes back
+ * to the old rate-generator reading. */
+int pit_m0_exact = 1;
+/* Interrupt latency, in PIT ticks, between a one-shot coming due and the
+ * guest's handler actually starting: what the driver's ISR compensates for,
+ * and the thing that decides whether the compensation is small or wild. */
+double pit0_due = -1.0;      /* when the one-shot came due */
+double pit0_raise_t = -1.0;  /* when the batch loop noticed and raised it */
+unsigned long pit0_lat_n = 0;
+double pit0_lat_sum = 0.0, pit0_lat_max = 0.0;
+/* ...split into the two things that can be wrong.  over = how far the
+ * instruction batch ran past the deadline before dev_tick() looked; wait =
+ * how much longer the guest took to actually enter the handler (interrupts
+ * masked or already in service).  They want different fixes. */
+double pit0_over_sum = 0.0, pit0_over_max = 0.0;
+double pit0_wait_sum = 0.0, pit0_wait_max = 0.0;
+/* First few mode-0 reads, logged under -matdbg. */
+int pit0_m0_log = 0;
+
 static uint16_t pit_count(int c){
+    uint32_t rel = pit[c].reload ? pit[c].reload : 65536u;
+    double q;
+    /* Mode 0 is a one-shot, and reading it back is not the same thing as
+     * reading a rate generator.  Two differences matter, and the sound
+     * driver depends on both:
+     *
+     *  - the count runs down from the value written, starting when it was
+     *    written.  The periodic path below instead derives a phase from
+     *    absolute emulated time, as if the counter had been loaded at t=0 and
+     *    had been cycling ever since, so what it returns is unrelated to how
+     *    much of THIS one-shot is left.
+     *  - past terminal count the 8254 does not reload.  It keeps decrementing,
+     *    wrapping to FFFF, so a read taken after the interrupt has fired comes
+     *    back as a small *negative* count.
+     *
+     * The driver's timer ISR reads the counter on every interrupt to take the
+     * interrupt latency out of the next delay (SBLASTER.SDR image 1C0F:
+     * `bx = delta` / latch / `in al,40` twice / `add bx,cx` / `sub bx,0Ah` /
+     * reprogram).  That `add` is a subtraction: on hardware cx is FFFF-minus-
+     * latency, because the count has just wrapped.  Returning a free-running
+     * phase instead handed it a large positive number - up to a whole reload,
+     * 11.4 ms of the 16.7 ms frame in the traces - which it added to the next
+     * delay.  The second of the two events the driver schedules per frame then
+     * landed after the next frame's vsync-synced reprogram and was overwritten
+     * before it could fire, so half the timer interrupts never happened:
+     * -matdbg measured 58.4 IRQ0/s against the ~119/s the two reloads (13636
+     * and ~6347 ticks, one frame together) ask for.  That is what paced the
+     * dot matrix at 30 Hz - see docs/OPTIMIZATIONS.md 30.
+     *
+     * Only channel 0 tracks a deadline (next_irq), and only channel 0 is ever
+     * run in mode 0 here; anything else keeps the periodic approximation. */
+    if(c == 0) pit0_m0_reads++;
+    if(c == 0 && pit[0].mode == 0 && pit_m0_exact){
+        double left = (pit[0].next_irq - emu_now()) * PIT_HZ;
+        if(left >= (double)rel) return (uint16_t)rel;   /* written, not started */
+        if(left > 0.0) return (uint16_t)left;
+        pit0_m0_wrapped++;
+        {   /* past zero: -left ticks have elapsed since terminal count */
+            double past = -left;
+            uint32_t p = past >= 4294967296.0 ? 0xFFFFFFFFu : (uint32_t)past;
+            uint16_t r = (uint16_t)(0u - p);
+            if(pit0_m0_log > 0){
+                pit0_m0_log--;
+                fprintf(stderr, "[pit0] t=%.6f late=%.0f ticks -> read %04X"
+                        " (reload=%u armed=%d)\n",
+                        emu_now(), past, r, pit[0].reload, pit[0].armed);
+            }
+            return r;
+        }
+    }
     /* phase by multiply/truncate instead of fmod(): same countdown value,
      * no libm call on the polling path. */
-    uint32_t rel = pit[c].reload ? pit[c].reload : 65536u;
-    double q = emu_now() * pit[c].inv_per;
+    q = emu_now() * pit[c].inv_per;
     q -= (int64_t)q;
     return (uint16_t)((1.0 - q) * (double)rel);
 }
@@ -503,6 +581,9 @@ void dev_tick(void){
     if(pit[0].mode == 0){
         if(pit[0].armed && emu_time >= pit[0].next_irq){
             pit[0].armed = 0;
+            pit0_irqs++;
+            pit0_due = pit[0].next_irq;
+            pit0_raise_t = emu_time;
             pic_raise(0);
         }
     } else {
@@ -517,9 +598,30 @@ void dev_tick(void){
 
 /* Cycle count at which the next device event (IRQ0) is due, so the main loop
  * can stop exactly there instead of overshooting by up to a whole batch. */
+/* Batch size while a mode-0 one-shot is spent and nobody has reloaded it yet.
+ *
+ * That window is exactly the time the guest spends inside the timer handler,
+ * which is where the sound driver arms the next one-shot - and its next delay
+ * can be as little as a few tens of PIT ticks.  With no deadline to clamp
+ * against, the main loop used a full 256-instruction batch here, so a
+ * one-shot armed early in a batch was not noticed until the end of it: a
+ * systematic ~46 us (at 6 MIPS) added to every single timer interrupt, which
+ * -matdbg measured as a base lateness of 55 ticks with every other sample at
+ * 55 + k x 51.
+ *
+ * That matters because the driver's handler subtracts the lateness from the
+ * delay it programs next (see pit_count()).  A few microseconds, as on
+ * hardware, is absorbed; ~46-90 us turns a small inter-task delta negative,
+ * the one-shot is programmed ~55 ms out, and the table-select screen change
+ * can be left with a dead timer.  32 instructions bounds the overshoot to
+ * ~5 us, the same order as the real thing, and only costs extra dev_tick()
+ * calls inside the handler - a few thousand a second against six million
+ * instructions. */
+#define PIT0_UNARMED_BATCH 32
+
 uint64_t dev_next_deadline(void){
     double dt;
-    if(pit[0].mode == 0 && !pit[0].armed) return cpu.cycles + 256;
+    if(pit[0].mode == 0 && !pit[0].armed) return cpu.cycles + PIT0_UNARMED_BATCH;
     dt = pit[0].next_irq - emu_now();
     if(dt <= 0.0) return cpu.cycles;
     if(dt > 1.0) dt = 1.0;

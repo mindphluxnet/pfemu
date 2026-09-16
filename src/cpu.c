@@ -480,6 +480,13 @@ void cpu_step(void){
         if(la == balldbg_pos || la == balldbg_entry) fantasies_ballgap_exec(la);
         else if(balldbg_on && la == balldbg_exit) fantasies_ballgap_exec(la);
     }
+    /* -matdbg: the dot-matrix guard, its tick, and the driver's crisis flag
+     * (see fantasies.c).  Behind the flag, so normal play pays one compare. */
+    if(mat_tick_site){
+        uint32_t la = cs_base + cpu.eip;
+        if(la == mat_tick_site || la == mat_call_site || la == mat_crisis_site)
+            fantasies_matrix_exec(la);
+    }
     if(x_on){
         x_ring[x_pos & (XRING-1)] = cs_base + cpu.eip;
         x_cs[x_pos & (XRING-1)] = cpu.sreg[S_CS];

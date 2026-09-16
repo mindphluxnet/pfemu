@@ -515,6 +515,10 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
         else if(!strcmp(argv[i],"-dmd")) vga_dmdlog = 1;
+        else if(!strcmp(argv[i],"-matdbg")){ extern int pit0_m0_log;
+            mat_dbg = 1; pit0_m0_log = 60; }
+        else if(!strcmp(argv[i],"-pitm0")){ extern int pit_m0_exact; pit_m0_exact = 1; }
+        else if(!strcmp(argv[i],"-nopitm0")){ extern int pit_m0_exact; pit_m0_exact = 0; }
         else if(!strcmp(argv[i],"-paldbg")) vga_paldbg = 1;
         else if(!strcmp(argv[i],"-vscan") && i+1<argc) vscan_step = strtoull(argv[++i],NULL,10);
         /* -releases: hash every installation found and print the full report.
@@ -674,7 +678,19 @@ int main(int argc, char **argv){
                  * far below anything the game can observe (PIT tick 55 ms). */
                 uint64_t dl = dev_next_deadline();
                 int lim = 256;
-                if(dl > cpu.cycles && dl - cpu.cycles < 256) lim = (int)(dl - cpu.cycles);
+                /* A deadline that is already here (dl == cpu.cycles, because
+                 * dev_next_deadline() truncates the remaining instruction
+                 * count down) used to fail the `dl > cpu.cycles` test and fall
+                 * through to a full 256-instruction batch - so every timer
+                 * interrupt was serviced about a batch late.  That is the
+                 * ~51-tick systematic overshoot -matdbg measured, and the
+                 * sound driver subtracts it from the delay it programs next
+                 * (see pit_count() in dev.c).  Run a single instruction
+                 * instead and let dev_tick() pick it up: the unarmed window
+                 * that follows is bounded separately, so this cannot turn
+                 * into single-stepping. */
+                if(dl <= cpu.cycles) lim = 1;
+                else if(dl - cpu.cycles < 256) lim = (int)(dl - cpu.cycles);
                 if(lim < 1) lim = 1;
                 for(n=0;n<lim;n++) cpu_step();
                 dev_tick();
@@ -682,7 +698,33 @@ int main(int argc, char **argv){
             }
             if(cpu.iflag){
                 int v = pic_pending();
-                if(v >= 0){ irq_count[v&31]++; cpu_interrupt(v, 0); }
+                if(v >= 0){
+                    /* IRQ0 latency: how long after the one-shot came due the
+                     * guest's handler actually starts.  The sound driver's ISR
+                     * reads the counter to subtract exactly this from its next
+                     * delay, so a large one corrupts its schedule (dev.c). */
+                    if(v == 8){
+                        extern double pit0_due, pit0_raise_t;
+                        extern double pit0_lat_sum, pit0_lat_max;
+                        extern double pit0_over_sum, pit0_over_max;
+                        extern double pit0_wait_sum, pit0_wait_max;
+                        extern unsigned long pit0_lat_n;
+                        if(pit0_due >= 0.0){
+                            double lat  = (emu_now()    - pit0_due)     * 1193182.0;
+                            double over = (pit0_raise_t - pit0_due)     * 1193182.0;
+                            double wait = (emu_now()    - pit0_raise_t) * 1193182.0;
+                            if(lat  < 0.0) lat  = 0.0;
+                            if(over < 0.0) over = 0.0;
+                            if(wait < 0.0) wait = 0.0;
+                            pit0_lat_n++;
+                            pit0_lat_sum  += lat;  if(lat  > pit0_lat_max)  pit0_lat_max  = lat;
+                            pit0_over_sum += over; if(over > pit0_over_max) pit0_over_max = over;
+                            pit0_wait_sum += wait; if(wait > pit0_wait_max) pit0_wait_max = wait;
+                            pit0_due = -1.0;
+                        }
+                    }
+                    irq_count[v&31]++; cpu_interrupt(v, 0);
+                }
             }
             /* Decide the present phase HERE, not after the catch-up loop.
              * This loop advances emulated time in ~10 us batches, but one
@@ -806,6 +848,7 @@ int main(int argc, char **argv){
              st1_calls, st1_bit0, st1_bit3); }
     { extern void st1_report(void); st1_report(); }
     fantasies_ballgap_report();
+    fantasies_matrix_report();
     { extern unsigned long vsync_edges;
       printf("[pfemu] vsync edges seen = %lu (%.1f/s)\n",
              vsync_edges, vsync_edges/(emu_time>0?emu_time:1)); }

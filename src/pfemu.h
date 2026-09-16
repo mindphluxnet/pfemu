@@ -192,6 +192,11 @@ void fantasies_ballgap_exec(uint32_t lin);   /* cpu.c hook, gated by balldbg_on 
 void fantasies_ballgap_present(int fallback); /* main.c: one call per present */
 void fantasies_ballgap_report(void);         /* exit summary */
 int  fantasies_present_window(double *lo, double *hi); /* 1 once learned */
+void fantasies_find_matrix(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_matrix_exec(uint32_t lin);    /* cpu.c hook, gated by mat_dbg */
+void fantasies_matrix_report(void);          /* exit summary */
+extern int mat_dbg;                          /* -matdbg */
+extern uint32_t mat_tick_site, mat_call_site, mat_crisis_site; /* 0 = unknown */
 extern int balldbg_on;                       /* -balldbg */
 extern uint32_t balldbg_entry, balldbg_exit; /* PUTTHEBALL entry / RETN, 0 = unknown */
 extern uint32_t balldbg_pos;                 /* the MOV [OLDPOS],SI store */

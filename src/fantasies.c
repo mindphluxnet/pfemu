@@ -1426,3 +1426,232 @@ void fantasies_ballgap_report(void){
     bg_profile("redraws", bg_occ);
     bg_profile("presents", bg_pres);
 }
+
+/* -------------------------------------------------- dot-matrix pacing ---- */
+/* -matdbg: why the dot-matrix panel updates in bursts.
+ *
+ * The panel is not paced by a timer of its own.  FANTASIE.ASM's DO_THE_REST
+ * (the tail of the VBLANK callback, which runs every emulated frame - SLOW=0,
+ * so there is no 30 Hz divider in the engine) guards the whole update:
+ *
+ *      cmp  time_left,false
+ *      je   skip_matrix           ; no time left!  Skip it!!
+ *      mov  al,cs:INSIDE_MATRIX   ; ...and skip it again if the previous
+ *      mov  cs:INSIDE_MATRIX,TRUE ;    update is still running
+ *      cmp  al,TRUE
+ *      je   skip_matrix
+ *      call DO_THE_DOTMATRIX
+ *
+ * and TIME_LEFT is not the game's own judgement - it is a flag the *sound
+ * driver* hands in.  Both callbacks the game registers through int 66h start
+ * with
+ *
+ *      or ax,ax / mov time_left,TRUE / jz .. / mov time_left,FALSE
+ *
+ * where AX is an in-parameter from the driver's timer ISR.  Disassembling
+ * SBLASTER.SDR (image 1C65 / 1C8D / 1CB1) shows what sets it: the ISR
+ * measures how many bytes of already-mixed audio sit ahead of the DMA read
+ * pointer, and passes AX=FFFF once that headroom has fallen to one mix block
+ * - two blocks if the ring is five blocks or deeper.  A block is rate/50
+ * bytes (one MOD tick; image 1712), and the caller asks for the ring in
+ * blocks (image 05E9): the intro asks for 26, which is the 10920-byte ring
+ * -snddbg measured at 21 kHz, and a table asks for 2, the 840-byte one.  So
+ * while a table runs, the ring is two blocks deep and the panel is dropped
+ * whenever the mixer is less than one block ahead of the card.
+ *
+ * That is the engine trading dot-matrix frames for mixer headroom, by design
+ * - so the question is not whether it happens but how often, and whether the
+ * rate is one a period machine would also have produced or an artefact of how
+ * much CPU pfemu hands the guest.  This counts it: game ticks, how many
+ * carried the crisis flag, how many actually reached DO_THE_DOTMATRIX, and
+ * the gaps between updates.  A steady gap of 2 is the authentic half-rate
+ * panel; a long tail is the burstiness.
+ *
+ * Nothing here touches the guest - three address compares and counters. */
+int mat_dbg = 0;
+uint32_t mat_tick_site = 0;   /* cmp time_left,false   - once per game tick   */
+uint32_t mat_call_site = 0;   /* call DO_THE_DOTMATRIX - an update really ran */
+uint32_t mat_crisis_site = 0; /* or ax,ax in VBLANK_INT - AX is the flag      */
+
+#define MAT_GAPS 12
+static unsigned long mat_ticks, mat_updates, mat_crisis, mat_vbl;
+static unsigned long mat_gap_hist[MAT_GAPS];
+static unsigned long mat_since;          /* ticks since the last update */
+static double mat_t0 = -1.0, mat_report_t = 0.0;
+static unsigned long mat_win_ticks, mat_win_upd, mat_win_crisis;
+
+static void mat_reset(void){
+    /* The PIT counters in dev.c run from boot, but everything reported here is
+     * divided by the window since this table loaded - so zero them with the
+     * rest or the rates come out inflated (a first cut printed 146.5 one-shots
+     * a second for what was really 113). */
+    { extern unsigned long pit0_m0_reads, pit0_m0_wrapped, pit0_irqs, pit0_lat_n;
+      extern double pit0_lat_sum, pit0_lat_max;
+      extern double pit0_over_sum, pit0_over_max, pit0_wait_sum, pit0_wait_max;
+      pit0_m0_reads = pit0_m0_wrapped = pit0_irqs = pit0_lat_n = 0;
+      pit0_lat_sum = pit0_lat_max = 0.0;
+      pit0_over_sum = pit0_over_max = pit0_wait_sum = pit0_wait_max = 0.0; }
+    mat_ticks = mat_updates = mat_crisis = mat_vbl = 0;
+    mat_since = 0;
+    memset(mat_gap_hist, 0, sizeof(mat_gap_hist));
+    mat_t0 = -1.0; mat_report_t = 0.0;
+    mat_win_ticks = mat_win_upd = mat_win_crisis = 0;
+}
+
+/* Locate the three sites in a freshly loaded table image.  The shape below is
+ * identical in every TABLE1-4.PRG of every release checked - the assembler
+ * pads each short conditional with three NOPs, which is what makes these
+ * sequences long enough to be unambiguous - and the TIME_LEFT cell address
+ * falls out of the first match, so nothing is hard-coded per table. */
+void fantasies_find_matrix(const char *dospath, uint32_t load_base, uint32_t imglen){
+    /* or ax,ax / mov [TIME_LEFT],TRUE / jz +8 / nop*3 / mov [TIME_LEFT],FALSE */
+    static const uint8_t sigA[17] = {
+        0x0B,0xC0, 0xC6,0x06,0,0,0xFF, 0x74,0x08, 0x90,0x90,0x90,
+        0xC6,0x06,0,0,0x00 };
+    static const uint8_t maskA[17] = {
+        1,1, 1,1,0,0,1, 1,1, 1,1,1, 1,1,0,0,1 };
+    char b[64];
+    const char *dot;
+    uint32_t i;
+    uint8_t cell[2];
+
+    if(!mat_dbg || !session_armed) return;
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)){
+        /* A running table EXECs its own .SDR, and that must not clear the
+         * hooks or the counters out from under the measurement; leaving the
+         * table for the intro must, or the hooks would go on matching
+         * addresses that now hold somebody else's code. */
+        dot = strrchr(b, '.');
+        if(dot && (!strcmp(dot,".PRG") || !strcmp(dot,".EXE") || !strcmp(dot,".COM")))
+            mat_tick_site = mat_call_site = mat_crisis_site = 0;
+        return;
+    }
+    mat_tick_site = mat_call_site = mat_crisis_site = 0;
+    mat_reset();
+    if(load_base + imglen > RAM_SIZE || imglen < sizeof(sigA)) return;
+
+    for(i = 0; i + sizeof(sigA) <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        for(k = 0; k < sizeof(sigA); k++)
+            if(maskA[k] && ram[at+k] != sigA[k]) break;
+        if(k < sizeof(sigA)) continue;
+        if(ram[at+4] != ram[at+14] || ram[at+5] != ram[at+15]) continue;
+        mat_crisis_site = at;
+        break;
+    }
+    if(!mat_crisis_site){
+        fprintf(stderr, "[mat] TIME_LEFT signature not found in %s;"
+                " -matdbg is idle for this image\n", b);
+        return;
+    }
+    cell[0] = ram[mat_crisis_site+4];
+    cell[1] = ram[mat_crisis_site+5];
+
+    /* cmp byte [TIME_LEFT],0 / je short - the in-game guard is the first of
+     * the two matches (the second is VBLANK_INT_DEMO's copy, which paces the
+     * panel in attract mode).  DO_THE_DOTMATRIX's CALL sits a fixed 0x1C
+     * further on, past the INSIDE_MATRIX re-entrancy guard. */
+    for(i = 0; i + 0x20 <= imglen; i++){
+        uint32_t at = load_base + i;
+        if(ram[at] != 0x80 || ram[at+1] != 0x3E) continue;
+        if(ram[at+2] != cell[0] || ram[at+3] != cell[1]) continue;
+        if(ram[at+4] != 0x00 || ram[at+5] != 0x74) continue;
+        if(ram[at+0x1C] != 0xE8) continue;   /* the CALL must be where it always is */
+        mat_tick_site = at;
+        mat_call_site = at + 0x1C;
+        break;
+    }
+    if(!mat_tick_site){
+        fprintf(stderr, "[mat] TIME_LEFT cell %02X%02X found but no matrix guard;"
+                " -matdbg is idle\n", cell[1], cell[0]);
+        mat_crisis_site = 0;
+        return;
+    }
+    fprintf(stderr, "[mat] %s: TIME_LEFT=[%02X%02X] crisis=%05X tick=%05X call=%05X\n",
+            b, cell[1], cell[0], (unsigned)mat_crisis_site,
+            (unsigned)mat_tick_site, (unsigned)mat_call_site);
+}
+
+/* Called from cpu_step() only while -matdbg is on, and only after the three
+ * address compares there have already matched. */
+void fantasies_matrix_exec(uint32_t lin){
+    double now = emu_now();
+    if(mat_t0 < 0.0){ mat_t0 = now; mat_report_t = now + 1.0; }
+
+    if(lin == mat_crisis_site){
+        mat_vbl++;
+        if(REG16(R_EAX) != 0){ mat_crisis++; mat_win_crisis++; }
+        return;
+    }
+    if(lin == mat_tick_site){
+        mat_ticks++; mat_win_ticks++; mat_since++;
+        /* one line per emulated second, so a long capture stays readable and
+         * a burst reads as a dip in `dmd` rather than as a wall of text */
+        if(now >= mat_report_t){
+            fprintf(stderr,
+                "[mat] t=%6.1f  ticks=%3lu  dmd=%3lu  crisis=%3lu  (%.0f%% of ticks dropped)\n",
+                now, mat_win_ticks, mat_win_upd, mat_win_crisis,
+                mat_win_ticks ? (mat_win_ticks - mat_win_upd) * 100.0 / mat_win_ticks : 0.0);
+            mat_win_ticks = mat_win_upd = mat_win_crisis = 0;
+            mat_report_t = now + 1.0;
+        }
+        return;
+    }
+    /* lin == mat_call_site: an update really is about to run */
+    mat_updates++; mat_win_upd++;
+    mat_gap_hist[mat_since < MAT_GAPS ? mat_since : MAT_GAPS-1]++;
+    mat_since = 0;
+}
+
+void fantasies_matrix_report(void){
+    double secs;
+    int k;
+    if(!mat_dbg || !mat_ticks) return;
+    secs = emu_time - (mat_t0 < 0.0 ? 0.0 : mat_t0);
+    if(secs <= 0.0) secs = 1.0;
+    fprintf(stderr,
+        "[mat] %lu game ticks in %.1fs (%.1f/s), %lu dot-matrix updates (%.1f/s),"
+        " %lu dropped (%.1f%%)\n",
+        mat_ticks, secs, mat_ticks/secs, mat_updates, mat_updates/secs,
+        mat_ticks - mat_updates, (mat_ticks - mat_updates) * 100.0 / mat_ticks);
+    fprintf(stderr,
+        "[mat] driver crisis flag set on %lu of %lu vblank callbacks (%.1f%%)\n",
+        mat_crisis, mat_vbl, mat_vbl ? mat_crisis * 100.0 / mat_vbl : 0.0);
+    /* The driver asks for two timer events per frame (see pit_count() in
+     * dev.c).  Far fewer one-shots than that means events are being lost
+     * before the game ever sees them, which is pfemu's problem; the full two
+     * with the panel still dropping is the guest being out of CPU, which is
+     * not.  The latency line is what the driver's ISR compensates for when it
+     * reads the counter: small is healthy, large means its next delay is
+     * being computed from a big correction. */
+    { extern unsigned long pit0_m0_reads, pit0_m0_wrapped, pit0_irqs, pit0_lat_n;
+      extern double pit0_lat_sum, pit0_lat_max;
+      extern double pit0_over_sum, pit0_over_max;
+      extern double pit0_wait_sum, pit0_wait_max;
+      extern int pit_m0_exact;
+      fprintf(stderr,
+        "[mat] PIT ch0 one-shots %lu (%.1f/s; the driver schedules 2 per frame),"
+        " counter reads %lu, %lu past terminal count (%.1f%%)\n",
+        pit0_irqs, pit0_irqs/secs, pit0_m0_reads, pit0_m0_wrapped,
+        pit0_m0_reads ? pit0_m0_wrapped * 100.0 / pit0_m0_reads : 0.0);
+      fprintf(stderr,
+        "[mat] IRQ0 latency mean %.0f ticks (%.1f us) max %.0f (%.1f us) of %lu;"
+        " mode-0 reads %s\n",
+        pit0_lat_n ? pit0_lat_sum/pit0_lat_n : 0.0,
+        pit0_lat_n ? pit0_lat_sum/pit0_lat_n/1.193182 : 0.0,
+        pit0_lat_max, pit0_lat_max/1.193182, pit0_lat_n,
+        pit_m0_exact ? "exact one-shot (default)" : "rate-generator (-nopitm0)");
+      fprintf(stderr,
+        "[mat]   of which batch overshoot mean %.0f max %.0f ticks,"
+        " guest wait mean %.0f max %.0f ticks\n",
+        pit0_lat_n ? pit0_over_sum/pit0_lat_n : 0.0, pit0_over_max,
+        pit0_lat_n ? pit0_wait_sum/pit0_lat_n : 0.0, pit0_wait_max); }
+    fprintf(stderr, "[mat] ticks between updates (1 = every tick, the smooth case):\n"
+                    "      gap:");
+    for(k = 1; k < MAT_GAPS; k++)
+        fprintf(stderr, "%7d%s", k, k == MAT_GAPS-1 ? "+" : " ");
+    fprintf(stderr, "\n      n:  ");
+    for(k = 1; k < MAT_GAPS; k++) fprintf(stderr, "%7lu ", mat_gap_hist[k]);
+    fprintf(stderr, "\n");
+}

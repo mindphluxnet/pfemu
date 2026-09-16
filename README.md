@@ -256,6 +256,8 @@ These options were used to reverse-engineer and verify the emulator:
 | `-snddbg` | Log each DSP transfer with its DMA buffer and the gap since the last one |
 | `-flipdbg`, `-vscan N`, `-dmd` | Trace display timing and page changes |
 | `-balldbg` | Time the ball erase/redraw gap and how often a frame lands in it |
+| `-matdbg` | Count dot-matrix updates, and how many the sound driver's "no time left" flag dropped |
+| `-nopitm0` | Read PIT channel 0 in mode 0 as a free-running rate generator, as builds before the one-shot fix did |
 | `-nophaselock` | Present on the old wall timer instead of a fixed frame phase |
 | `-dmairq` | Interrupt on each DMA buffer wrap instead of when the DSP's transfer length runs out |
 | `-noballsync` | Stop pairing the displayed camera with the ball; show the raw camera |

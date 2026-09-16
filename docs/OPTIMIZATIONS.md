@@ -465,6 +465,16 @@ as the 30 Hz page flips — smoothing it would mean synthesizing glyph
 positions the game never drew, i.e. altering gameplay presentation, which
 is off-limits. Left alone; no code change.
 
+Superseded by §30. The reading above — "intentional timer-driven game
+pacing", matching a 30 Hz engine tick — is wrong on both counts. The engine
+ticks every frame (`SLOW=0`, and the shipped images assemble it as an
+`and byte,0` followed by an unreachable `jnz`), and the steady 0.033 s was
+pfemu's own defect: mode-0 PIT counter reads were returning a rate-generator
+phase, which corrupted the sound driver's timer schedule badly enough to lose
+one of the two interrupts it asks for per frame. The game was therefore only
+called 30 times a second. The cadence looked rock-steady because the thing
+dropping it was, and "authentic, leave it alone" was the wrong conclusion.
+
 ## 21. Table-select palette flash: majority-duration AR14 bank (`src/vga.c`)
 
 Symptom: on the table-select menu, fullscreen red→bright-green flashes,
@@ -1045,3 +1055,390 @@ addresses are just as meaningless to those after a mode change, and without
 this the latch could have served a pre-mode-set value into the new mode.
 
 Nothing else changes: the feature had no effect to lose.
+
+## 30. Dot-matrix burstiness: half the timer interrupts were being lost (`-matdbg`)
+
+§20 measured the DMD text cadence and read the rock-steady 0.033 s step as
+"intentional timer-driven game pacing", concluding it matched the engine's
+30 Hz tick. Both halves of that turn out to be wrong in an interesting way,
+and the mechanism is now known exactly.
+
+**The engine does not tick at 30 Hz.** `FANTASIE.ASM`'s `VBLANK_INT` does
+
+```
+	INC	SLOWCNT
+	AND	SLOWCNT,SLOW
+	JNZ	RETAF
+```
+
+with `SLOW=0` (FANTASIE.ASM:144), so the `AND` always yields zero and the
+divider never fires. Confirmed in the shipped images, not just the
+reconstruction - e.g. `FANTASY/TABLE1.PRG+0x4511`: `FE 06 0F 23` /
+`80 26 0F 23 00` / `75 C2`, an `and byte,0` followed by a `jnz` that can
+never be taken. The game logic, and with it the dot matrix, is attempted
+**every frame**. The measured half-rate is a drop rate, not a design rate.
+
+**What drops it.** The panel update in `DO_THE_REST` is guarded twice:
+
+```
+	cmp	time_left,false
+	je	skip_matrix		;no time left! Skip it!!
+	mov	al,cs:INSIDE_MATRIX
+	mov	cs:INSIDE_MATRIX,TRUE
+	cmp	al,TRUE
+	je	SKIP_MATRIX
+	call	DO_THE_DOTMATRIX
+```
+
+and `TIME_LEFT` is not the game's own judgement. Every callback the game
+registers through `int 66h` opens with `or ax,ax` / `mov time_left,TRUE` /
+`jz` / `mov time_left,FALSE`, where AX is an *in-parameter* from the sound
+driver's timer ISR. The game's side of the handshake is the `MOV AX,12345`
+before each `RETF`, whose own comment reads *"MEDDELA TILL MUSIKRUTINEN ATT
+KRISER KLARAR JAG"* - tell the music routine I can handle crises.
+
+**What the driver means by a crisis.** Disassembling `SBLASTER.SDR` (the
+load image, MZ header stripped; the driver family shares this code):
+
+- `1CB1` reads the 8237's current count for the DMA channel (`out 0Ch` then
+  two reads of port 3, twice, until two samples agree within 0x40) and
+  returns how far into the ring the card has played, then subtracts that
+  from the mixer's write pointer `[0897]`: **bytes of already-mixed audio
+  still ahead of the card.**
+- `1C8D` compares that headroom against `[0795]`, doubled when `[0793] >= 5`,
+  and sets CF when headroom is *less than or equal to* the threshold.
+- `1C65`/`1C68`/`1C71` turn CF into `AX = 0FFFFh` and far-call the game's
+  callback with it.
+
+`[0795]` is one mix block, `rate/50` bytes - one MOD tick (`1712`:
+`mov ax,[078B]` / `div 50`). `[0793]` is how many blocks the ring holds, and
+the caller chooses that: `05E9` treats BX as a block count when it is 100 or
+less and multiplies it by the block length. So the ring depth is in blocks
+and is independent of the mixing rate.
+
+That is the whole answer to §20's cadence:
+
+| caller | blocks asked for | ring at 21 kHz | crisis threshold |
+|---|---|---|---|
+| intro | 26 | 10920 B | 2 blocks of 26 |
+| a table | 2 | 840 B | 1 block of 2 |
+
+The 10920 and 840 are exactly the buffers `-snddbg` measured (see the header
+of `src/sound.c`). A table runs a **two-block ring with a one-block
+threshold**, so the panel is dropped whenever the mixer is less than half a
+ring ahead of the card - which, with the mixer topping up one block at a
+time, is a large part of every 20 ms block period. The intro's 26-block ring
+with a 2-block threshold almost never trips, which is why the intro's dot
+matrix looks smooth and a table's does not.
+
+So the DMD is not paced. It is *starved*, deliberately, by a mechanism whose
+whole purpose is to spend dot-matrix frames on mixer headroom - and how often
+it trips depends on how much CPU the guest has left after the frame's own
+work. That makes it sensitive to `-ips` in a way a genuinely timer-paced
+update would not be, and it looked like it predicted the reported symptom:
+worse during animations, because `DO_THE_ANIMATIONS` is the expensive part of
+the very routine being skipped.
+
+It did not. Measuring it (below) put the drop rate at 3.5%, and the real
+fault a layer further down.
+
+### `-matdbg` (`src/fantasies.c`)
+
+Counts it rather than arguing about it. Three addresses, located by signature
+in each loaded `TABLE?.PRG`:
+
+- `or ax,ax` at the head of `VBLANK_INT`'s crisis test - AX is the driver's
+  flag, so this counts callbacks and crises;
+- `cmp time_left,false` in `DO_THE_REST` - one hit per game tick;
+- the `CALL DO_THE_DOTMATRIX` a fixed `0x1C` further on - one hit per update
+  that actually ran.
+
+The first signature is
+`0B C0 C6 06 ?? ?? FF 74 08 90 90 90 C6 06 ?? ?? 00` (the assembler pads each
+short conditional with three NOPs, which is what makes these long enough to
+be unambiguous), and it yields the `TIME_LEFT` cell address, from which the
+other two follow. There are two `cmp time_left` sites - the in-game one and
+`VBLANK_INT_DEMO`'s, which paces the panel in attract mode; requiring `E8` at
+`+0x1C` picks the in-game one, verified across all 12 table images of the
+three releases in hand. Nothing is written to the guest.
+
+Output is one line per emulated second (`ticks`, `dmd`, `crisis`, and the
+share of ticks dropped) plus an exit summary with a histogram of the gap in
+ticks between successive updates. A gap of 1 is the smooth case; a steady 2
+is the half-rate panel §20 measured; a long tail is the burstiness.
+
+`fantasies_find_matrix()` deliberately leaves its hooks alone when a
+non-table program is EXEC'd with an `.SDR`/`.BIN`/`.MOD` name - a running
+table loads its own driver - and clears them for a real program switch, so
+the hooks can never go on matching addresses that now hold other code.
+
+### Measured: the crisis flag was not it
+
+Two captures, ~110 emulated seconds of table play each (`-matdbg`, and a
+second run at `-ips 20000000`):
+
+| | ticks/s | DMD updates/s | dropped | crisis flag |
+|---|---|---|---|---|
+| 6 MIPS (default) | 29.7 | 28.7 | 3.5% | 3.4% |
+| 20 MIPS | 53.5 | 53.4 | 0.3% | 0.3% |
+
+So the mixer-headroom mechanism above is real, and it is **not** what makes
+the panel choppy: it costs 3.5% of updates, and the gap histogram is
+3100 x gap-1 against 104 x gap-2. The panel updates on essentially every
+game tick. What is halved is **the game tick itself** - 29.7/s against the
+59.71 Hz the engine ticks at - and the vblank callback count says the game is
+not even being *called*: 3366 callbacks in 111.8 s, i.e. 30.1/s.
+
+That moves the fault upstream of the game entirely, into how often the sound
+driver's timer dispatches it.
+
+### The actual cause: mode-0 PIT counter reads
+
+The exit dump gives `pit ch0 reload=13636` (11.43 ms) and the driver's task
+spacing accounts for the rest of a 16.75 ms frame (~6347 ticks, 5.32 ms): the
+driver schedules **two** timer events per frame, a vblank one and a mid-frame
+raster one, which is what `INIT_INTS` registers (`int 66h` ax=11 with BL=100,
+ax=12 with BL=200 and the raster line in CX). Two events per frame is
+~119 IRQ0/s. The runs measured **58.4/s and 59.8/s** - almost exactly half.
+Half the timer interrupts never happened, at either CPU speed.
+
+`pit_count()` in `src/dev.c` computed every counter read as a free-running
+rate-generator phase: `q = emu_now() * (PIT_HZ/reload)`, fraction, scaled.
+For modes 2 and 3 that is right. For mode 0 it is wrong twice over - the
+phase is not anchored to when the count was written, and a mode-0 counter does
+not reload at terminal count, it keeps decrementing from FFFF.
+
+The driver reads that counter on **every** timer interrupt (`SBLASTER.SDR`
+image 1C0F):
+
+```
+	mov	bx,[si+2]	; this task's offset in the frame
+	sub	bx,[si-7]	; minus the previous task's -> delta
+	mov	al,0 / out 43h	; latch counter 0
+	in	al,40h / in al,40h -> cx
+	add	bx,cx		; take out the interrupt latency
+	sub	bx,0Ah
+	out	43h,30h / out 40h,lo/hi
+```
+
+That `add bx,cx` is a *subtraction*. On hardware the interrupt has already
+fired when the ISR reads, so the count has wrapped and cx is FFFF-minus-
+latency; adding it in 16-bit arithmetic subtracts the latency, which is how
+the schedule avoids drifting. pfemu handed it a large positive number
+instead - uniform in [0, 13636), up to 11.4 ms of a 16.7 ms frame - which it
+*added* to the delay. The second event of each frame was then programmed so
+late that the next frame's vsync-synced reprogram (image 1BE3: the ISR waits
+on 3DAh bit 3 before loading the first task's delay) overwrote the pending
+one-shot before it could fire. One interrupt per frame survived, the two
+tasks took turns, and the game's vblank callback ran at 30 Hz.
+
+Everything downstream follows from that: the game ticks once per callback,
+the dot matrix updates once per tick, so the panel ran at half rate. The
+burstiness is the same defect - the residue is a phase of absolute emulated
+time, so which of the two tasks survives a given frame varies rather than
+alternating cleanly.
+
+Fixed in `pit_count()`: channel 0 in mode 0 now counts down from `next_irq`,
+and past terminal count keeps decrementing (`0 - elapsed`) instead of
+reloading. Modes 2 and 3 keep the periodic approximation, and the driver's
+PLL calibration is unaffected - it never reads the counter, it waits for its
+own one-shot to fire (image 1A24-1A83).
+
+`-matdbg`'s summary now also prints one-shots per second and how many channel
+0 reads came back past terminal count, so a future regression here shows up as
+a number rather than as "the dot matrix feels wrong".
+
+This also explains why `-ips 20000000` helped without fixing anything: at a
+different instruction rate the reads land at different absolute times, so the
+corrupted delay lands on the useful side of the resync more often. It was
+masking the defect, not addressing it.
+
+### Regression: the table-select screen change hangs - cause found, fix pending
+
+The fix as first written hangs the table-select menu when it changes screens:
+sound stops, the screen never switches, `Scroll Lock` still exits. So the
+mode-0 semantics above are necessary but not sufficient, and something in the
+schedule the driver now computes is worse than what it replaced.
+
+The leading candidate is interrupt latency. The driver's compensation is
+`bx = delta + cx - 10` with `cx` a wrapped (negative) count, i.e. it
+*subtracts* however late the ISR was. That is safe only while the lateness is
+much smaller than `delta`: the frame's two deltas are ~6347 and ~13636 ticks,
+so a handler entered more than ~6300 ticks (5.3 ms) late makes `bx` wrap
+negative and the next one-shot is programmed ~55 ms out - no timer interrupt
+for three frames, which stops the mixer and the game's callbacks together.
+The old rate-generator reading could not do this because it only ever added.
+
+On hardware the lateness is a few microseconds, so the question is whether
+pfemu's is. Two things were added to measure it rather than guess:
+
+- `-matdbg` now reports IRQ0 latency (mean/max, in PIT ticks and
+  microseconds) and the count of one-shots, and logs the first 60 mode-0
+  counter reads with the lateness each was derived from;
+- `-nopitm0` restores the old rate-generator reading, as an A/B rather than
+  as a tuning knob.
+
+Note that `dev_tick()` raises IRQ0 on `emu_time`, which only moves at batch
+boundaries, while `pit_count()` reads `emu_now()`, which is instruction-exact
+- a systematic skew of up to a batch (~42 us at 6 MIPS, ~50 ticks). That is
+far too small to explain a wrap on its own, but it is in the same direction
+and worth ruling in or out.
+
+### Measured: it is the instruction batch, and the deltas are small
+
+A run with the exact reading (hung at the table-select screen change) against
+one with `-nopitm0` (healthy) settles it. The latencies the driver was handed:
+
+```
+[pit0] t=4.008642 late= 55 ticks -> read FFCA (reload=8700 armed=0)
+[pit0] t=4.025432 late=105 ticks -> read FF97
+[pit0] t=4.913139 late=258 ticks -> read FEFE
+```
+
+42 of the 60 logged reads are exactly 55 ticks, and every other value is
+`55 + k x 51`. 51 PIT ticks is 42.7 us is **256 instructions at 6 MIPS** -
+pfemu's instruction batch. So the lateness is quantised to the batch, with a
+base of ~277 instructions and one batch added whenever the guest had
+interrupts off across a boundary. A real 386 enters the handler in a few
+microseconds, i.e. a handful of ticks.
+
+That was never going to wrap a 6347-tick delta, which is where the first
+theory went wrong. What it wraps is a *small* one. The hung run ended with
+`pit ch0 reload=65434 mode=0`, and 65434 is -102 signed: with `cx = -102`
+(the `late=105` case), `bx = delta + cx - 10 = -102` needs `delta = 10`. The
+task list evidently has entries only ~10 ticks apart at some point during the
+screen change, and at 8 us of real latency that survives; at 88 us it does
+not. The 54.8 ms one-shot that results outlives the driver's own uninstall
+during the table load - the exit dump shows `int8=F0000E00`, the BIOS stub
+back in place - so nothing ever re-arms channel 0 and the machine loses its
+timer entirely. Hence a hang rather than a stutter.
+
+So the exact mode-0 reading is correct emulation that pfemu cannot yet afford:
+it replaces a fabricated number with a real one, and the real one is wrong by
+20x. **It is now off by default** (`-pitm0` turns it on) so the default build
+keeps the old 30 Hz panel rather than a hang, and `-matdbg` splits the latency
+into batch overshoot and guest wait so the next round knows which to attack.
+
+The direction for the fix is the batch, not the counter: `dev_next_deadline()`
+returns `cpu.cycles + 256` whenever channel 0 is in mode 0 and unarmed, which
+is precisely the window the guest is inside the timer ISR and about to arm a
+short one-shot. The batch started under that assumption runs to its end
+regardless of what the ISR programmed partway through.
+
+### Fixed, part 1: 32-instruction batches in the unarmed window
+
+`PIT0_UNARMED_BATCH` (32) replaces the 256 in that one case, bounding the
+overshoot to ~5 us - the same order as a real 386's interrupt latency - at the
+cost of a few thousand extra `dev_tick()` calls a second, all of them inside
+the handler. The split the run measured says this is the right target: mean
+latency 118 ticks = 52 of batch overshoot (~exactly one 256-instruction batch,
+pfemu's) + 66 of guest wait (interrupts masked, the guest's own).
+
+### What it looks like when the schedule is right
+
+A `-pitm0` run over 95 s of Table 1:
+
+```
+[mat] 5625 game ticks in 95.1s (59.1/s), 5625 dot-matrix updates (59.1/s), 0 dropped (0.0%)
+[mat] driver crisis flag set on 0 of 5680 vblank callbacks (0.0%)
+      gap:      1       2       3    ...
+      n:     5625       0       0
+```
+
+59.1 ticks/s against a 59.71 Hz CRT is one tick per frame, and 5680 vblank
+callbacks in 95.1 s is 59.7/s - the driver dispatching the task exactly once
+per frame, as its two reloads (11.43 + 5.32 ms = one frame) say it should.
+The gap histogram is entirely gap-1: every tick updated the panel, nothing
+dropped, and the crisis flag never fired once, because a mixer that is keeping
+up stays a full ring ahead.
+
+This is also the answer to what the panel rate was *supposed* to be. The
+engine ticks every frame (`SLOW=0`), and it now does. Everything downstream -
+ball physics, scrolling, the dot matrix - had been running at half speed under
+pfemu, and the reason nothing looked obviously wrong is that it was *uniformly*
+half speed. The MOD player is the cross-check: it advances one tick per mix
+block, i.e. off the audio sample clock at 50 Hz, with no dependence on the
+video tick at all, so music tempo is unchanged by any of this. Music the same
+and the table twice as lively is what a half-speed game tick being repaired
+looks like.
+
+Note the reported one-shot rate was wrong in the first cut of this summary -
+146.5/s, from dividing a counter that runs from boot by the window since the
+table loaded. The real figure is 113/s over the whole session (against 119.4
+for two per frame, with the slower menu phase included). `mat_reset()` now
+zeroes the dev.c counters along with its own.
+
+### Fixed, part 2: the deadline that had already arrived
+
+Part 1 was aimed at the wrong path. A verification run still showed a mean
+batch overshoot of 55 ticks - the same systematic ~one-batch figure - because
+the overshoot was never in the unarmed window at all. It was here, in the main
+loop:
+
+```c
+uint64_t dl = dev_next_deadline();
+int lim = 256;
+if(dl > cpu.cycles && dl - cpu.cycles < 256) lim = (int)(dl - cpu.cycles);
+```
+
+`dev_next_deadline()` truncates the remaining instruction count downward, so a
+clamped batch lands just *short* of the deadline and `dev_tick()` finds it not
+quite due. The next call then computes a remainder of under one instruction,
+truncates it to zero, and returns `dl == cpu.cycles` - which fails the
+`dl > cpu.cycles` test and falls through to `lim = 256`. Every timer interrupt
+in the emulator's life went through that state, so every one of them was
+serviced about a batch late. `if(dl <= cpu.cycles) lim = 1;` is the fix; the
+unarmed window that immediately follows is bounded by part 1, so it cannot
+degenerate into single-stepping.
+
+With both in, the mode-0 reading is on by default and `-nopitm0` is the way
+back.
+
+### Result
+
+User-verified over a full session: no hang across repeated table-select screen
+changes, music tempo unchanged (as predicted - the MOD player runs off the
+audio sample clock, not the video tick), no table-select palette flash, no ball
+flicker, and the dot matrix, scrolling and ball physics all running at the rate
+the engine was written for. The last `-pitm0` capture before the default flip:
+
+```
+[mat] 8242 game ticks, 8242 dot-matrix updates, 0 dropped (0.0%)
+[mat] driver crisis flag set on 0 of 8461 vblank callbacks (0.0%)
+[mat] PIT ch0 one-shots 18491 (117.6/s; the driver schedules 2 per frame)
+```
+
+117.6 against 119.4 for two per frame, and 178 of the run's seconds recorded
+exactly 60 game ticks.
+
+Worth keeping in mind for anything that comes after: the ball/camera pairing
+(27), the derived present window (28) and the palette work (21/24/25) were all
+measured and tuned while the game was ticking at half rate. They survived the
+change, but their constants were fitted against the old cadence.
+
+### Verified with both fixes in
+
+```
+[mat] 7765 game ticks in 130.9s (59.3/s), 7765 dot-matrix updates (59.3/s), 0 dropped (0.0%)
+[mat] driver crisis flag set on 0 of 7820 vblank callbacks (0.0%)
+[mat] PIT ch0 one-shots 15750 (120.3/s; the driver schedules 2 per frame), counter reads 7819, 7819 past terminal count (100.0%)
+[mat] IRQ0 latency mean 3 ticks (2.4 us) max 20109 (16853.4 us) of 15750
+[mat]   of which batch overshoot mean 0 max 12 ticks, guest wait mean 3 max 20109 ticks
+```
+
+| | before | after |
+|---|---|---|
+| IRQ0 latency | 118 ticks (98.7 us) | 3 ticks (2.4 us) |
+| of which batch overshoot | 55 ticks | 0 (max 12) |
+| PIT ch0 one-shots | 113.0/s | 120.3/s (2/frame = 119.4) |
+| game ticks | 29.7/s | 59.3/s (CRT 59.71 Hz) |
+| dot-matrix updates | 28.7/s | 59.3/s, none dropped |
+
+2.4 us of interrupt latency is what a 386 actually did, which is the point:
+the driver's correction is now a correction rather than a distortion. Every
+counter read comes back past terminal count, the shape the ISR is written for,
+and 129 of the run's 131 seconds recorded exactly 60 game ticks with the gap
+histogram entirely gap-1.
+
+The remaining `guest wait` outlier (20109 ticks, 16.9 ms) is the guest masking
+interrupts across a table load, which is its own business and not pfemu's.
