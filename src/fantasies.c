@@ -952,3 +952,375 @@ void fantasies_key_event(int scancode, int down){
         if(r >= 0) fantasies_osd_show(r ? "BALL CONTROL: ON" : "BALL CONTROL: OFF");
     }
 }
+
+/* ------------------------------------------------- ball-gap logger ------
+ * -balldbg: measures the window in which the ball does not exist on screen.
+ *
+ * FANTASIE.ASM's PUTTHEBALL ("FN: DELETES AND PUTS THE BALL") restores the
+ * saved background at OLDPOS via DELBALL, then re-saves and redraws at the
+ * new position via PUTBALL.  There is no sprite double-buffer: between those
+ * two calls the ball is simply absent from the visible page, and because
+ * PUTITBETWEEN/PUTF3BETWEEN are set by the caller, a full DOFLIPPER and
+ * DOFLIPPER3 blit run *inside* that window - so it is far wider than the
+ * 16-line ball itself, and any interrupt (notably the MOD mixer) taken
+ * mid-routine widens it further.
+ *
+ * The engine hides the gap by racing the beam rather than by buffering: the
+ * VBLANK handler compares SC_Y against START_RASTER + MIDDLE_RASTER_LO/HI
+ * and redraws a lower-half ball immediately (beam still above it), or sets
+ * LATEGFX=TRUE to defer an upper-half ball to LATE_RASTER_INTERRUPT, which
+ * fires mid-screen once the beam has already passed it.  Done on time, the
+ * erase/redraw is always in the half the beam is not painting, so a CRT
+ * never shows it.
+ *
+ * vga_render() has no beam: it snapshots all of VRAM at one instant, so a
+ * present landing inside the gap drops the ball from the *whole* frame.
+ * That is what this logger quantifies, and what a present-phase fix has to
+ * avoid - docs/OPTIMIZATIONS.md §16 locked presents to vsync, which is
+ * exactly when a lower-half ball is being redrawn, and flickered constantly
+ * as a result.  Numbers wanted before choosing a phase: how wide the gap
+ * actually is, and where in the frame it sits for each of the two cases.
+ *
+ * PUTTHEBALL is located by signature, not by a fixed offset, the way
+ * fantasies_patch_pause()/_balls() locate theirs.  The prologue below
+ * (PUSHA / PUSH 0A000h / POP ES / CMP VERYFIRSTPUT,TRUE / JE) is unique in
+ * all four shipped TABLE1-4.PRG of both the floppy and Deluxe releases, as
+ * is the epilogue (CALL PUTBALL / SET_DS DATA / MOV OLDPOS,SI /
+ * MOV OLDSHIFT,DX / POPA / RETN); the body is 134 bytes in all eight, with
+ * only the DS-relative operands differing.  The two are cross-checked
+ * against each other rather than either being trusted alone. */
+int balldbg_on = 0;
+uint32_t balldbg_entry = 0, balldbg_exit = 0, balldbg_pos = 0;
+
+/* ---- present window, derived at runtime ---------------------------------
+ * The quiet span between the two redraw bands is where a present has to land
+ * (#26), but the bands sit at each table's own raster line - measured at
+ * lines 222.7, 225.5, 231.4 and ~296 across the four shipped tables - so a
+ * hardcoded window is luck rather than design, and the several releases carry
+ * slightly different table binaries.  Derive it instead.
+ *
+ * Every redraw marks the frame buckets it covered, from the PUTTHEBALL entry
+ * hook to the epilogue hook.  The window is then placed in the quiet span
+ * that FOLLOWS the vblank band - deliberately that one and not merely the
+ * largest, because sampling before the mid-frame redraw is what matches the
+ * CRT: an upper-half ball is painted by the beam before that redraw, so the
+ * pre-redraw state is what hardware showed.  The later span would show it one
+ * tick early and make it step backwards as it crosses mid-screen (#26).
+ *
+ * Until enough redraws have been seen the seed constants in main.c stand.
+ * The histogram resets when the table changes or the CRTC timing does, so a
+ * hi-res toggle (which moves MIDDLE_RASTER, and with it the bands) re-learns
+ * rather than pinning the window to stale geometry. */
+#define PW_B      64        /* frame buckets, ~8.2 scan lines each */
+#define PW_WARMUP 90        /* redraws before the derived window is trusted (~3 s) */
+#define PW_MARGIN 4         /* buckets kept clear of either band (~33 lines) */
+#define PW_MINW   4         /* refuse to adopt a window narrower than this */
+static unsigned pw_occ[PW_B];
+static unsigned pw_n = 0;
+static int pw_vt = 0, pw_valid = 0;
+static double pw_lo = 0.0, pw_hi = 0.0;
+
+static void pw_reset(void){
+    memset(pw_occ, 0, sizeof(pw_occ));
+    pw_n = 0; pw_valid = 0; pw_vt = 0;
+}
+
+static void pw_mark(double line0, double line1, int vt){
+    int a, b, n = 0;
+    if(vt <= 0) return;
+    if(vt != pw_vt){ pw_reset(); pw_vt = vt; }   /* timing changed - relearn */
+    a = (int)(line0 * PW_B / vt);
+    b = (int)(line1 * PW_B / vt);
+    if(a < 0) a = 0; if(a >= PW_B) a = PW_B - 1;
+    if(b < 0) b = 0; if(b >= PW_B) b = PW_B - 1;
+    while(n < PW_B){                              /* walks forward, wraps */
+        pw_occ[a]++;
+        if(a == b) break;
+        a = (a + 1) % PW_B; n++;
+    }
+    pw_n++;
+}
+
+/* Place the window in the quiet span following the vblank band. */
+static void pw_derive(void){
+    double per, inv, hde;
+    int vt, vd, vrs, vre, r, i, s = -1, e, len = 0;
+    if(pw_n < PW_WARMUP || pw_vt <= 0) return;
+    vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
+    (void)per; (void)inv; (void)vd; (void)vre; (void)hde;
+    if(vt <= 0 || vt != pw_vt) return;
+    r = (int)((double)vrs * PW_B / vt);
+    if(r < 0 || r >= PW_B) return;
+    /* from vertical retrace, walk past the vblank band to the first gap */
+    for(i = 0; i < PW_B; i++){
+        int k = (r + i) % PW_B;
+        if(pw_occ[k] == 0){ s = k; break; }
+    }
+    if(s < 0) return;                       /* no quiet bucket at all */
+    for(i = 0; i < PW_B; i++){              /* how far the gap runs */
+        if(pw_occ[(s + i) % PW_B]) break;
+        len++;
+    }
+    if(len < 2 * PW_MARGIN + PW_MINW) return;   /* too tight to use safely */
+    e = (s + len - 1) % PW_B;
+    (void)e;
+    pw_lo = (double)((s + PW_MARGIN) % PW_B) / (double)PW_B;
+    pw_hi = (double)(((s + len - 1 - PW_MARGIN) % PW_B) + 1) / (double)PW_B;
+    pw_valid = 1;
+}
+
+/* main.c: overrides its seed constants once the bands have been learned. */
+int fantasies_present_window(double *lo, double *hi){
+    if(!pw_valid) return 0;
+    *lo = pw_lo; *hi = pw_hi;
+    return 1;
+}
+
+#define BG_BUDGET 20000          /* auto-off cap: ~11 min of play at 30 Hz */
+#define BG_BUCKETS 16
+static int    bg_inside = 0;
+static double bg_t0 = 0.0, bg_line0 = 0.0;
+static int    bg_vtotal = 0;
+static unsigned long bg_events = 0, bg_orphan = 0;
+static unsigned long bg_presents = 0, bg_presents_inside = 0, bg_fallback = 0;
+#define BG_PROF 64
+static unsigned long bg_occ[BG_PROF];    /* frame lines covered by a redraw */
+/* Camera/ball coherence: SETSCREENSTART runs before PUTTHEBALL inside
+ * LATE_RASTER_INTERRUPT, so between them the CRTC start is one camera step
+ * newer than the ball drawn under it.  A present sampled in that window puts
+ * the ball a few pixels off its true screen position.  bg_last_start is the
+ * start address in force when the ball was last drawn; comparing it against
+ * the start at present time measures the displacement directly. */
+static uint32_t bg_last_start = 0; static int bg_have_start = 0;
+static double bg_last_ball_t = 0.0;
+static unsigned long bg_skew_n = 0; static double bg_skew_sum = 0.0, bg_skew_max = 0.0;
+static unsigned long bg_pres[BG_PROF];   /* frame lines presents landed on */
+static double bg_sum = 0.0, bg_max = 0.0, bg_min = 1e9;
+static unsigned long bg_hist_entry[BG_BUCKETS], bg_hist_exit[BG_BUCKETS];
+
+void fantasies_patch_ballgap(const char *dospath, uint32_t load_base, uint32_t imglen){
+    /* PUSHA / PUSH 0A000h / POP ES / CMP byte[VERYFIRSTPUT],TRUE / JE short */
+    static const uint8_t sigA[12] = {
+        0x60, 0x68,0x00,0xA0, 0x07, 0x80,0x3E,0,0,0xFF, 0x74,0 };
+    static const uint8_t maskA[12] = {
+        1, 1,1,1, 1, 1,1,0,0,1, 1,0 };
+    /* CALL PUTBALL / PUSH DATA / POP DS / MOV [OLDPOS],SI / MOV [OLDSHIFT],DX
+     * / POPA / RETN */
+    static const uint8_t sigB[17] = {
+        0xE8,0,0, 0x68,0,0, 0x1F,
+        0x89,0x36,0,0, 0x89,0x16,0,0, 0x61, 0xC3 };
+    static const uint8_t maskB[17] = {
+        1,0,0, 1,0,0, 1,
+        1,1,0,0, 1,1,0,0, 1, 1 };
+    char b[64];
+    uint32_t i, ea = (uint32_t)-1, eb = (uint32_t)-1;
+
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)) return;
+    if(load_base + imglen > RAM_SIZE || imglen < sizeof(sigA)) return;
+
+    for(i = 0; i + sizeof(sigA) <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        for(k = 0; k < sizeof(sigA); k++)
+            if(maskA[k] && ram[at+k] != sigA[k]) break;
+        if(k == sizeof(sigA)){ ea = i; break; }
+    }
+    if(ea != (uint32_t)-1){
+        /* epilogue must follow the prologue inside one routine body */
+        for(i = ea; i + sizeof(sigB) <= imglen && i < ea + 400; i++){
+            uint32_t at = load_base + i, k;
+            for(k = 0; k < sizeof(sigB); k++)
+                if(maskB[k] && ram[at+k] != sigB[k]) break;
+            if(k == sizeof(sigB)){ eb = i; break; }
+        }
+    }
+    if(ea == (uint32_t)-1 || eb == (uint32_t)-1){
+        trc("[fantasies] PUTTHEBALL signature not found; camera pairing and"
+            " -balldbg are both idle for this image\n");
+        balldbg_entry = balldbg_exit = balldbg_pos = 0;
+        return;
+    }
+    balldbg_entry = load_base + ea;
+    balldbg_exit  = load_base + eb + 16;      /* the RETN itself */
+    balldbg_pos   = load_base + eb + 7;       /* MOV [OLDPOS],SI - SI = ball VRAM offset */
+    vga_reset_start_pairing();
+    pw_reset();
+    if(balldbg_on)
+        fprintf(stderr, "[ball] PUTTHEBALL entry=%05X retn=%05X body=%u bytes\n",
+                (unsigned)balldbg_entry, (unsigned)balldbg_exit,
+                (unsigned)(eb + 17 - ea));
+}
+
+/* Called from cpu_step() for every instruction while balldbg_on, but only
+ * after the two-address compare there, so this is off the hot path. */
+void fantasies_ballgap_exec(uint32_t lin){
+    double now = emu_now(), line;
+    int vt = 0;
+
+    /* The entry hook is live in normal play, not just under -balldbg: the
+     * present-window derivation needs the start of each redraw to know how
+     * much of the frame the band covers. */
+    if(lin == balldbg_entry){
+        line = vga_scanline_now(&vt);
+        if(bg_inside) bg_orphan++;            /* entry without a matching exit */
+        bg_inside = 1; bg_t0 = now; bg_line0 = line; bg_vtotal = vt;
+        return;
+    }
+
+    if(lin == balldbg_pos){
+        /* about to store OLDPOS: SI is the ball VRAM offset, DX its shift.
+         * Hand the start address in force right now to the renderer so the
+         * displayed camera stays paired with this ball (see vga.c). */
+        int pitch = 0;
+        uint32_t st = vga_start_now(&pitch);
+        vga_note_ball_start(st);
+        line = vga_scanline_now(&vt);
+        if(bg_inside){                        /* paired with an entry: a real band */
+            pw_mark(bg_line0, line, vt);
+            if((pw_n % 30) == 0) pw_derive();
+        }
+        if(balldbg_on && bg_events < BG_BUDGET){
+            uint32_t si = REG16(R_ESI);
+            double row = pitch ? ((double)si - (double)st) / (double)pitch : 0.0;
+            fprintf(stderr, "[ballpos] t=%.6f si=%u dx=%u start=%u row=%.2f\n",
+                    now, (unsigned)si, (unsigned)REG16(R_EDX), (unsigned)st, row);
+            bg_last_start = st; bg_have_start = 1; bg_last_ball_t = now;
+        }
+        return;
+    }
+    if(bg_events >= BG_BUDGET) return;
+    line = vga_scanline_now(&vt);
+
+    /* lin == balldbg_exit */
+    if(!bg_inside){ bg_orphan++; return; }
+    bg_inside = 0;
+    {
+        double dt = (now - bg_t0) * 1e6;       /* microseconds */
+        double per, inv, hde; int vd, vrs, vre, vtx;
+        vga_timing_cached(&per, &inv, &vtx, &vd, &vrs, &vre, &hde);
+        (void)inv; (void)vd; (void)vrs; (void)vre; (void)hde;
+        bg_events++;
+        bg_sum += dt;
+        if(dt > bg_max) bg_max = dt;
+        if(dt < bg_min) bg_min = dt;
+        if(bg_vtotal > 0){
+            int k = (int)(bg_line0 * BG_BUCKETS / bg_vtotal);
+            if(k >= 0 && k < BG_BUCKETS) bg_hist_entry[k]++;
+        }
+        if(vt > 0){
+            int k = (int)(line * BG_BUCKETS / vt);
+            if(k >= 0 && k < BG_BUCKETS) bg_hist_exit[k]++;
+        }
+        /* mark every frame line this redraw covered, so the occupancy
+         * profile shows the real band edges rather than 16ths */
+        if(vt > 0 && bg_vtotal > 0){
+            int a = (int)(bg_line0 * BG_PROF / bg_vtotal);
+            int b2 = (int)(line * BG_PROF / vt);
+            int n = 0;
+            if(a < 0) a = 0; if(a >= BG_PROF) a = BG_PROF-1;
+            if(b2 < 0) b2 = 0; if(b2 >= BG_PROF) b2 = BG_PROF-1;
+            while(n < BG_PROF){                  /* walks forward, wraps */
+                bg_occ[a]++;
+                if(a == b2) break;
+                a = (a + 1) % BG_PROF; n++;
+            }
+        }
+        fprintf(stderr, "[ball] t=%.6f in=%.1f out=%.1f /%d gap=%.1fus (%.2f%% of frame)\n",
+                now, bg_line0, line, vt, dt,
+                per > 0.0 ? dt / (per * 1e6) * 100.0 : 0.0);
+        if(bg_events == BG_BUDGET)
+            fprintf(stderr, "[ball] event budget reached, logger off\n");
+    }
+}
+
+void fantasies_ballgap_present(int fallback){
+    int vt = 0;
+    double line;
+    if(!balldbg_on || !balldbg_entry) return;
+    bg_presents++;
+    if(bg_inside) bg_presents_inside++;
+    if(fallback) bg_fallback++;
+    line = vga_scanline_now(&vt);
+    if(vt > 0){
+        int k = (int)(line * BG_PROF / vt);
+        if(k >= 0 && k < BG_PROF) bg_pres[k]++;
+    }
+    if(bg_have_start){
+        int pitch = 0;
+        uint32_t st;
+        vga_start_now(&pitch);
+        st = vga_displayed_start_now();    /* what the frame actually shows */
+        if(st != bg_last_start && pitch > 0){
+            double rows = (double)(int32_t)(st - bg_last_start) / (double)pitch;
+            if(rows < 0.0) rows = -rows;
+            if(rows < 1000.0){                 /* ignore mode changes / wraps */
+                double tn = emu_now();
+                bg_skew_n++;
+                bg_skew_sum += rows;
+                if(rows > bg_skew_max) bg_skew_max = rows;
+                /* Which is it: the game skipped a ball redraw (authentic - the
+                 * raster handler moves the camera BEFORE the INSIDE_BALLHANDLER
+                 * bail-out, so an overrunning vblank handler leaves the ball
+                 * behind), or did we sample a camera write the hardware would
+                 * not have shown yet (ours - real VGA latches the start address
+                 * at vertical retrace, we read it live)?  age_ball large means
+                 * the former; age_write small means the latter. */
+                if(bg_skew_n <= 300)
+                    fprintf(stderr, "[skew] t=%.6f rows=%.2f age_ball=%.2fms age_write=%.3fms\n",
+                            tn, rows, (tn - bg_last_ball_t) * 1e3,
+                            vga_last_start_write >= 0.0 ? (tn - vga_last_start_write) * 1e3 : -1.0);
+            }
+        }
+    }
+}
+
+/* one character per 1/64th of the frame, log-ish magnitude */
+static void bg_profile(const char *label, const unsigned long *h){
+    static const char ramp[] = " .:-=+*#%@";
+    unsigned long mx = 0;
+    int k;
+    for(k = 0; k < BG_PROF; k++) if(h[k] > mx) mx = h[k];
+    fprintf(stderr, "[ball] %-9s |", label);
+    for(k = 0; k < BG_PROF; k++){
+        int v = 0;
+        if(mx && h[k]){
+            v = (int)(h[k] * 9 / mx);
+            if(v < 1) v = 1;
+        }
+        fputc(ramp[v], stderr);
+    }
+    fprintf(stderr, "|\n");
+}
+
+void fantasies_ballgap_report(void){
+    int k;
+    if(!balldbg_on || !bg_events) return;
+    fprintf(stderr,
+        "[ball] %lu redraws: gap min=%.1fus mean=%.1fus max=%.1fus; orphans=%lu\n",
+        bg_events, bg_min, bg_sum / bg_events, bg_max, bg_orphan);
+    fprintf(stderr,
+        "[ball] presents=%lu inside-gap=%lu (%.2f%% - these frames lost the ball)\n",
+        bg_presents, bg_presents_inside,
+        bg_presents ? bg_presents_inside * 100.0 / bg_presents : 0.0);
+    fprintf(stderr, "[ball] entry scanline histogram (16ths of frame):\n       ");
+    for(k = 0; k < BG_BUCKETS; k++) fprintf(stderr, "%6lu", bg_hist_entry[k]);
+    fprintf(stderr, "\n[ball] exit  scanline histogram:\n       ");
+    for(k = 0; k < BG_BUCKETS; k++) fprintf(stderr, "%6lu", bg_hist_exit[k]);
+    fprintf(stderr, "\n[ball] fallback presents (phase test bypassed) = %lu of %lu (%.2f%%)\n",
+            bg_fallback, bg_presents,
+            bg_presents ? bg_fallback * 100.0 / bg_presents : 0.0);
+    fprintf(stderr, "[ball] camera/ball skew at present: %lu of %lu (%.2f%%)"
+            " mean=%.2f rows max=%.2f rows\n",
+            bg_skew_n, bg_presents,
+            bg_presents ? bg_skew_n * 100.0 / bg_presents : 0.0,
+            bg_skew_n ? bg_skew_sum / bg_skew_n : 0.0, bg_skew_max);
+    if(pw_valid)
+        fprintf(stderr, "[ball] derived present window: %.4f-%.4f (lines %.0f-%.0f of %d)\n",
+                pw_lo, pw_hi, pw_lo * pw_vt, pw_hi * pw_vt, pw_vt);
+    else
+        fprintf(stderr, "[ball] present window not derived (%u redraws seen, need %d)\n",
+                pw_n, PW_WARMUP);
+    fprintf(stderr, "[ball] frame profile, 64ths of frame (0 = frame start):\n");
+    bg_profile("redraws", bg_occ);
+    bg_profile("presents", bg_pres);
+}

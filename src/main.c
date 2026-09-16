@@ -245,6 +245,16 @@ int plat_pump(void){
     return running;
 }
 
+/* Seed present window, as a fraction of vtotal, used only until the redraw
+ * bands have been learned from the running game (fantasies_present_window(),
+ * src/fantasies.c - see docs #28).  These bounds come from the original
+ * -balldbg measurement: the earliest mid-frame band seen across the four
+ * shipped tables starts at line 222.7/527 = 0.422, and the vblank band ends
+ * by 522/527. */
+#define PRESENT_PHASE_LO 0.114   /* line  60/527 */
+#define PRESENT_PHASE_HI 0.379   /* line 200/527 */
+int present_phaselock = 1;       /* -nophaselock reverts to the wall timer */
+
 void plat_present(const uint32_t *pix, int w, int h){
     int dw = win_w, dh = win_h, dx = 0, dy = 0;
     double ar = (double)w / (double)h * (w==320 && h==200 ? 1.2 : 1.0);
@@ -381,6 +391,10 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-snddbg")){ extern int sound_debug; sound_debug = 1; }
         else if(!strcmp(argv[i],"-nopatch")){ extern int dos_no_patch; dos_no_patch = 1; }
         else if(!strcmp(argv[i],"-mem") && i+1<argc){ mem_lo = strtoul(argv[++i],NULL,16); }
+        else if(!strcmp(argv[i],"-balldbg")){ balldbg_on = 1; }
+        else if(!strcmp(argv[i],"-nophaselock")){ present_phaselock = 0; }
+        else if(!strcmp(argv[i],"-nolatch")){ vga_latch_start = 0; }
+        else if(!strcmp(argv[i],"-noballsync")){ vga_ballsync = 0; }
         else if(!strcmp(argv[i],"-trapexit")){ extern int dos_trap_exit; extern int x_on; dos_trap_exit = 1; x_on = 1; }
         else if(!strcmp(argv[i],"-intwatch") && i+1<argc){ extern int int_watch; int_watch = (int)strtol(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-trap") && i+2<argc){ extern uint32_t x_trap_lo, x_trap_hi; extern int x_on;
@@ -445,6 +459,7 @@ int main(int argc, char **argv){
     }
 
     t0 = plat_time();
+    { unsigned long long pres_last_frame = 0; int pending_present = 0;
     while(plat_pump() && !cpu.shutdown){
         double wall = plat_time() - t0;
         double real = wall * speed;
@@ -478,6 +493,36 @@ int main(int argc, char **argv){
                 int v = pic_pending();
                 if(v >= 0){ irq_count[v&31]++; cpu_interrupt(v, 0); }
             }
+            /* Decide the present phase HERE, not after the catch-up loop.
+             * This loop advances emulated time in ~10 us batches, but one
+             * outer iteration can cover most of a frame (plat_sleep_ms(1)
+             * is coarse on Windows), so testing the phase only out there
+             * overshot the window constantly: measured with -balldbg,
+             * 55% of presents were taken by the fell-behind fallback at an
+             * arbitrary phase, which is why phase-locking only halved the
+             * dropped-ball rate instead of removing it.  Breaking out on
+             * the batch that enters the window costs one deferred batch
+             * and lands the sample where it was aimed. */
+            if(present_phaselock && !pending_present){
+                double per2, inv2, hde2; int vt2, vd2, vrs2, vre2;
+                unsigned long long idx2;
+                vga_timing_cached(&per2, &inv2, &vt2, &vd2, &vrs2, &vre2, &hde2);
+                idx2 = per2 > 0.0 ? (unsigned long long)(emu_time / per2) : 0ULL;
+                if(idx2 != pres_last_frame){
+                    double f2 = (vt2 > 0) ? vga_scanline_now(NULL) / (double)vt2 : 0.0;
+                    double lo = PRESENT_PHASE_LO, hi = PRESENT_PHASE_HI;
+                    int in;
+                    /* the seed constants only stand until the bands have been
+                     * learned from the game itself (src/fantasies.c) */
+                    fantasies_present_window(&lo, &hi);
+                    in = (lo <= hi) ? (f2 >= lo && f2 <= hi)
+                                    : (f2 >= lo || f2 <= hi);   /* span may wrap */
+                    if(in){
+                        pending_present = 1;
+                        break;
+                    }
+                }
+            }
             guard++;
         }
         if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; }  /* fell behind */
@@ -485,19 +530,50 @@ int main(int argc, char **argv){
         /* No duplicate presents: the game renders at 59.71 Hz but the wall
          * timer runs at 60 Hz, so every ~3.4 s a frame went out twice
          * (scroll judder).  Gate on the emulated frame index so each frame
-         * presents at most once; the wall phase still drifts, which matters
-         * because the ball's erase-redraw gap makes any locked phase flicker
-         * constantly (see docs §16).  Drops only happen if emulation can't
-         * keep up, which headroom prevents. */
-        { static unsigned long long last_frame = 0;
-          double per, inv, hde; int vt, vd, vrs, vre;
+         * presents at most once.
+         *
+         * Then pick WHERE in the emulated frame to sample it.  The engine has
+         * no sprite double-buffer: PUTTHEBALL erases the ball, blits the
+         * flippers, and redraws it, and vga_render - which snapshots all of
+         * VRAM at one instant, with no beam - drops the ball entirely if it
+         * samples inside that gap.  The game hides the gap from a CRT by
+         * racing the beam (docs §26), redrawing a lower-half ball during
+         * vblank and deferring an upper-half one to the mid-frame raster
+         * interrupt, so the erase/redraw is always in the half the beam is
+         * not painting.  Measured with -balldbg over 1305 redraws, those two
+         * bands sit at lines 231-260 and 491-521 of 527, leaving two ~7.4 ms
+         * quiet spans against a 0.97 ms worst-case gap.
+         *
+         * Sample in the early-frame span (lines ~521-231, wrapping).  That is
+         * the CRT-faithful one: a high ball is painted by the beam before the
+         * mid-frame redraw, so showing the pre-redraw state is exactly what
+         * hardware displayed, and a low ball is unchanged across both spans.
+         * Sampling the other span would show a high ball one tick early,
+         * which also makes it step backwards when it crosses mid-screen.
+         *
+         * This is what docs §16 got wrong: phase-locking is sound, but it
+         * locked to vsync, which is precisely when a lower-half ball is being
+         * redrawn.  -nophaselock restores the old drifting wall timer. */
+        { double per, inv, hde; int vt, vd, vrs, vre;
           unsigned long long idx;
+          int go, fell_behind = 0;
           vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
           (void)inv; (void)vt; (void)vd; (void)vrs; (void)vre; (void)hde;
           idx = per > 0.0 ? (unsigned long long)(emu_time / per) : 0ULL;
-          if(plat_time() - last_present > 1.0/60.0 && idx != last_frame){
-            last_frame = idx;
+          if(!present_phaselock){
+            go = (plat_time() - last_present > 1.0/60.0) && idx != pres_last_frame;
+          }else{
+            /* the catch-up loop above picked the moment; only take it late
+             * (without a phase of our choosing) if a whole frame was missed */
+            fell_behind = (idx > pres_last_frame + 1) && !pending_present;
+            go = (idx != pres_last_frame) && (pending_present || fell_behind);
+            if(go && plat_time() - last_present < 1.0/240.0) go = 0;
+          }
+          pending_present = 0;
+          if(go){
+            pres_last_frame = idx;
             last_present = plat_time();
+            fantasies_ballgap_present(fell_behind);
             vga_render(fb, &fbw, &fbh);
             fantasies_draw_osd(fb, fbw, fbh);
             plat_present(fb, fbw, fbh);
@@ -514,6 +590,7 @@ int main(int argc, char **argv){
           } }
         plat_sleep_ms(1);
     }
+    }
 
     vga_render(fb,&fbw,&fbh);
     plat_present(fb,fbw,fbh);
@@ -523,6 +600,11 @@ int main(int argc, char **argv){
       printf("[pfemu] 3DA reads=%lu  bit0(blank)=%lu  bit3(vsync)=%lu\n",
              st1_calls, st1_bit0, st1_bit3); }
     { extern void st1_report(void); st1_report(); }
+    fantasies_ballgap_report();
+    { extern unsigned long smooth_calls, smooth_interp, smooth_late;
+      if(smooth_calls)
+        printf("[pfemu] smooth-scroll: %lu presents, %lu interpolated (%.2f%%), %lu past-last\n",
+               smooth_calls, smooth_interp, smooth_interp*100.0/smooth_calls, smooth_late); }
     { extern unsigned long vsync_edges;
       printf("[pfemu] vsync edges seen = %lu (%.1f/s)\n",
              vsync_edges, vsync_edges/(emu_time>0?emu_time:1)); }

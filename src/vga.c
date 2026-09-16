@@ -276,6 +276,21 @@ static double vga_frameline(int *vtotal_out){
     return line;
 }
 
+/* Public wrapper: the ball-gap logger (-balldbg, src/fantasies.c) needs the
+ * same frame-relative scan line -flipdbg/-paldbg already report, so its
+ * entry/exit timestamps can be read against the game's own raster schedule. */
+/* Raw (un-interpolated) CRTC start address and row pitch, so -balldbg can
+ * convert the ball VRAM offset the game just stored into a screen row. */
+uint32_t vga_start_now(int *pitch_out){
+    int offs = cr[0x13] ? cr[0x13] : 40;
+    if(pitch_out) *pitch_out = offs * 2;
+    return (((uint32_t)cr[0x0C])<<8) | cr[0x0D];
+}
+
+double vga_scanline_now(int *vtotal_out){
+    return vga_frameline(vtotal_out);
+}
+
 static uint64_t vscan_fnv(const uint8_t *p, size_t n){
     uint64_t h = 1469598103934665603ULL;
     size_t i;
@@ -330,8 +345,113 @@ static void smooth_note(uint32_t s){
     sm_last = s; sm_last_t = now;
 }
 
+/* Instrumentation for the question "does this ever actually interpolate?" -
+ * smooth_calls counts presents that reached it, smooth_interp the ones that
+ * returned a blended position rather than the raw register. */
+double vga_last_start_write = -1.0;
+double vga_last_start_line = -1.0;
+
+/* ---- displayed start address ------------------------------------------
+ * Two corrections live here, both render-path only; neither touches guest
+ * state.  See docs/OPTIMIZATIONS.md #27.
+ *
+ * 1. Latch at vertical retrace (accuracy).  Real VGA copies CRTC 0x0C/0x0D
+ *    into the display address counter at the start of vertical retrace, so a
+ *    mid-frame camera write only takes effect on the NEXT frame and can never
+ *    be seen half-written.  pfemu read the pair live, which showed mid-frame
+ *    writes a frame early and could sample them torn between the hi and lo
+ *    byte.  A short history of writes plus the time of the last retrace gives
+ *    the value hardware would actually be displaying.  -nolatch disables.
+ *
+ * 2. Pair the camera with the ball (deliberate cosmetic deviation).  The
+ *    engine commits the camera in LATE_RASTER_INTERRUPT (SETSCREENSTART) but
+ *    a lower-half ball in VBLANK_INT, ~11 ms and one 30 Hz tick apart, so
+ *    while the camera is moving the ball is drawn against a camera one tick
+ *    newer than itself.  Measured with -balldbg: 3-5% of presents, mean ~4.8
+ *    and up to 37 rows of displacement, scaling with camera speed - invisible
+ *    on a slow ball, a visible alternating double image on a fast one.  This
+ *    reproduces on period hardware (the latch lands on the vblank where the
+ *    ball is not redrawn), so it is authentic, and smoothing it is a
+ *    deliberate choice to prefer a steady picture over bit-exact accuracy -
+ *    the same trade already made for the AR14 palette latch (#21/#24/#25).
+ *    The fix is to display the start address that was in force when the ball
+ *    was last drawn, which keeps ball and playfield locked together; the
+ *    background then steps at the ball's own 30 Hz cadence, which is the rate
+ *    it already stepped at.  Falls back to the latched value whenever no ball
+ *    has been drawn recently (intro, menu, between balls).  -noballsync
+ *    disables. */
+int vga_latch_start = 1, vga_ballsync = 1;
+
+#define SA_HIST 32
+static struct { double t; uint32_t v; } sa_hist[SA_HIST];
+static unsigned sa_n = 0;
+static uint32_t ball_start_v = 0;
+static double ball_start_t = -1.0;
+
+static void sa_note(uint32_t v){
+    sa_hist[sa_n & (SA_HIST-1)].t = emu_now();
+    sa_hist[sa_n & (SA_HIST-1)].v = v;
+    sa_n++;
+}
+
+/* called from the PUTTHEBALL epilogue hook (src/fantasies.c) */
+void vga_note_ball_start(uint32_t start){
+    ball_start_v = start;
+    ball_start_t = emu_now();
+}
+
+void vga_reset_start_pairing(void){
+    sa_n = 0; ball_start_t = -1.0;
+}
+
+static uint32_t start_latched(uint32_t live){
+    double per, inv, hde, now, line, t_latch;
+    int vt, vd, vrs, vre;
+    unsigned i;
+    uint32_t best_v = live; double best_t = -1.0;
+    if(!vga_latch_start || sa_n == 0) return live;
+    vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
+    (void)vd; (void)vre; (void)hde;
+    if(per <= 0.0 || vt <= 0) return live;
+    now = emu_now();
+    line = (now * inv - (double)(int64_t)(now * inv)) * (double)vt;
+    /* time of the most recent vertical-retrace start */
+    t_latch = now - ((line >= (double)vrs) ? (line - vrs) : (line + vt - vrs))
+                    / (double)vt * per;
+    { unsigned cnt = (sa_n < SA_HIST) ? sa_n : SA_HIST;
+      for(i = 0; i < cnt; i++){
+        if(sa_hist[i].t <= t_latch && sa_hist[i].t > best_t){
+            best_t = sa_hist[i].t; best_v = sa_hist[i].v;
+        }
+      }
+    }
+    return (best_t < 0.0) ? live : best_v;
+}
+
+/* What vga_render should actually display. */
+static uint32_t vga_display_start(uint32_t live);
+
+/* Same answer, for -balldbg's skew check: comparing the DISPLAYED camera
+ * against the ball's own is what says whether the pairing is working, where
+ * comparing the raw register just re-measures the guest's behaviour. */
+uint32_t vga_displayed_start_now(void){
+    return vga_display_start((((uint32_t)cr[0x0C])<<8) | cr[0x0D]);
+}
+
+static uint32_t vga_display_start(uint32_t live){
+    /* ~3 ball ticks of staleness before falling back, so a drained ball or a
+     * mode change hands the camera back to the latch promptly */
+    if(vga_ballsync && ball_start_t >= 0.0 && emu_now() - ball_start_t < 0.10)
+        return ball_start_v;
+    return start_latched(live);
+}
+
+
+unsigned long smooth_calls = 0, smooth_interp = 0, smooth_late = 0;
+
 static uint32_t smooth_start(uint32_t actual){
     double now, r, d;
+    smooth_calls++;
     if(!vga_smooth || !sm_have) return actual;
     if(sm_last == sm_prev) return actual;
     if(sm_last_t <= sm_prev_t) return actual;
@@ -340,7 +460,8 @@ static uint32_t smooth_start(uint32_t actual){
     now = emu_now();
     r = (now - sm_prev_t) / (sm_last_t - sm_prev_t);
     if(r <= 0.0) return sm_prev;
-    if(r >= 1.0) return actual;
+    if(r >= 1.0){ smooth_late++; return actual; }
+    smooth_interp++;
     return (uint32_t)((double)sm_prev + d * r);
 }
 
@@ -392,8 +513,12 @@ void vga_io_w(uint16_t p, uint8_t v){
     case 0x3B5: case 0x3D5:
         if(cr_idx==0x0C && cr[0x0C]!=v) vga_startaddr_changes++;
         cr[cr_idx & 63] = v; vga_dirty = 1; timing_dirty = 1;
-        if(cr_idx==0x0C || cr_idx==0x0D)
+        if(cr_idx==0x0C || cr_idx==0x0D){
             smooth_note((((uint32_t)cr[0x0C])<<8) | cr[0x0D]);
+            vga_last_start_write = emu_now();   /* for -balldbg skew analysis */
+            vga_last_start_line = vga_frameline(NULL);
+            sa_note((((uint32_t)cr[0x0C])<<8) | cr[0x0D]);
+        }
         if(vga_flipdbg && (cr_idx==0x0C || cr_idx==0x0D)){
             int vt; double line = vga_frameline(&vt);
             uint32_t start = ((uint32_t)cr[0x0C]<<8) | cr[0x0D];
@@ -436,7 +561,7 @@ void vga_render(uint32_t *out, int *wp, int *hp){
     if(vga_nodbl) dbl = 1;
     int offs = cr[0x13] ? cr[0x13] : 40;
     int is256 = (ar[0x10] & 0x40) != 0 || vga_force256;
-    uint32_t start = smooth_start((((uint32_t)cr[0x0C])<<8) | cr[0x0D]);
+    uint32_t start = smooth_start(vga_display_start((((uint32_t)cr[0x0C])<<8) | cr[0x0D]));
     int lc = line_compare();
     int pel = ar[0x13] & 0x0F;
 

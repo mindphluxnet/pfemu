@@ -88,6 +88,14 @@ void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
 extern int vga_smooth;               /* -nosmooth disables scroll interp */
 extern int vga_dmdlog;               /* -dmd: log DMD VRAM step cadence */
 extern int vga_paldbg;               /* -paldbg: log AR14 writes w/ frame phase */
+double vga_scanline_now(int *vtotal_out); /* frame-relative scan line, for -balldbg */
+uint32_t vga_start_now(int *pitch_out);   /* raw CRTC start + row pitch */
+extern double vga_last_start_write;       /* emu time of last CRTC 0C/0D write */
+extern double vga_last_start_line;        /* frame line of that write */
+extern int vga_latch_start, vga_ballsync; /* -nolatch / -noballsync */
+void vga_note_ball_start(uint32_t start); /* PUTTHEBALL epilogue -> camera pairing */
+void vga_reset_start_pairing(void);
+uint32_t vga_displayed_start_now(void);   /* what vga_render would show */
 
 /* ---------------------------------------------------------------- BIOS --- */
 void bios_init(void);
@@ -115,6 +123,14 @@ void fantasies_pause_tick(void);
 void fantasies_spring_tick(void);
 void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_patch_balls(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_patch_ballgap(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_ballgap_exec(uint32_t lin);   /* cpu.c hook, gated by balldbg_on */
+void fantasies_ballgap_present(int fallback); /* main.c: one call per present */
+void fantasies_ballgap_report(void);         /* exit summary */
+int  fantasies_present_window(double *lo, double *hi); /* 1 once learned */
+extern int balldbg_on;                       /* -balldbg */
+extern uint32_t balldbg_entry, balldbg_exit; /* PUTTHEBALL entry / RETN, 0 = unknown */
+extern uint32_t balldbg_pos;                 /* the MOV [OLDPOS],SI store */
 int  fantasies_intercept_cfg_open(const char *fname);
 FILE *fantasies_open_cdmarker(const char *fname);
 int  fantasies_fix_active(void);

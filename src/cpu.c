@@ -468,6 +468,18 @@ void cpu_step(void){
     int sz;
     opsz = 16; adsz = 16; segovr = -1; rep = 0;
     cs_base = cpu.sbase[S_CS];
+    /* -balldbg: two compares against PUTTHEBALL's entry/RETN (see
+     * fantasies.c).  One predictable branch per instruction when off. */
+    /* PUTTHEBALL hooks.  The epilogue (balldbg_pos) is live in normal play -
+     * it feeds the camera/ball pairing in vga.c - and so is the entry, which
+     * the present-window derivation needs; two compares per instruction
+     * whenever a table is loaded.  exit is only interesting to the -balldbg
+     * logger and stays behind its flag. */
+    if(balldbg_pos){
+        uint32_t la = cs_base + cpu.eip;
+        if(la == balldbg_pos || la == balldbg_entry) fantasies_ballgap_exec(la);
+        else if(balldbg_on && la == balldbg_exit) fantasies_ballgap_exec(la);
+    }
     if(x_on){
         x_ring[x_pos & (XRING-1)] = cs_base + cpu.eip;
         x_cs[x_pos & (XRING-1)] = cpu.sreg[S_CS];

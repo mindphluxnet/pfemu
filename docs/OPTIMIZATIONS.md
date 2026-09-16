@@ -693,3 +693,301 @@ correctly? Either way it's no longer this file's concern: it stopped being
 a `vga.c` question the moment the alternation was confirmed to come from
 the register timeline itself rather than from how that timeline gets
 rendered.
+
+## 26. Ball flicker: the engine races the beam, our present ignores it (`-balldbg`)
+
+The reconstructed MS-DOS port source settles what §16/§18 could only infer
+from VRAM hashes. `FANTASIE.ASM`'s `PUTTHEBALL` is commented
+`FN: DELETES AND PUTS THE BALL`: it restores the saved background at
+`OLDPOS` (`DELBALL`) and then re-saves and redraws at the new position
+(`PUTBALL`). No sprite double-buffer exists - between those calls the ball
+is absent from the visible page. The window is much wider than the 16-line
+ball, because the caller sets `PUTITBETWEEN`/`PUTF3BETWEEN` and a full
+`DOFLIPPER` and `DOFLIPPER3` blit run *inside* it, and any interrupt taken
+mid-routine (the MOD mixer above all) stretches it further.
+
+What §18 missed is that the engine does not leave that gap exposed - it
+races the beam instead of buffering. `VBLANK_INT` compares `SC_Y` against
+`START_RASTER + MIDDLE_RASTER_LO/HI`: a **lower-half** ball is redrawn
+immediately in the vblank handler, with the beam still above it, while an
+**upper-half** ball sets `LATEGFX=TRUE` ("PUT NEXT SYNC LAST") to defer the
+redraw to `LATE_RASTER_INTERRUPT`, which fires mid-screen after the beam has
+already passed it. Either way the erase/redraw happens in the half the beam
+is not painting, and a CRT never sees it.
+
+So §18's "the ball hazard is structural and authentic on real hardware too"
+is half right. The erase-redraw is structural; the *flicker* is not
+authentic. Period hardware flickered only when the scheme broke down, and
+the handlers are full of paths where it does: `RETTEF`/`RETAF` on
+`SLOWCNT`, the `INSIDE_BALLHANDLER` and `INSIDE_RASTINT` reentrancy guards,
+the `LAST_WAS_VB` ordering requirement, and the `TIME_LEFT` "music crisis"
+flag the mixer sets. When the mixer overran, the redraw landed under the
+beam.
+
+pfemu defeats the scheme outright: `vga_render` snapshots all of VRAM at one
+instant and has no beam at all, so a present landing inside the gap drops the
+ball from the *whole* frame - a full-frame dropout, more visible than the
+partial tear hardware would have shown.
+
+This also re-reads §16. Locking presents to vsync failed not because
+phase-locking is wrong but because vsync is precisely when a lower-half ball
+is being redrawn - the worst available phase. The source says where the safe
+phase is: between the end of the vblank handler and the start of the
+mid-frame raster interrupt the ball is quiescent by construction, and a
+snapshot there also matches what a CRT displays (upper half as already
+painted, lower half as about to be). Caveat: §18's "no quiet window" holds
+for the dot-matrix, lights and animations, which keep writing through that
+span. The quiet window is the ball's alone.
+
+Measure before locking anything - hence `-balldbg` (`src/fantasies.c`),
+which times the gap instead of estimating it. It locates `PUTTHEBALL` by
+signature, not fixed offset, the way `fantasies_patch_pause()`/`_balls()`
+locate theirs: the prologue (`PUSHA` / `PUSH 0A000h` / `POP ES` /
+`CMP VERYFIRSTPUT,TRUE` / `JE`) is unique in all four shipped `TABLE1-4.PRG`
+of both the floppy and Deluxe releases, as is the epilogue (`CALL PUTBALL` /
+`SET_DS DATA` / `MOV OLDPOS,SI` / `MOV OLDSHIFT,DX` / `POPA` / `RETN`); the
+body is 134 bytes in all eight, only the DS-relative operands differing, and
+the two signatures are cross-checked against each other. A two-address
+compare in `cpu_step()` logs entry/exit emulated time and frame-relative
+scan line; the exit report gives min/mean/max gap, scan-line histograms for
+entry and exit, and the count of presents that landed inside the gap - the
+last being the direct measure of how often we lose the ball. Auto-off after
+20k redraws (~11 min of play).
+
+Usage: `pfemu.exe -d FANTASYDX -balldbg > ball.log 2>&1`, play a ball, quit.
+
+### Measured, 1305 redraws over ~27 s of play
+
+```
+gap  min=96.7us  mean=304.9us  max=968.7us   orphans=0
+presents=1606  inside-gap=16  (1.00% - these frames lost the ball)
+band A (raster int, upper-half ball)  lines 231-260 / 527   930 redraws
+band B (vblank,     lower-half ball)  lines 491-521 / 527   375 redraws
+```
+
+Two clean bands exactly where the source says they should be, no smearing,
+and zero orphans - every entry paired with its exit, so the reentrancy
+guards hold. The bands leave two quiet spans of 231 and 237 lines (~7.4 ms
+each) against a 0.97 ms worst-case gap: a ~7x margin either side. The 1.00%
+of presents landing in the gap is the flicker, and it matches the predicted
+order (1305 x 304.9us over 26.9 s = 1.5% if presents were uniformly
+distributed; the wall timer's drift accounts for the rest).
+
+Note both bands fire in the same frame when a ball crosses into the upper
+half - VBLANK_INT redraws it *and* sets LATEGFX, so LATE_RASTER_INTERRUPT
+redraws it again - which is why 1305 redraws appear in ~27 s rather than the
+30 Hz tick rate.
+
+### The fix (`src/main.c`)
+
+Presents now sample at a fixed emulated-frame phase instead of on the
+drifting wall timer: the window is lines 60-220 of 527 (`PRESENT_PHASE_LO`/
+`_HI`), inside the early-frame quiet span and ~60 lines clear of either
+band. The frame-index gate from §18 stays, so each emulated frame still
+presents at most once; if emulation falls more than one frame behind, the
+phase test is bypassed rather than dropping the frame.
+
+The early span is the CRT-faithful one of the two. An upper-half ball is
+painted by the beam *before* the mid-frame redraw, so showing the pre-redraw
+state is what hardware displayed; a lower-half ball is identical in both
+spans. Sampling the late span instead would show an upper-half ball one tick
+early, and - because the age of the displayed position then jumps from 0.25
+to 0.75 of a frame as the ball crosses mid-screen - make it appear to step
+*backwards* at the crossing. The early span's jump goes the other way (the
+ball catches up), which is both faithful and the less objectionable
+artifact. The half-frame discontinuity at the crossing itself is inherent to
+the game's two-schedule design and is present on real hardware.
+
+`-nophaselock` restores the old drifting wall timer for A/B comparison.
+This does not disturb the AR14 palette latch (§21/§24/§25), which was
+deliberately built phase-independent - it keys off switch history, not the
+instantaneous register.
+
+### Why the first attempt only halved it: the present check was in the wrong loop
+
+Locking the phase dropped the loss rate from 1.00% to 0.49% and no further.
+`-balldbg`'s fallback counter found the reason: **55.38% of presents were
+bypassing the phase test entirely.** The decision sat *after* the inner
+catch-up loop, which advances emulated time in ~10 us batches - but a single
+outer iteration can cover most of a frame, because `plat_sleep_ms(1)` is
+coarse on Windows. The window was overshot constantly, the fell-behind
+fallback took the frame at an arbitrary phase, and the presents profile
+smeared across the whole frame.
+
+Moving the decision *inside* the catch-up loop - breaking out on the batch
+that enters the window, at the cost of one deferred batch per frame - fixed
+it outright:
+
+```
+before:  presents=2882  inside-gap=14 (0.49%)   fallback 1596 (55.38%)
+after:   presents=5110  inside-gap= 0 (0.00%)   fallback    1 ( 0.02%)
+
+redraws   |                                       #@#..               ==-..|
+presents  |       @     ..   .                                          .  |
+```
+
+Lesson worth keeping: a phase-locked present is only as good as the
+granularity of the clock you test the phase against. The window was correct
+from the first attempt; nothing sampled it often enough to land in it.
+
+### Band positions move per table
+
+Band A sits at lines 231-260, 225-258 and 296-362 on the three tables
+measured so far - it tracks each table's own raster-interrupt line, so a
+single hardcoded window is on borrowed time. All three leave lines 60-200
+clear, which is what `PRESENT_PHASE_LO/_HI` now use, but if a table is found
+whose band A starts before line 200 this needs to derive the window at
+runtime from the observed bands instead of using constants.
+
+### Still open: the ball is drawn a few pixels off its path
+
+A second, distinct symptom - the ball sitting slightly beside where its
+trajectory says it should be, even rolling freely. Two candidate causes,
+both measured rather than assumed:
+
+* **Camera/ball skew (ours).** `LATE_RASTER_INTERRUPT` calls
+  `SETSCREENSTART` *before* `PUTTHEBALL`, so between them the CRTC start is
+  one camera step newer than the ball drawn under it; a present sampled
+  there displaces the ball. pfemu compounds this by reading the start
+  address live in `vga_render`, where real VGA latches it at vertical
+  retrace - so a mid-frame camera write applies immediately for us and only
+  next frame on hardware. The phase lock may already avoid this window;
+  `-balldbg` now reports camera/ball skew at present time to settle it.
+* **The game's own stepping (authentic).** The redraw cadence is clean
+  (1633 of 2421 intervals at 33.49 ms) but 28 are 16.75 ms - the double-tick
+  the source predicts, where `VBLANK_INT` redraws the ball *and* sets
+  LATEGFX so `LATE_RASTER_INTERRUPT` redraws it again, giving the ball two
+  physics steps on the frame it crosses mid-screen. Vertical steps under
+  gravity also wobble non-monotonically (3, 3, 5, 4, 6) in the guest's own
+  fixed-point arithmetic. Both are in the original code and off-limits.
+
+### §19 smooth scrolling appears to be inert
+
+Reading `smooth_start()`: `r = (now - prev_t) / (last_t - prev_t)` with
+`now` always *after* `last_t`, so in steady state (publishes ~33 ms apart,
+presents ~16.7 ms apart) r lands between 1 and 2 and the function returns
+the raw register every time. A blind A/B of `-nosmooth` against the default
+was reported as showing no noticeable difference, which is consistent.
+`smooth_calls`/`smooth_interp`/`smooth_late` counters now print at exit to
+confirm it outright. If it is inert, §19's claimed benefit was never real
+and the 30 Hz scroll stepping it set out to smooth is still there.
+
+## 27. Ball/camera pairing and a real start-address latch (`src/vga.c`)
+
+Follow-up to §26. With the blink-out gone, a second symptom was left: the
+ball sitting a few pixels off its path, invisible when rolling slowly,
+clearly visible when fast, and reading as a doubled image or "trail" on a
+really fast ball. `-balldbg` now measures it as camera/ball skew - a present
+where the CRTC start address is not the one the ball was drawn against.
+
+### What it is
+
+```
+camera/ball skew at present: 339 of 7037 (4.82%) mean=4.78 rows max=37.00 rows
+[skew] t=20.617199 rows=37.00 age_ball=19.72ms age_write=8.341ms
+```
+
+`age_ball`/`age_write` are rock constant across every event, so this is a
+fixed structural offset rather than jitter. Converted to frame lines (our
+presents land at line ~58):
+
+| event | frame line | handler |
+|---|---|---|
+| ball drawn | ~494, two frames back | `VBLANK_INT` |
+| camera written | ~323, one frame back | `SETSCREENSTART` in `LATE_RASTER_INTERRUPT` |
+
+The engine commits the camera in the raster interrupt but a **lower-half**
+ball in the vblank handler - ~11 ms and one 30 Hz tick apart. For an upper-half
+ball both happen in the same handler back to back, so it is consistent, and
+that is 79% of redraws; the remaining 21% are drawn against a camera one tick
+newer than themselves. The displacement *is* the camera step, which is why it
+scales with ball speed and alternates every other frame.
+
+Skipped redraws are not the cause: of 2038 intervals, 1977 are exactly two
+frames, 47 are the mid-screen double-tick, and only 14 are skips.
+
+### It is authentic, and smoothing it is a deliberate choice
+
+Real VGA latches the start address at vertical retrace, so on hardware the
+new camera takes effect at the vblank where the ball is *not* redrawn -
+producing the same alternating displacement. By request, traded for a steady
+picture the same way the AR14 palette latch was (§21/§24/§25): `vga_render`
+now displays the start address that was in force when the ball was last
+drawn, keeping ball and playfield locked together. The background then steps
+at the ball's own 30 Hz cadence, which is the rate it already stepped at.
+Falls back to the latched value when no ball has been drawn for ~3 ticks
+(intro, menu, between balls). `-noballsync` disables.
+
+The pairing is fed by a third hook on `PUTTHEBALL`'s epilogue - the
+`MOV [OLDPOS],SI` store, located by the same signature as §26 - which is live
+in normal play, not just under `-balldbg`, and costs one compare per
+instruction while a table is loaded.
+
+### Start address now latches at vertical retrace (accuracy, not cosmetic)
+
+Independently: pfemu read `cr[0x0C]/cr[0x0D]` live in `vga_render`, so a
+mid-frame camera write took effect a frame earlier than on hardware and could
+be sampled torn between the hi and lo byte. A 32-entry history of writes plus
+the time of the last retrace now yields the value hardware would be
+displaying. This does not change what we show at the locked present phase
+(camera writes land at line ~323, presents at ~58), but it was wrong, and it
+matters for `-nophaselock` and any future change to the present phase.
+`-nolatch` disables.
+
+### §19 smooth scrolling is inert - confirmed, still unfixed
+
+```
+[pfemu] smooth-scroll: 7733 presents, 0 interpolated (0.00%), 7385 past-last
+```
+
+`smooth_start()` computes `r = (now - prev_t) / (last_t - prev_t)` with `now`
+always after `last_t`, so r lands between 1 and 2 in steady state and the raw
+register is returned every time. A blind A/B of `-nosmooth` was reported as
+showing no difference, consistent with the counters. So §19 never did
+anything and the 30 Hz scroll stepping it set out to smooth is still there.
+Left as-is for now; note that interpolating the viewport under a 30 Hz sprite
+is exactly what would desynchronise the ball again, so any revival has to be
+done downstream of the pairing above.
+
+## 28. Present window derived at runtime, not hardcoded (`src/fantasies.c`)
+
+§26 placed the present window with constants read off one table's `-balldbg`
+trace. That was always luck: the redraw bands sit at each table's own raster
+line, measured at lines 222.7, 225.5, 231.4 and ~296 across the four shipped
+tables, and the several releases carry slightly different table binaries. All
+four happened to clear the hardcoded window, table 4 by only 23 lines.
+
+The bands are now learned from the running game. Every redraw marks the frame
+buckets it covered - `PUTTHEBALL`'s entry hook to its epilogue hook, both live
+in normal play - into a 64-bucket occupancy histogram. The window is placed in
+the quiet span that **follows the vblank band**, found by walking forward from
+vertical retrace to the first empty bucket, with `PW_MARGIN` (4 buckets, ~33
+lines) kept clear of either side.
+
+Deliberately that span and not merely the largest one: sampling before the
+mid-frame redraw is what matches the CRT, because an upper-half ball is
+painted by the beam before that redraw, so the pre-redraw state is what
+hardware showed. The later span would show it one tick early and make it step
+backwards as it crosses mid-screen (§26).
+
+Checked against the four measured tables, the derived window beats the
+constants everywhere, and widens the tightest margin by 45%:
+
+| table | derived window (lines of 527) | margin to band A | hardcoded |
+|---|---|---|---|
+| 4 | 32.9-189.4 | 33.3 | 23.0 |
+| 1 | 32.9-197.6 | 33.8 | 31.7 |
+| 2 | 24.7-189.4 | 36.1 | 25.8 |
+| 3 | 32.9-255.3 | 40.7 | 96 |
+
+Table 2's quiet span starts at bucket 63 and runs through 0, so the
+wrap-around path is exercised by a real table; `main.c` tests the window with
+`(lo <= hi) ? (f >= lo && f <= hi) : (f >= lo || f <= hi)` for the same
+reason.
+
+The constants in `main.c` remain as a seed for the first `PW_WARMUP` (90)
+redraws, ~3 s of play, and are known good on all four shipped tables. The
+histogram resets when a new table image loads or when the CRTC timing changes,
+so a hi-res toggle - which moves `MIDDLE_RASTER`, and with it the bands -
+re-learns instead of pinning the window to stale geometry. `-balldbg` reports
+the derived window at exit.

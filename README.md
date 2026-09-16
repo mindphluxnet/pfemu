@@ -178,6 +178,10 @@ These options were used to reverse-engineer and verify the emulator:
 | `-pll N` | Trace `N` timer reloads during audio calibration |
 | `-snddbg` | Enable additional sound diagnostics |
 | `-flipdbg`, `-vscan N`, `-dmd` | Trace display timing and page changes |
+| `-balldbg` | Time the ball erase/redraw gap and how often a frame lands in it |
+| `-nophaselock` | Present on the old wall timer instead of a fixed frame phase |
+| `-noballsync` | Stop pairing the displayed camera with the ball; show the raw camera |
+| `-nolatch` | Read the CRTC start address live instead of latching it at retrace |
 | `-force256`, `-nodbl`, `-oldtiming`, `-nosmooth` | Disable rendering behaviors to isolate display problems |
 
 Numeric addresses and interrupt numbers are hexadecimal unless stated
