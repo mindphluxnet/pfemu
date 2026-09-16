@@ -36,6 +36,36 @@ static int fbw = 320, fbh = 200;
 static int running = 1;
 static int win_w = 960, win_h = 600;
 static int integer_scale = 0;
+static int fullscreen = 0;
+static LONG windowed_style;
+static RECT windowed_rect;
+
+static void set_fullscreen(int on){
+    if(on == fullscreen) return;
+    if(on){
+        MONITORINFO mi;
+        mi.cbSize = sizeof(mi);
+        windowed_style = GetWindowLongA(hwnd, GWL_STYLE);
+        GetWindowRect(hwnd, &windowed_rect);
+        if(GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)){
+            SetWindowLongA(hwnd, GWL_STYLE, WS_POPUP|WS_VISIBLE);
+            SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                         mi.rcMonitor.right-mi.rcMonitor.left,
+                         mi.rcMonitor.bottom-mi.rcMonitor.top,
+                         SWP_FRAMECHANGED);
+            fullscreen = 1;
+        }
+    } else {
+        SetWindowLongA(hwnd, GWL_STYLE, windowed_style);
+        SetWindowPos(hwnd, NULL, windowed_rect.left, windowed_rect.top,
+                     windowed_rect.right-windowed_rect.left,
+                     windowed_rect.bottom-windowed_rect.top,
+                     SWP_NOZORDER|SWP_FRAMECHANGED);
+        fullscreen = 0;
+    }
+}
+
+void plat_set_fullscreen(int on){ set_fullscreen(on); }
 
 extern void kbd_release_all(void);
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
@@ -52,6 +82,12 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
          * code 58h), and so do both shifts, both alts, both controls, the
          * arrows and space. */
         if(w == VK_SCROLL){ running = 0; return 0; }
+        /* Alt+Enter toggles fullscreen; bit 30 filters key-repeat so holding
+         * it doesn't flap the window every auto-repeat interval. */
+        if(m == WM_SYSKEYDOWN && w == VK_RETURN && !(l & (1<<30))){
+            set_fullscreen(!fullscreen);
+            return 0;
+        }
         if(sc) kbd_key(sc | (ext?0xE000:0), 1);
         return 0; }
     case WM_SYSKEYUP: case WM_KEYUP: {
@@ -267,6 +303,7 @@ int main(int argc, char **argv){
     const char *prog = "PINBALL.EXE";
     int no_launcher = 0;      /* -nolauncher: skip the picker dialog */
     int explicit_prog = 0;    /* -p / -setup names the program directly */
+    int start_fullscreen = 0; /* -fullscreen, or the launcher's checkbox */
     /* Windows-subsystem binary: no console of its own, so double-clicking
      * shows only the UI.  When started from a console, reattach to it so
      * CLI output (-secs stats, traces) still works — but never steal a
@@ -321,6 +358,7 @@ int main(int argc, char **argv){
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-speed") && i+1<argc) speed = atof(argv[++i]);
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
+        else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
         else if(!strcmp(argv[i],"-nosmooth")) vga_smooth = 0;
         else if(!strcmp(argv[i],"-dmd")) vga_dmdlog = 1;
@@ -337,6 +375,7 @@ int main(int argc, char **argv){
         LaunchChoice lc;
         if(!show_launcher(&lc)) return 0;
         dir = lc.dir; prog = lc.prog;
+        if(lc.fullscreen) start_fullscreen = 1;
     }
 
     /* Arm the Fantasies session (launcher choice or its CLI equivalent).
@@ -353,6 +392,7 @@ int main(int argc, char **argv){
     bios_init();
     dos_init(dir);
     plat_init("Pinball Fantasies - pfemu");
+    if(start_fullscreen) plat_set_fullscreen(1);
 
     /* Hand-built boot: park the CPU on a HLT in ROM, then EXEC the program. */
     ram[0xFFFF0] = 0xF4;

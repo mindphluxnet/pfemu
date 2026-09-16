@@ -48,6 +48,7 @@
 #define ID_LAUNCH       106
 #define ID_QUIT         107
 #define ID_CHEAT_ENABLE 108
+#define ID_FULLSCREEN   109
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
@@ -215,14 +216,41 @@ static void write_cheats_cfg(const char *dir, int balls, int spring){
     fclose(f);
 }
 
+/* Host-only, one byte: whether to start the game window fullscreen. Alt+Enter
+ * still toggles it live once running (src/main.c); this just picks the
+ * starting state so it doesn't have to be flipped by hand every launch. */
+static int read_fullscreen_cfg(const char *dir){
+    char path[600];
+    FILE *f;
+    uint8_t b = 0;
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_display.cfg", dir);
+    f = fopen(path, "rb");
+    if(f){ if(fread(&b,1,1,f) != 1) b = 0; fclose(f); }
+    return b != 0;
+}
+
+static void write_fullscreen_cfg(const char *dir, int on){
+    char path[600], sub[600];
+    FILE *f;
+    uint8_t b = (uint8_t)(on ? 1 : 0);
+    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
+    CreateDirectoryA(sub, NULL);
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_display.cfg", dir);
+    f = fopen(path, "wb");
+    if(!f) return;
+    fwrite(&b, 1, 1, f);
+    fclose(f);
+}
+
 /* ------------------------------------------------------------------ UI */
 typedef struct {
     int sound;              /* checkbox state */
     uint8_t cfg[6];         /* PINBALL.CFG option bytes */
     int cheat_enable;        /* checkbox state: trainer (infinite balls + ball control) */
+    int fullscreen;          /* checkbox state: start the window fullscreen */
     int done;               /* dialog finished */
     int ok;                 /* 1 = launch, 0 = quit */
-    HWND hSound, hOpt[6], hCheatEnable;
+    HWND hSound, hOpt[6], hCheatEnable, hFullscreen;
     HFONT hFont;
 } LaunchState;
 
@@ -279,6 +307,12 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             WS_CHILD|WS_VISIBLE,24,y,324,28,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         y += 34;
+        st->hFullscreen = CreateWindowExA(0,"BUTTON","Start in fullscreen",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+                            24,y,324,20,h,(HMENU)ID_FULLSCREEN,cs->hInstance,0);
+        SendMessageA(st->hFullscreen,WM_SETFONT,(WPARAM)st->hFont,0);
+        CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
+        y += 30;
         c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
                             184,y+8,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
@@ -294,6 +328,8 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             st->sound = IsDlgButtonChecked(h,ID_SOUND)==BST_CHECKED;
         } else if(id==ID_CHEAT_ENABLE){
             st->cheat_enable = IsDlgButtonChecked(h,ID_CHEAT_ENABLE)==BST_CHECKED;
+        } else if(id==ID_FULLSCREEN){
+            st->fullscreen = IsDlgButtonChecked(h,ID_FULLSCREEN)==BST_CHECKED;
         } else if(id==ID_LAUNCH){
             int i;
             DWORD at = GetFileAttributesA(GAME_DIR);
@@ -310,6 +346,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             }
             write_pinball_cfg(GAME_DIR, st->cfg);
             write_cheats_cfg(GAME_DIR, st->cheat_enable, st->cheat_enable);
+            write_fullscreen_cfg(GAME_DIR, st->fullscreen);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -333,7 +370,7 @@ int show_launcher(LaunchChoice *out){
     MSG msg;
     LaunchState st;
     int sw, sh;
-    const int winw = 372, winh = 400;
+    const int winw = 372, winh = 430;
     memset(&wc,0,sizeof(wc));
     memset(&st,0,sizeof(st));
     wc.lpfnWndProc = launch_proc;
@@ -347,6 +384,7 @@ int show_launcher(LaunchChoice *out){
     { int balls, spring;
       read_cheats_cfg(GAME_DIR, &balls, &spring);
       st.cheat_enable = balls || spring; }
+    st.fullscreen = read_fullscreen_cfg(GAME_DIR);
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                            CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,
@@ -366,5 +404,6 @@ int show_launcher(LaunchChoice *out){
     if(!st.ok) return 0;
     out->dir = GAME_DIR;
     out->prog = GAME_PROG;
+    out->fullscreen = st.fullscreen;
     return 1;
 }
