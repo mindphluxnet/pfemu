@@ -29,8 +29,10 @@
 
 extern double emu_time;
 
-static int session_armed = 0;   /* user booted Fantasies (launcher or CLI equiv) */
+static int session_armed = 0;   /* a recognised Fantasies release is booting */
+static const Release *rel = NULL;  /* which one - see src/release.c */
 static int fix_on = 0;          /* a TABLE1-4.PRG is currently running */
+static uint32_t cfg_buf = 0;    /* intro options struct, DS offset; 0 = unknown */
 static char session_dir[512];   /* game directory, for the options file below */
 static int table_num = 0;              /* 1-4 while a table is running, else 0 */
 static int trainer_enabled = 0;        /* launcher: arm the '1'/'2' hotkeys below */
@@ -76,24 +78,32 @@ static void load_cheat_cfg(const char *dir){
 }
 
 /* Called once at startup after dir/prog are final (launcher or CLI).
- * dir is the game identity (the launcher maps FANTASY<->Fantasies); prog is
- * matched too so renamed install dirs and direct table boots (-p TABLE1.PRG)
- * still arm.  prog-only matches are Fantasies-exclusive filenames. */
-void fantasies_begin_session(const char *dir, const char *prog){
+ *
+ * Arming is now a consequence of release detection and nothing else: main()
+ * hashes the directory's five program files and hands over the matching
+ * release descriptor (src/release.c), or NULL.  The old rule - arm on the
+ * directory basename FANTASY, or on a Fantasies-exclusive program name like
+ * PINBALL.EXE/INTRO.PRG/TABLEn.PRG - could not survive three releases: Power
+ * Pack calls its launcher PF.EXE and so armed nothing at all, while the
+ * options poke below needs to know *which* intro build it is writing into.
+ * A name cannot answer that; a hash can.  Direct boots of INTRO.PRG or a
+ * table still arm, because the directory they live in is what gets detected,
+ * not the program that was asked for. */
+void fantasies_begin_session(const char *dir, const char *prog, const Release *r){
     char db[64], pb[64];
     base_up(dir ? dir : "", db, sizeof(db));
     base_up(prog ? prog : "", pb, sizeof(pb));
-    session_armed =
-        !strcmp(db, "FANTASY") ||
-        !strcmp(pb, "PINBALL.EXE") || !strcmp(pb, "INTRO.PRG") ||
-        is_table_prog(pb);
+    rel = r;
+    session_armed = (r != NULL);
     fix_on = 0;
     table_num = 0;
+    cfg_buf = 0;
     snprintf(session_dir, sizeof(session_dir), "%s", dir ? dir : "");
     if(session_armed) load_cheat_cfg(session_dir);
     if(!session_armed) kbd_clear_held();
-    trc("[fantasies] session %s (dir=%s prog=%s)\n",
-        session_armed ? "armed" : "not armed", db, pb);
+    trc("[fantasies] session %s (release=%s dir=%s prog=%s)\n",
+        session_armed ? "armed" : "not armed",
+        r ? r->id : "none", db, pb);
 }
 
 /* Called from dos_exec() for every program the guest (or main()) starts. */
@@ -289,7 +299,7 @@ void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len){
 /* Launcher options, poked straight into INTRO.PRG's memory instead of going
  * through PINBALL.CFG on disk.
  *
- * Why: INTRO.PRG reads PINBALL.CFG once at boot (DS:49A3, 6 bytes - the same
+ * Why: INTRO.PRG reads PINBALL.CFG once at boot (6 bytes into the same
  * buffer the F5 options menu edits and the intro-to-table handoff writes
  * back, WRITEUP-PHASE2.md Sec 2.2/5.13.1).  Confirmed by direct A/B testing
  * (many repeated table loads, unmodified emulator, nothing else changed):
@@ -321,8 +331,21 @@ void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len){
  *   3 Ingame Music 0=On     1=Off
  *   4 Resolution   0=Normal 1=High
  *   5 Color Mode   0=Color  1=Mono
- * This is also the game's own hardcoded default (options_cache below). */
-#define PINBALL_CFG_BUF_OFFSET 0x49A3
+ * This is also the game's own hardcoded default (options_cache below).
+ *
+ * WHERE that buffer is, is per release, and not by a little: DS:49A3 on the
+ * floppy build, DS:4846 on Power Pack, DS:48D7 on Deluxe.  Writing the floppy
+ * offset into either of the others lands in the middle of the in-memory
+ * credits strings (it overwrote the tail of DESIGN and the start of
+ * PROGRAMMING) while the game went on defaulting the real structure - so the
+ * launcher's choices were silently lost *and* memory was corrupted.
+ *
+ * So the offset is derived from the loaded image instead of assumed, by
+ * fantasies_patch_intro() below, and cross-checked against the detected
+ * release's recorded value.  cfg_buf is 0 until that succeeds, and a 0 here
+ * means no poke happens at all: an intro whose layout is not known is left
+ * strictly alone.  (cfg_buf itself is declared with the other session state
+ * at the top of this file, since fantasies_begin_session clears it.) */
 static uint8_t options_cache[6] = {0,0,1,0,0,0};
 static int options_loaded = 0;
 
@@ -346,8 +369,16 @@ int fantasies_intercept_cfg_open(const char *fname){
     if(!session_armed || dos_no_patch) return 0;
     base_up(fname, up, sizeof(up));
     if(strcmp(up, "PINBALL.CFG")) return 0;
+    /* Still fail the open even when the layout is unknown - that is the half
+     * that keeps the sound driver's PLL calibration converging, and it is
+     * release-independent.  Only the poke needs a known buffer. */
+    if(!cfg_buf){
+        trc("[fantasies] PINBALL.CFG open failed as usual, but the launcher's"
+            " options were not poked (intro options buffer unknown)\n");
+        return 1;
+    }
     if(!options_loaded) load_options_cache();
-    a = cpu.sbase[S_DS] + PINBALL_CFG_BUF_OFFSET;
+    a = cpu.sbase[S_DS] + cfg_buf;
     for(i=0;i<6;i++) mem_w8(a+(uint32_t)i, options_cache[i]);
     trc("[fantasies] options poked at %05X: %02X %02X %02X %02X %02X %02X\n", a,
         options_cache[0],options_cache[1],options_cache[2],
@@ -376,6 +407,10 @@ FILE *fantasies_open_cdmarker(const char *fname){
     char up[16];
     FILE *f;
     if(!session_armed || dos_no_patch) return NULL;
+    /* Deluxe's boot program is the only one that asks.  The other two are
+     * flat floppy-family layouts with no CD half, so faking the marker for
+     * them would be inventing a file the release never had. */
+    if(!rel || !rel->cd_marker) return NULL;
     base_up(fname, up, sizeof(up));
     if(strcmp(up, "CD.NFO")) return NULL;
     f = tmpfile();
@@ -386,54 +421,180 @@ FILE *fantasies_open_cdmarker(const char *fname){
     return f;
 }
 
-/* Scrolling gets clobbered by INTRO.PRG's own missing-config fallback.
- * INTRO.ASM, right after the (always-failing, per
- * fantasies_intercept_cfg_open above) boot-time load:
- *   CALL LOAD_TOGGLAREN
- *   JNC  TOGGLAREN_READY
- *   MOV  TOGGLAREN.S_SCROLLING,1     ; <- only this one field
- *   TOGGLAREN_READY:
- * OPENFILE/READFILE never touch AH/DX flags, so the real INT 21h carry from
- * our forced-failure open reaches this JNC untouched, and it always takes
- * the "no config file" branch - the same branch a genuine fresh install
- * takes.  That branch only defaults S_SCROLLING (the game trusts zeroed
- * memory for the other five fields), so it silently overwrites whatever
- * Scrolling value fantasies_intercept_cfg_open just poked, every boot,
- * regardless of what the launcher chose - and it does it before the F5 menu
- * is ever drawn, so the menu shows the wrong value too, not just the table.
- * (An earlier version of this fix re-corrected the byte only at the
- * intro-to-table handoff write, which fixed what the table saw but left the
- * menu always showing Medium - the menu reads TOGGLAREN long before that
- * write happens.  NOPing the clobber instead fixes both, since Scrolling is
- * then simply never touched again after the initial poke.)
+/* Everything this emulator has to know about the loaded INTRO.PRG, found in
+ * the image itself rather than assumed from a table of magic numbers:
  *
- * Signature: JNC +5 (73 05) immediately followed by MOV byte ptr
- * [imm16],1 (C6 06 lo hi 01) - the "TOGGLAREN_READY:" skip and the clobber
- * it guards, tied together by the displacement (5) exactly matching the
- * 5-byte instruction it jumps over.  Confirmed unique in the shipped
- * INTRO.PRG by static byte-scan (one match, target 0x49A5 = the already-
- * confirmed TOGGLAREN base 0x49A3 + 2 = S_SCROLLING).  NOPs just the MOV;
- * the JNC is left alone, since either branch now falls into the same
- * do-nothing bytes. */
+ *   1. where the six-byte options structure lives (cfg_buf above);
+ *   2. which of the two known "there is no PINBALL.CFG" fallbacks this build
+ *      uses, and how to stop it undoing the launcher's choices.
+ *
+ * The detected release records both, but as a cross-check: a signature that
+ * finds nothing, or finds something the release did not predict, is reported
+ * and then trusted less, never papered over.  That is what keeps a fourth
+ * release from quietly getting a third release's memory layout.
+ *
+ * --- 1. The options buffer -------------------------------------------------
+ *
+ * LOAD_TOGGLAREN and SAVE_TOGGLAREN both set up the same six-byte transfer:
+ *
+ *   MOV CX,6 ; MOV DX,<buf> ; MOV AX,3F00h ; INT 21h     (read)
+ *   MOV CX,6 ; MOV DX,<buf> ; MOV AH,40h   ; INT 21h     (write)
+ *
+ * Scanning for those two shapes finds the buffer in every collected release
+ * (floppy 49A3, Power Pack 4846, Deluxe 48D7) with exactly two matches each
+ * that agree on the address.  Disagreement, or no match at all, leaves
+ * cfg_buf at 0 and the poke simply does not happen.
+ *
+ * --- 2. The missing-config fallback ---------------------------------------
+ *
+ * Our forced-failure open (fantasies_intercept_cfg_open) makes LOAD_TOGGLAREN
+ * return carry, exactly as a genuine fresh install does.  What the caller
+ * then does differs by build, and both variants overwrite the values we just
+ * poked:
+ *
+ * (a) The floppy build defaults one field:
+ *
+ *       CALL LOAD_TOGGLAREN
+ *       JNC  TOGGLAREN_READY
+ *       MOV  TOGGLAREN.S_SCROLLING,1     ; <- only this one
+ *     TOGGLAREN_READY:
+ *
+ *     It trusts zeroed memory for the other five, so only Scrolling is lost -
+ *     but lost before the F5 menu is ever drawn, so the menu showed the wrong
+ *     value too, not just the table.  (An earlier fix re-corrected the byte
+ *     at the intro-to-table handoff instead; that fixed what the table saw
+ *     and left the menu permanently showing Medium.)  NOPing the MOV fixes
+ *     both, since Scrolling is then never touched again after the poke.  The
+ *     JNC is left alone: either branch now falls into the same bytes.
+ *     Signature: JNC +5 (73 05) followed by MOV byte ptr [imm16],1
+ *     (C6 06 lo hi 01), tied together by the displacement 5 exactly matching
+ *     the 5-byte instruction it jumps over.  One match in the shipped file.
+ *
+ * (b) Power Pack and Deluxe replaced that with a range check over all six:
+ *
+ *       CALL LOAD_TOGGLAREN
+ *       JC   defaults                    ; <- load failed
+ *       CMP  S_SCROLLING,3 ; JA defaults
+ *       CMP  S_BALLS,1     ; JA defaults
+ *       ... four more ...
+ *       JMP  ready
+ *     defaults:
+ *       MOV  S_SCROLLING,1 ; MOV S_BALLS,0 ; ... all six ...
+ *     ready:
+ *
+ *     Here the forced failure costs all six values, not one.  NOPing the
+ *     leading JC is what fixes it: execution falls into the range checks,
+ *     which the launcher's values pass (every option it writes is in range),
+ *     and the JMP at the end skips the defaults.  Values that are somehow out
+ *     of range still get defaulted, which is the behaviour we want anyway.
+ *     Signature: JC rel8, then CMP byte[cfg_buf+2],3, then JA/JAE rel8, then
+ *     CMP byte[cfg_buf+0],1 - anchored to the buffer derived in step 1, and
+ *     unique in both builds that have it.
+ *
+ * Which variant a release uses is recorded in its descriptor, so "no match"
+ * is a warning where one was expected and an expected silence where it was
+ * not.  Both scans run regardless: a release not yet in the database still
+ * gets whichever of the two it actually contains. */
+static int scan_sig(uint32_t base, uint32_t len, const uint8_t *sig,
+                    const uint8_t *mask, uint32_t n, uint32_t *at_out){
+    uint32_t i, k, hits = 0;
+    for(i = 0; i + n <= len; i++){
+        for(k = 0; k < n; k++)
+            if(mask[k] && ram[base+i+k] != sig[k]) break;
+        if(k == n){ if(!hits++) *at_out = i; }
+    }
+    return (int)hits;
+}
+
+static void derive_cfg_buf(uint32_t base, uint32_t len){
+    /* MOV CX,6 / MOV DX,imm16 / (MOV AX,3F00 | MOV AH,40) / INT 21h */
+    static const uint8_t rd[11] = {0xB9,0x06,0x00,0xBA,0,0,0xB8,0x00,0x3F,0xCD,0x21};
+    static const uint8_t rdm[11] = {1,1,1,1,0,0,1,1,1,1,1};
+    static const uint8_t wr[10] = {0xB9,0x06,0x00,0xBA,0,0,0xB4,0x40,0xCD,0x21};
+    static const uint8_t wrm[10] = {1,1,1,1,0,0,1,1,1,1};
+    uint32_t i, k, found = 0, buf = 0, n = 0;
+    for(i = 0; i + sizeof(wr) <= len; i++){
+        int hit = 0;
+        if(i + sizeof(rd) <= len){
+            for(k = 0; k < sizeof(rd); k++)
+                if(rdm[k] && ram[base+i+k] != rd[k]) break;
+            hit = (k == sizeof(rd));
+        }
+        if(!hit){
+            for(k = 0; k < sizeof(wr); k++)
+                if(wrm[k] && ram[base+i+k] != wr[k]) break;
+            if(k < sizeof(wr)) continue;
+        }
+        found = (uint32_t)ram[base+i+4] | ((uint32_t)ram[base+i+5] << 8);
+        if(n++ == 0) buf = found;
+        else if(found != buf){
+            trc("[fantasies] intro options buffer ambiguous "
+                "(DS:%04X and DS:%04X); not poking\n", buf, found);
+            return;
+        }
+    }
+    if(!n){
+        trc("[fantasies] intro options buffer not found; not poking\n");
+        return;
+    }
+    if(rel && rel->cfg_buf && rel->cfg_buf != buf){
+        trc("[fantasies] intro options buffer DS:%04X contradicts release "
+            "'%s' (expects DS:%04X); not poking\n", buf, rel->id, rel->cfg_buf);
+        return;
+    }
+    cfg_buf = buf;
+    trc("[fantasies] intro options buffer DS:%04X (%u sites)\n", buf, n);
+}
+
 void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t imglen){
-    static const uint8_t sig[7] = {0x73,0x05,0xC6,0x06,0,0,0x01};
-    static const uint8_t mask[7] = {1,1,1,1,0,0,1};
+    static const uint8_t scroll[7]  = {0x73,0x05,0xC6,0x06,0,0,0x01};
+    static const uint8_t scrollm[7] = {1,1,1,1,0,0,1};
+    uint8_t valid[13], validm[13];
     char b[64];
-    uint32_t i, k;
+    uint32_t at;
+    int hits;
     if(!session_armed || dos_no_patch) return;
     base_up(dospath, b, sizeof(b));
     if(strcmp(b, "INTRO.PRG")) return;
     if(load_base + imglen > RAM_SIZE) return;
-    for(i = 0; i + sizeof(sig) <= imglen; i++){
-        uint32_t at = load_base + i;
-        for(k = 0; k < sizeof(sig); k++)
-            if(mask[k] && ram[at+k] != sig[k]) break;
-        if(k == sizeof(sig)){
-            uint32_t mov_at = at + 2;
-            ram[mov_at]=0x90; ram[mov_at+1]=0x90; ram[mov_at+2]=0x90;
-            ram[mov_at+3]=0x90; ram[mov_at+4]=0x90;
-            trc("[fantasies] scrolling-default clobber NOPed at image+0x%X\n", i+2);
-            return;
+
+    derive_cfg_buf(load_base, imglen);
+
+    hits = scan_sig(load_base, imglen, scroll, scrollm, sizeof(scroll), &at);
+    if(hits == 1){
+        uint32_t mov_at = load_base + at + 2;
+        memset(&ram[mov_at], 0x90, 5);
+        trc("[fantasies] scrolling-default clobber NOPed at image+0x%X\n", at+2);
+    } else if(hits > 1){
+        trc("[fantasies] scrolling-default clobber signature not unique "
+            "(%d matches); left alone\n", hits);
+    } else if(rel && rel->scroll_clobber){
+        trc("[fantasies] WARNING: release '%s' should have the scrolling-default "
+            "clobber, but its signature is absent\n", rel->id);
+    }
+
+    if(cfg_buf){
+        /* JC rel8; CMP byte[cfg_buf+2],3; J(A|AE) rel8; CMP byte[cfg_buf],1 */
+        memcpy(valid, "\x72\x00\x80\x3E\x00\x00\x03\x00\x00\x80\x3E\x00\x00", 13);
+        memcpy(validm, "\x01\x00\x01\x01\x01\x01\x01\x00\x00\x01\x01\x01\x01", 13);
+        valid[4]  = (uint8_t)(cfg_buf + 2);
+        valid[5]  = (uint8_t)((cfg_buf + 2) >> 8);
+        valid[11] = (uint8_t)cfg_buf;
+        valid[12] = (uint8_t)(cfg_buf >> 8);
+        hits = scan_sig(load_base, imglen, valid, validm, sizeof(valid), &at);
+        /* The J(A|AE) byte is the one thing the two builds spell differently
+         * (77 vs 73), so it is checked here rather than in the mask. */
+        if(hits == 1 && ram[load_base+at+7] != 0x77 && ram[load_base+at+7] != 0x73)
+            hits = 0;
+        if(hits == 1){
+            ram[load_base+at] = 0x90; ram[load_base+at+1] = 0x90;
+            trc("[fantasies] options-default fallback bypassed at image+0x%X\n", at);
+        } else if(hits > 1){
+            trc("[fantasies] options-default fallback signature not unique "
+                "(%d matches); left alone\n", hits);
+        } else if(rel && rel->opt_validate){
+            trc("[fantasies] WARNING: release '%s' should have the six-field "
+                "options-default fallback, but its signature is absent\n", rel->id);
         }
     }
 }

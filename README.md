@@ -1,16 +1,24 @@
 # pfemu
 
 pfemu is a small, purpose-built PC emulator that runs the original DOS release
-of **Pinball Fantasies** on 64-bit Windows, along with the 1995 **Pinball
-Fantasies Deluxe** CD-ROM re-release. It does not use DOSBox, NTVDM, or code
-from another emulator.
+of **Pinball Fantasies** on 64-bit Windows. It does not use DOSBox, NTVDM, or
+code from another emulator.
+
+Three releases of the game are supported, and pfemu works out which one it is
+looking at by hashing the installation rather than by asking:
+
+| Release | Boot program |
+|---|---|
+| Pinball Fantasies, the original floppy release | `PINBALL.EXE` |
+| Pinball Fantasies Deluxe CD-ROM (1995) | `PINBALL.EXE` |
+| Pinball Power Pack (1996) | `PF.EXE` |
 
 It currently supports the complete launch sequence, intro, table selector, all
 four tables, keyboard controls, and Sound Blaster music. A native launcher lets
-you choose the game's options before it starts, pick between the floppy and
-Deluxe installs when both are present, and borderless fullscreen is available
-from the launcher, the command line, or at any time with `Alt+Enter`. pfemu
-also includes targeted fixes for several bugs in the original game.
+you choose the game's options before it starts, pick between installations when
+several are present, and borderless fullscreen is available from the launcher,
+the command line, or at any time with `Alt+Enter`. pfemu also includes targeted
+fixes for several bugs in the original game.
 
 ## Quick start
 
@@ -25,8 +33,8 @@ You will need:
 From the repository root:
 
 ```powershell
-# Extract the original game files into FANTASY\
-py tools\pfx.py C:\path\to\the\archives FANTASY
+# Extract the original game files into GAME\
+py tools\pfx.py C:\path\to\the\archives GAME
 
 # Build pfemu
 .\build.bat
@@ -43,27 +51,50 @@ repository.
 > Visual Studio is installed elsewhere, update the `vcvars64.bat` path in that
 > file.
 
+### Where to put the game files
+
+Put one installation's files **directly** in a directory named `GAME\` - not in
+the enclosing `FANTASY\` or `PFD\` folder the archive unpacks into. Any other
+top-level directory holding an `INTRO.PRG` is offered as well, so several
+releases can sit side by side (`FANTASY\`, `FANTASYDX\`, ...) and the launcher
+will list them. The directory name is only a place to look; which release it
+holds is decided by the files inside it.
+
+`pfemu.exe -releases` prints what was found in each installation, including the
+sizes and hashes of anything it did not recognise.
+
 ### Pinball Fantasies Deluxe (CD-ROM)
 
-There's no extraction tool for the Deluxe release; put its files in
-`FANTASYDX\` yourself. The 1995 CD-ROM release installs as two halves -
-`INSTALL.COM` only copies `PINBALL.EXE` and the sound drivers to the hard
-drive, and expects `INTRO.PRG`/`TABLE1-4.PRG`/the `.MOD` music to keep loading
-off the CD-ROM. pfemu doesn't emulate a CD-ROM drive, so combine both halves
-into one flat `FANTASYDX\` folder: `PINBALL.EXE`, `SETSOUND.EXE`, and the
-`.SDR` drivers from the hard-drive install, alongside `INTRO.PRG`,
-`TABLE1.PRG`-`TABLE4.PRG`, `INTRO.MOD`, `TABLE1.MOD`-`TABLE4.MOD`, and
-`MOD2.MOD` from the CD-ROM's `PFD\FANTASY\` directory. If both `FANTASY\` and
-`FANTASYDX\` are present, the launcher lets you pick which to start.
+There's no extraction tool for the Deluxe release; copy its files in yourself.
+The 1995 CD-ROM release installs as two halves - `INSTALL.COM` only copies
+`PINBALL.EXE` and the sound drivers to the hard drive, and expects
+`INTRO.PRG`/`TABLE1-4.PRG`/the `.MOD` music to keep loading off the CD-ROM.
+pfemu doesn't emulate a CD-ROM drive, so combine both halves into one flat
+folder: `PINBALL.EXE`, `SETSOUND.EXE`, and the `.SDR` drivers from the
+hard-drive install, alongside `INTRO.PRG`, `TABLE1.PRG`-`TABLE4.PRG`,
+`INTRO.MOD`, `TABLE1.MOD`-`TABLE4.MOD`, and `MOD2.MOD` from the CD-ROM's
+`PFD\FANTASY\` directory.
+
+### Pinball Power Pack (1996)
+
+A later repackaging of the floppy-family release, with its own intro and its
+own Table 1 and Table 2 programs. Its launcher is called `PF.EXE`; pfemu runs
+that directly, so the `PINBALL.BAT` wrapper it ships with is not needed and is
+ignored. Copy the directory in as it is.
 
 ## Playing the game
 
 Running `pfemu.exe` without arguments opens the launcher. It lets you configure
 sound, volume, sound quality, balls, table angle, scrolling, in-game music,
 resolution, color mode, trainer support, and whether the game starts in
-fullscreen. If it finds both
-`FANTASY\` (floppy) and `FANTASYDX\` (Deluxe CD-ROM) installs, it also shows a
-choice between them at the top of the window.
+fullscreen. At the top it shows which release it detected; if it finds more
+than one installation, it also shows a list to pick between them. **Details**
+prints the full detection report - which is also what to send along when a
+release pfemu doesn't know about turns up.
+
+If an installation isn't recognised, **Launch** stays disabled rather than
+guessing. Each release keeps its options in a different place in memory, and
+writing one release's layout into another release's intro corrupts it.
 
 The launcher remembers these choices in `PFEMU-STATE/` under whichever
 install's directory is selected.
@@ -157,15 +188,15 @@ The launcher can enable two hotkeys recovered from the 1994 RAZOR DoX trainer:
 In ball control mode, `Down Arrow` launches the ball from anywhere on the
 table. Both features are disabled unless **Enable trainer** is selected in the
 launcher, and an on-screen message confirms each change. Both hotkeys locate
-their targets by signature scan, so they work on the floppy and Deluxe
+their targets by signature scan, so they work on every supported
 releases alike even though the two ship differently laid-out table programs.
 
 ## Keeping the original files clean
 
 pfemu never writes to the installed game files. High scores, configuration,
 and the intro's persistent flag are redirected to `PFEMU-STATE/` inside
-whichever game directory you're running (`FANTASY/PFEMU-STATE/` or
-`FANTASYDX/PFEMU-STATE/`). Deleting that directory resets pfemu's saved
+whichever game directory you're running (`GAME/PFEMU-STATE/`, and the same
+under any other installation directory). Deleting it resets pfemu's saved
 settings and game state without touching the original installation.
 
 This overlay also avoids a timing issue that can occur when the game reads an
@@ -180,8 +211,10 @@ custom installations and development.
 | Option | Description |
 | --- | --- |
 | `-fullscreen` | Start in borderless fullscreen |
-| `-nolauncher` | Start `PINBALL.EXE` without showing the launcher |
-| `-d DIR` | Use a different game directory; default: `FANTASY` |
+| `-nolauncher` | Start the detected release's boot program without the launcher |
+| `-d DIR` | Use a specific game directory; default: the first one found |
+| `-releases` | Print the detection report for every installation, then exit |
+| `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`) whatever the hashes say |
 | `-p PROGRAM` | Run a specific DOS program and skip the launcher |
 | `-setup` | Run `SETSOUND.EXE` and skip the launcher |
 | `-nopatch` | Disable the Pinball Fantasies compatibility patches |
@@ -189,9 +222,16 @@ custom installations and development.
 | `-ips N` | Set the emulated instruction rate; default: 6,000,000 |
 | `-vol N` | Output volume, 0â€“100, for this run only; overrides the saved level |
 
-`-d` only affects direct runs; pass `-d FANTASYDX` to boot the Deluxe CD-ROM
-install this way. The launcher instead picks between `FANTASY/PINBALL.EXE` and
-`FANTASYDX/PINBALL.EXE` itself (see "Playing the game" above).
+`-d` only affects direct runs; pass `-d FANTASYDX` to boot a particular
+installation this way. Without it, pfemu uses the first one it finds (`GAME\`
+first, then the rest alphabetically). The boot program comes from whichever
+release that directory turns out to hold, so `-p` is only needed to run
+something other than the game itself.
+
+`-release` is a development escape hatch. Detection deliberately refuses to
+apply a known release's memory layout to code it does not recognise, and this
+overrides that refusal - so use it on a build you know is a lightly modified
+copy of the release you name, not to make an unknown one start.
 
 ### Diagnostics
 
@@ -241,6 +281,7 @@ that Pinball Fantasies actually uses.
 | `src/sound.c` | DMA, Sound Blaster DSP, Windows audio, and WAV capture |
 | `src/fantasies.c` | Game-specific compatibility fixes and trainer support |
 | `src/launch.c` | Native Windows launcher and saved options |
+| `src/release.c` | Release identification, by SHA-256 of the game's programs |
 | `src/main.c` | Window, input, presentation, fullscreen, and the main loop |
 
 The project builds as a single native Win32 executable and has no runtime
@@ -250,8 +291,8 @@ dependencies beyond Windows and the original game data.
 
 Working:
 
-- the complete `PINBALL.EXE` launch chain, including the intro and table
-  selector, for both the floppy and Deluxe CD-ROM releases
+- the complete launch chain, including the intro and table selector, for all
+  three supported releases
 - Party Land, Speed Devils, Billion Dollar Gameshow, and Stones 'N Bones
 - Sound Blaster music in the intro, menus, and all four tables
 - the manual-lookup protection bypass, without modifying `INTRO.PRG` or
@@ -266,7 +307,7 @@ Known limits:
   but have had less extensive play-through testing
 - verification is currently manual, using gameplay, screenshots, traces, and
   captured audio rather than an automated test suite
-- pfemu targets Pinball Fantasies (and Pinball Fantasies Deluxe), not general
+- pfemu targets Pinball Fantasies, not general
   DOS software
 
 ## Technical write-ups

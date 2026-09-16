@@ -2,6 +2,57 @@
 
 Date: 2026-09-16
 
+## Implementation status
+
+Implemented in `src/release.c` (detector and release database), `src/reltable.h`
+(generated manifests), `tools/mkreltable.py` (the generator), and the launcher,
+`main()` and `src/fantasies.c` changes this document asks for. `pfemu.exe
+-releases` prints the report described under "Launcher UX after detection".
+
+Two things were settled during implementation that this research left open, and
+one correction:
+
+- **The options-buffer offsets are derived, not stored as the primary source.**
+  Both `LOAD_TOGGLAREN` and `SAVE_TOGGLAREN` set up the same six-byte transfer,
+  `MOV CX,6 / MOV DX,<buf> / MOV AX,3F00h (or MOV AH,40h) / INT 21h`. Scanning
+  the loaded image for those two shapes finds exactly two sites in each
+  collected release, and both agree on the address: `49A3` (floppy), `4846`
+  (Power Pack), `48D7` (Deluxe). The detected release's recorded offset is kept
+  as a cross-check; disagreement, ambiguity, or no match at all leaves the
+  buffer unknown and nothing is poked. No relocation-table entry in any of the
+  three intros lands inside these signatures, so a scan over the relocated
+  image sees the same bytes the file does.
+
+- **Correction: Deluxe has the six-field validation block too.** The table
+  under "Release-specific runtime metadata" records only that Deluxe lacks the
+  old scrolling-NOP signature. It does have the same all-fields
+  validate-or-default block that Power Pack has, at `INTRO.PRG+0x366DD`
+  (Power Pack: `+0x36609`); the only difference is that Deluxe spells the
+  Scrolling range check `JAE` where Power Pack spells it `JA`.
+
+- **That block has to be defused, or the options poke is pointless on two of
+  the three releases.** Because the interception deliberately makes the
+  boot-time `PINBALL.CFG` open fail, the `JC` at the top of that block is
+  always taken, and it re-defaults all six fields - overwriting everything the
+  launcher just poked. NOPing that leading `JC` fixes it: execution falls into
+  the range checks instead, which the launcher's values pass (it never writes
+  an out-of-range value), and the block's own `JMP` then skips the defaults.
+  Values that somehow are out of range still get defaulted, which is the
+  wanted behaviour anyway. The floppy build keeps the existing narrower fix,
+  its one-field `MOV S_SCROLLING,1` clobber NOPed. Which of the two a release
+  uses is recorded in its descriptor, so a missing signature is a warning where
+  one was expected and an expected silence where it was not; both scans run
+  regardless, so a release not yet in the database still gets whichever of the
+  two it actually contains.
+
+One deviation from the recommendation below: `GAME` is the documented place to
+put an installation, but it is not the only one. Any other top-level directory
+containing an `INTRO.PRG` is detected as well and listed in the launcher, so a
+collection of releases can sit side by side. This does not reintroduce
+directory-name identity - the list is a list of *places*, each one labelled by
+what its hashes say it holds, and a directory that fails detection is shown
+with its failure and cannot be launched.
+
 ## Purpose
 
 pfemu currently identifies a release indirectly from fixed directory names

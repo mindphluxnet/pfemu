@@ -109,10 +109,75 @@ int  dos_exec(const char *path, uint16_t psp_env, uint32_t cmdtail_ptr, uint32_t
 extern int dos_done;
 extern int dos_no_patch;        /* -nopatch : leave manual checks in place */
 
+/* ------------------------------------------------------------ releases --- */
+/* Checksum-based release identity (src/release.c).  An installation is
+ * identified by the SHA-256 of its five program files, never by its directory
+ * name or its boot filename - see docs/VERSIONS.md for why neither works. */
+enum {
+    RF_CODE    = 1,   /* part of the five-file identity vector */
+    RF_BOOT    = 2,   /* the program pfemu executes to start this release */
+    RF_REQ     = 4,   /* must be present for the game to run */
+    RF_PREFIX  = 8,   /* hash covers only the first `prefix` bytes */
+    RF_MUTABLE = 16,  /* the game or an installer rewrites it; never identity */
+    RF_META    = 32   /* packaging metadata, not a runtime dependency */
+};
+
+typedef struct {
+    const char *name;     /* DOS basename, matched case-insensitively */
+    uint32_t size;        /* exact file size, a cheap prefilter */
+    uint32_t prefix;      /* bytes covered by sha, 0 = the whole file */
+    uint32_t flags;
+    uint8_t  sha[32];
+} RelFile;
+
+typedef struct {
+    const char *id;       /* stable id: "floppy", "power_pack", "deluxe" */
+    const char *label;    /* user-facing: "Pinball Power Pack (1996)" */
+    const char *boot;     /* boot program basename for this release */
+    uint16_t cfg_buf;     /* intro's six-byte options structure, DS offset */
+    uint8_t scroll_clobber; /* intro defaults Scrolling alone after a failed load */
+    uint8_t opt_validate;   /* intro re-defaults all six after a failed load */
+    uint8_t cd_marker;      /* boot program checks for cd.nfo (Deluxe CD-ROM) */
+    const RelFile *files;   /* the complete collected top-level manifest */
+    int nfiles;
+} Release;
+
+typedef enum {
+    REL_NONE = 0,
+    REL_RECOGNIZED,   /* known code vector and a valid boot program */
+    REL_INCOMPLETE,   /* known release, required file missing */
+    REL_MODIFIED,     /* known intro, but an expected hash differs */
+    REL_MIXED,        /* programs independently match different releases */
+    REL_UNKNOWN,      /* INTRO.PRG is not in the database */
+    REL_AMBIGUOUS,    /* names differing only by case */
+    REL_ABSENT        /* no INTRO.PRG here at all */
+} RelState;
+
+typedef struct {
+    RelState state;
+    const Release *rel;   /* non-NULL once INTRO.PRG's hash is recognised */
+    char dir[512];        /* directory as given (relative stays relative) */
+    char full[512];       /* ...and its absolute form, for the report */
+    char boot[16];        /* boot program as actually spelled on disk */
+    int  odd;             /* required data files present but not this release's */
+    char summary[160];    /* one line, for the launcher */
+    char detail[8192];    /* the copyable report */
+} RelResult;
+
+int  release_detect(const char *dir, RelResult *out);
+int  release_scan(RelResult *out, int max);   /* GAME first, then any install */
+int  release_runnable(const RelResult *r);
+const char *release_state_name(RelState s);
+const Release *release_by_id(const char *id);
+const Release *release_at(int i);
+int  release_count(void);
+
 /* -------------------------------------------------------- game fixes ----- */
 /* Per-game behaviour lives in its own TU (src/fantasies.c, src/dreams.c);
  * dos.c/dev.c call in, never implement game logic themselves. */
-void fantasies_begin_session(const char *dir, const char *prog);
+/* rel is the detected release (src/release.c); NULL means no recognised
+ * Pinball Fantasies installation, and nothing Fantasies-specific arms. */
+void fantasies_begin_session(const char *dir, const char *prog, const Release *rel);
 void fantasies_on_exec(const char *dospath);
 void fantasies_patch_sdr(uint32_t load_base, uint32_t imglen);
 void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len);
@@ -165,7 +230,7 @@ extern int audio_volume_dirty;   /* the -/+ keys moved it; save it on exit */
 /* ------------------------------------------------------------ launcher --- */
 /* Win32 game picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
  * into the game's PFEMU-STATE/ overlay so installed files stay pristine. */
-typedef struct { const char *dir, *prog; int fullscreen; } LaunchChoice;
+typedef struct { char dir[512], prog[16]; int fullscreen; } LaunchChoice;
 int  show_launcher(LaunchChoice *out);   /* 1 = launch, 0 = quit */
 void write_sound_cfg(const char *dir, int on, int quality);
 int  read_sound_is_sb(const char *dir);

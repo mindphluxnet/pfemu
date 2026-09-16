@@ -41,15 +41,24 @@
 #include <stdio.h>
 #include "pfemu.h"
 
-/* Two known installs, picked between at the top of the dialog when both are
- * present: the original 1992 floppy release and the 1995 CD-ROM "Deluxe"
- * re-release (see src/fantasies.c for what differs between them under the
- * hood - the flipper/pause/spring fixes locate themselves by signature scan
- * either way, so both run through the same patches once booted). Both ship
- * PINBALL.EXE as the boot program. */
-#define GAME_DIR_FLOPPY "FANTASY"
-#define GAME_DIR_DELUXE "FANTASYDX"
-#define GAME_PROG "PINBALL.EXE"
+/* Which release is in front of us is not something this dialog decides any
+ * more, and not something it reads off a directory name.  src/release.c
+ * hashes each candidate directory's five program files and identifies the
+ * build from that; the dialog just shows the answer and, when more than one
+ * installation is sitting side by side, lets the user pick which directory
+ * to boot.  See docs/VERSIONS.md for why the old two-hardcoded-directories,
+ * one-hardcoded-PINBALL.EXE arrangement could not survive a third release:
+ * Power Pack renamed the launcher to PF.EXE and shares its bytes with the
+ * floppy one, so neither name identifies anything.
+ *
+ * The per-release differences that matter (intro options layout, the CD
+ * marker check, which config fallback to defuse) are carried in the release
+ * descriptor and consumed in src/fantasies.c.  The flipper/pause/spring
+ * fixes still locate themselves by signature scan, so they need none of it. */
+
+/* How many installation directories the picker will list.  Anyone with more
+ * than this many collected side by side can pass -d. */
+#define MAX_INSTALLS 8
 
 #define ID_SOUND        104
 #define ID_NOTE         105
@@ -57,8 +66,8 @@
 #define ID_QUIT         107
 #define ID_CHEAT_ENABLE 108
 #define ID_FULLSCREEN   109
-#define ID_VER_FLOPPY   110
-#define ID_VER_DELUXE   111
+#define ID_INSTALL      110
+#define ID_DETAILS      111
 #define ID_QUALITY      112
 #define ID_VOLUME       113
 #define ID_VOLLABEL     114
@@ -394,10 +403,11 @@ typedef struct {
     int fullscreen;          /* checkbox state: start the window fullscreen */
     int done;               /* dialog finished */
     int ok;                 /* 1 = launch, 0 = quit */
-    int has_floppy, has_deluxe; /* which install(s) were found on disk */
-    int deluxe;              /* radio state: 0 = floppy (FANTASY), 1 = Deluxe (FANTASYDX) */
-    int ver_y;                /* top of the version radio row, 0 if not shown (one install only) */
-    HWND hSound, hOpt[6], hCheatEnable, hFullscreen, hVerFloppy, hVerDeluxe;
+    RelResult inst[MAX_INSTALLS]; /* every installation directory found */
+    int ninst;
+    int sel;                 /* which one is selected */
+    HWND hSound, hOpt[6], hCheatEnable, hFullscreen;
+    HWND hInstall, hDetected, hDetails;
     HWND hQuality, hVolume, hVolLabel;
     HFONT hFont;
 } LaunchState;
@@ -408,14 +418,37 @@ static void set_vol_label(LaunchState *st){
     if(st->hVolLabel) SetWindowTextA(st->hVolLabel, t);
 }
 
+static const RelResult *cur_inst(const LaunchState *st){
+    return (st->ninst && st->sel >= 0 && st->sel < st->ninst)
+           ? &st->inst[st->sel] : NULL;
+}
+
 static const char *cur_game_dir(const LaunchState *st){
-    return st->deluxe ? GAME_DIR_DELUXE : GAME_DIR_FLOPPY;
+    const RelResult *r = cur_inst(st);
+    return r ? r->dir : "";
+}
+
+/* The one read-only line that replaced the version radio buttons: whatever
+ * the detector concluded about the selected directory.  Launch is enabled
+ * only for a release that was actually recognised - an unknown or mixed
+ * installation must never get a known release's memory layout poked into it,
+ * and the Details button is there to say exactly what was wrong. */
+static void show_detection(HWND h, LaunchState *st){
+    const RelResult *r = cur_inst(st);
+    char line[300];
+    HWND btn = GetDlgItem(h, ID_LAUNCH);
+    if(!r) snprintf(line, sizeof(line), "No game found. Put one release's files in GAME\\.");
+    else if(release_runnable(r)) snprintf(line, sizeof(line), "Detected: %s", r->summary);
+    else snprintf(line, sizeof(line), "%s: %s", release_state_name(r->state), r->summary);
+    if(st->hDetected) SetWindowTextA(st->hDetected, line);
+    if(btn) EnableWindow(btn, r && release_runnable(r));
+    if(st->hDetails) EnableWindow(st->hDetails, r != NULL);
 }
 
 /* Re-reads every per-install setting for whichever directory is now selected
  * and pushes it into the already-created controls - used both at dialog
- * startup and whenever the version radio buttons flip, so switching versions
- * never leaves a stale FANTASY checkbox state applied to FANTASYDX. */
+ * startup and whenever the installation picker changes, so switching never
+ * leaves one install's checkbox state applied to another's. */
 static void reload_for_dir(HWND h, LaunchState *st){
     const char *dir = cur_game_dir(st);
     int i, balls, spring;
@@ -435,6 +468,7 @@ static void reload_for_dir(HWND h, LaunchState *st){
         CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
     }
+    show_detection(h, st);
 }
 
 static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
@@ -451,22 +485,38 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             12,12,336,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         base = 0;
-        if(st->has_floppy && st->has_deluxe){
-            /* Only shown when both installs are found side by side - a lone
-             * install just boots straight in, same as before this feature. */
-            st->ver_y = 32;
-            st->hVerFloppy = CreateWindowExA(0,"BUTTON","Floppy (1992)",
-                                WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON|WS_GROUP,
-                                24,st->ver_y,150,20,h,(HMENU)ID_VER_FLOPPY,cs->hInstance,0);
-            SendMessageA(st->hVerFloppy,WM_SETFONT,(WPARAM)st->hFont,0);
-            st->hVerDeluxe = CreateWindowExA(0,"BUTTON","Deluxe CD-ROM (1995)",
-                                WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
-                                180,st->ver_y,168,20,h,(HMENU)ID_VER_DELUXE,cs->hInstance,0);
-            SendMessageA(st->hVerDeluxe,WM_SETFONT,(WPARAM)st->hFont,0);
-            CheckDlgButton(h,ID_VER_FLOPPY,st->deluxe?BST_UNCHECKED:BST_CHECKED);
-            CheckDlgButton(h,ID_VER_DELUXE,st->deluxe?BST_CHECKED:BST_UNCHECKED);
+        if(st->ninst > 1){
+            /* Only shown when several installations sit side by side, and it
+             * picks a *directory*, not a version - what is in each one is
+             * whatever its hashes said it is. */
+            int k;
+            c = CreateWindowExA(0,"STATIC","Installation:",WS_CHILD|WS_VISIBLE,
+                                24,35,80,16,h,0,cs->hInstance,0);
+            SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+            st->hInstall = CreateWindowExA(0,"COMBOBOX","",
+                                WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
+                                108,32,240,240,h,(HMENU)ID_INSTALL,cs->hInstance,0);
+            SendMessageA(st->hInstall,WM_SETFONT,(WPARAM)st->hFont,0);
+            for(k=0;k<st->ninst;k++){
+                char item[200];
+                snprintf(item,sizeof(item),"%s  -  %s",
+                         st->inst[k].dir, st->inst[k].summary);
+                SendMessageA(st->hInstall,CB_ADDSTRING,0,(LPARAM)item);
+            }
+            SendMessageA(st->hInstall,CB_SETCURSEL,st->sel,0);
             base = 28;
         }
+        /* The detection result, read-only.  There is nothing here for the
+         * user to choose: the files decide.  Details prints the whole report,
+         * which is the only place a failure explains itself. */
+        st->hDetected = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
+                            24,34+base,258,16,h,0,cs->hInstance,0);
+        SendMessageA(st->hDetected,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hDetails = CreateWindowExA(0,"BUTTON","Details",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                            288,31+base,60,22,h,(HMENU)ID_DETAILS,cs->hInstance,0);
+        SendMessageA(st->hDetails,WM_SETFONT,(WPARAM)st->hFont,0);
+        base += 22;
         st->hSound = CreateWindowExA(0,"BUTTON","Sound on (SoundBlaster)",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
                             24,36+base,324,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
@@ -555,6 +605,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
                             272,y+8,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        show_detection(h, st);   /* needs the Launch button to exist */
         return 0; }
     /* The trackbar reports through WM_HSCROLL, not WM_COMMAND. */
     case WM_HSCROLL:
@@ -574,19 +625,22 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             st->cheat_enable = IsDlgButtonChecked(h,ID_CHEAT_ENABLE)==BST_CHECKED;
         } else if(id==ID_FULLSCREEN){
             st->fullscreen = IsDlgButtonChecked(h,ID_FULLSCREEN)==BST_CHECKED;
-        } else if(id==ID_VER_FLOPPY || id==ID_VER_DELUXE){
-            st->deluxe = (id==ID_VER_DELUXE);
-            reload_for_dir(h, st);
+        } else if(id==ID_INSTALL && HIWORD(w)==CBN_SELCHANGE){
+            LRESULT sel = SendMessageA(st->hInstall,CB_GETCURSEL,0,0);
+            if(sel != CB_ERR){ st->sel = (int)sel; reload_for_dir(h, st); }
+        } else if(id==ID_DETAILS){
+            /* The full report, verbatim and selectable (Ctrl+C copies a
+             * message box whole).  For a release we do not know this is also
+             * the intake format: five sizes and hashes the user can send on
+             * without having run anything. */
+            const RelResult *r = cur_inst(st);
+            if(r) MessageBoxA(h, r->detail, "pfemu - detection details", MB_OK);
         } else if(id==ID_LAUNCH){
             int i;
-            const char *dir = cur_game_dir(st);
-            DWORD at = GetFileAttributesA(dir);
-            if(at==INVALID_FILE_ATTRIBUTES || !(at&FILE_ATTRIBUTE_DIRECTORY)){
-                MessageBoxA(h,"Game directory not found.\n"
-                              "Run from the pfemu folder.",
-                            "pfemu",MB_OK|MB_ICONERROR);
-                return 0;
-            }
+            const RelResult *r = cur_inst(st);
+            const char *dir;
+            if(!release_runnable(r)) return 0;
+            dir = r->dir;
             { LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
               if(sel != CB_ERR) st->quality = (int)sel; }
             write_sound_cfg(dir, st->sound, st->quality);
@@ -619,10 +673,11 @@ int show_launcher(LaunchChoice *out){
     WNDCLASSA wc;
     HWND hwnd;
     MSG msg;
-    LaunchState st;
+    /* static: it now carries a RelResult per installation, which is a lot of
+     * report text to put on the stack for a dialog that runs once. */
+    static LaunchState st;
     int sw, sh;
-    int winw = 372, winh = 506;
-    DWORD atf, atd;
+    int winw = 372, winh = 528;
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     memset(&st,0,sizeof(st));
@@ -637,12 +692,16 @@ int show_launcher(LaunchChoice *out){
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
     RegisterClassA(&wc);
-    atf = GetFileAttributesA(GAME_DIR_FLOPPY);
-    atd = GetFileAttributesA(GAME_DIR_DELUXE);
-    st.has_floppy = atf!=INVALID_FILE_ATTRIBUTES && (atf&FILE_ATTRIBUTE_DIRECTORY);
-    st.has_deluxe = atd!=INVALID_FILE_ATTRIBUTES && (atd&FILE_ATTRIBUTE_DIRECTORY);
-    st.deluxe = st.has_floppy ? 0 : 1;   /* prefer the floppy default when both exist */
-    if(st.has_floppy && st.has_deluxe) winh += 28;
+    /* Every directory that holds an INTRO.PRG, identified by content.  GAME
+     * comes first when it exists, then the rest alphabetically, so the
+     * default selection is stable rather than filesystem-order. */
+    st.ninst = release_scan(st.inst, MAX_INSTALLS);
+    st.sel = 0;
+    /* Prefer landing on one that can actually be launched. */
+    { int i;
+      for(i=0;i<st.ninst;i++)
+          if(release_runnable(&st.inst[i])){ st.sel = i; break; } }
+    if(st.ninst > 1) winh += 28;
     { const char *dir = cur_game_dir(&st);
       int balls, spring;
       st.sound = read_sound_is_sb(dir);
@@ -669,8 +728,14 @@ int show_launcher(LaunchChoice *out){
     }
     UnregisterClassA("pfemu-launcher",wc.hInstance);
     if(!st.ok) return 0;
-    out->dir = cur_game_dir(&st);
-    out->prog = GAME_PROG;
+    {   /* The boot program comes from the detected release, not from a
+         * constant: Power Pack's is PF.EXE, the other two ship PINBALL.EXE.
+         * ID_LAUNCH already refused anything not recognised. */
+        const RelResult *r = cur_inst(&st);
+        snprintf(out->dir, sizeof(out->dir), "%s", r->dir);
+        snprintf(out->prog, sizeof(out->prog), "%s",
+                 r->boot[0] ? r->boot : r->rel->boot);
+    }
     out->fullscreen = st.fullscreen;
     return 1;
 }

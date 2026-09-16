@@ -442,8 +442,12 @@ static unsigned long irq_count[32];
 
 /* ------------------------------------------------------------ main loop */
 int main(int argc, char **argv){
-    const char *dir = "FANTASY";
-    const char *prog = "PINBALL.EXE";
+    const char *dir = NULL;   /* -d, the launcher, or release_scan() */
+    const char *prog = NULL;  /* -p/-setup, or the detected release's boot file */
+    const char *force_release = NULL; /* -release ID: skip detection's verdict */
+    int list_releases = 0;    /* -releases: print the detection report and exit */
+    RelResult rel;
+    LaunchChoice lc;
     int no_launcher = 0;      /* -nolauncher: skip the picker dialog */
     int explicit_prog = 0;    /* -p / -setup names the program directly */
     int start_fullscreen = 0; /* -fullscreen, or the launcher's checkbox */
@@ -513,20 +517,91 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-dmd")) vga_dmdlog = 1;
         else if(!strcmp(argv[i],"-paldbg")) vga_paldbg = 1;
         else if(!strcmp(argv[i],"-vscan") && i+1<argc) vscan_step = strtoull(argv[++i],NULL,10);
+        /* -releases: hash every installation found and print the full report.
+         * This is also the intake format for a version not in the database -
+         * it prints the five sizes and SHA-256s without running any of it. */
+        else if(!strcmp(argv[i],"-releases")) list_releases = 1;
+        /* -release ID: treat the directory as that release whatever the
+         * hashes say.  For development, and for an installation that is a
+         * known build with something harmless changed.  It is the one way to
+         * get release metadata applied to code that was not recognised, so
+         * it is a switch the user has to type, never a fallback. */
+        else if(!strcmp(argv[i],"-release") && i+1<argc) force_release = argv[++i];
     }
     if(emu_ips <= 0.0) emu_ips = 6000000.0;
     emu_inv_ips = 1.0 / emu_ips;
 
+    if(list_releases){
+        static RelResult found[8];
+        int n, k;
+        /* -d narrows it to one directory; otherwise report every one found. */
+        if(dir) n = release_detect(dir, &found[0]) == 0 ? 1 : 0;
+        else n = release_scan(found, 8);
+        if(!n){
+            printf("No Pinball Fantasies installation found.\n"
+                   "Put one release's files directly in a directory named GAME.\n");
+            return 1;
+        }
+        for(k=0;k<n;k++){
+            printf("=== %s: %s ===\n%s", found[k].dir, found[k].summary,
+                   found[k].detail);
+            if(k+1 < n) printf("\n");
+        }
+        return 0;
+    }
+
     /* Game picker, unless the run is explicit or automated: -p/-setup name
      * the program, -secs means a headless benchmark, -nolauncher forces the
      * old behaviour (boot dir/prog straight away).  In picker mode -d is
-     * ignored: the directory comes from the selected game. */
+     * ignored: the directory comes from the selected installation. */
     if(!no_launcher && !explicit_prog && max_secs <= 0.0){
-        LaunchChoice lc;
         if(!show_launcher(&lc)) return 0;
         dir = lc.dir; prog = lc.prog;
         if(lc.fullscreen) start_fullscreen = 1;
     }
+    /* No -d and no launcher: take the first installation the detector finds
+     * (GAME, then the rest alphabetically), so a headless run needs no more
+     * arguments than an interactive one. */
+    if(!dir){
+        static RelResult found[8];
+        int n = release_scan(found, 8), k;
+        for(k=0;k<n;k++) if(release_runnable(&found[k])){ dir = found[k].dir; break; }
+        if(!dir) dir = n ? found[0].dir : "GAME";
+    }
+
+    /* Identify the release by content.  The launcher already did this for its
+     * own choice; -d and -nolauncher runs land here having done nothing, and
+     * every path needs the descriptor, so it simply runs again - hashing 2.4 MB
+     * is not worth the bookkeeping to avoid. */
+    release_detect(dir, &rel);
+    if(force_release){
+        const Release *fr = release_by_id(force_release);
+        if(!fr){
+            int k;
+            fprintf(stderr,"unknown release id '%s'; known ids are:", force_release);
+            for(k=0;k<release_count();k++) fprintf(stderr," %s", release_at(k)->id);
+            fprintf(stderr,"\n");
+            return 1;
+        }
+        fprintf(stderr,"[release] forced to '%s' (detected: %s)\n",
+                fr->id, release_state_name(rel.state));
+        rel.rel = fr;
+        rel.state = REL_RECOGNIZED;
+        if(!rel.boot[0]) snprintf(rel.boot, sizeof(rel.boot), "%s", fr->boot);
+    }
+    /* The launcher refuses to start an unrecognised installation.  The command
+     * line does not: booting one unpatched is how a newly found release gets
+     * tried in the first place.  It runs with every Fantasies-specific fix
+     * off, which is the only safe thing to do with an intro whose memory
+     * layout is unknown - say so rather than let it look like a bad port. */
+    if(!release_runnable(&rel))
+        fprintf(stderr,"[release] %s: %s\n"
+                       "[release] booting with all Pinball Fantasies fixes off."
+                       " Run -releases for the full report.\n",
+                release_state_name(rel.state), rel.summary);
+    /* The boot program is the release's, not a constant: Power Pack renamed
+     * PINBALL.EXE to PF.EXE.  -p still overrides for direct table/intro boots. */
+    if(!prog) prog = rel.boot[0] ? rel.boot : "PINBALL.EXE";
 
     /* Output level: -vol wins, else whatever the launcher's slider was left
      * at for this install (read after the dialog, which has just written it).
@@ -536,10 +611,12 @@ int main(int argc, char **argv){
     if(audio_volume < 0) audio_volume = 0;
     if(audio_volume > 100) audio_volume = 100;
 
-    /* Arm the Fantasies session (launcher choice or its CLI equivalent).
-     * Sibling games (DREAMS/ILLUSION/...) never arm it, so no Fantasies-only
-     * behaviour can leak into them however their files happen to be named. */
-    fantasies_begin_session(dir, prog);
+    /* Arm the Fantasies session.  Nothing Fantasies-specific runs unless the
+     * directory's five program hashes identified an actual release, so no
+     * Fantasies-only behaviour can leak into a sibling game however its files
+     * happen to be named - and, just as importantly, no intro's memory layout
+     * can be poked into a different intro's code. */
+    fantasies_begin_session(dir, prog, release_runnable(&rel) ? rel.rel : NULL);
 
     ram = (uint8_t*)calloc(RAM_SIZE,1);
     if(!ram){ fprintf(stderr,"out of memory\n"); return 1; }
