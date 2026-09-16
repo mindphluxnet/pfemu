@@ -140,6 +140,9 @@ int  show_launcher(LaunchChoice *out);   /* 1 = launch, 0 = quit */
 void write_sound_cfg(const char *dir, int on);
 int  read_sound_is_sb(const char *dir);
 
+/* ------------------------------------------------------------- imaging --- */
+int save_png(const char *path, const uint32_t *pix, int w, int h); /* src/png.c */
+
 /* ------------------------------------------------------------ tracing ---- */
 extern int trace_level;
 void trc(const char *fmt, ...);

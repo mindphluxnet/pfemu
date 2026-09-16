@@ -96,11 +96,18 @@ game controls rather than emulator-specific bindings.
 | `Space` | Nudge the table |
 | `F5` | Open the game's options menu |
 | `Alt+Enter` | Toggle borderless fullscreen |
+| `F11` | Save a PNG screenshot |
 | `Scroll Lock` | Quit pfemu |
 
 Fullscreen can also be enabled with the launcher's **Start in fullscreen**
 option or the `-fullscreen` command-line flag. `Alt+Enter` returns to the
 previous window size and position.
+
+`F11` saves the current frame as a timestamped PNG under a `screenshots/`
+subdirectory (created next to `pfemu.exe` if it doesn't already exist), e.g.
+`screenshots/pfemu_20260916_143005.png`. Not Print Screen: Windows 11
+intercepts that key itself and pops up Snipping Tool instead of reaching
+pfemu.
 
 ### Optional trainer
 

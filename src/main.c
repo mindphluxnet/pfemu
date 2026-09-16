@@ -37,6 +37,7 @@ static int running = 1;
 static int win_w = 960, win_h = 600;
 static int integer_scale = 0;
 static int fullscreen = 0;
+static int screenshot_pending = 0;
 static LONG windowed_style;
 static RECT windowed_rect;
 
@@ -86,6 +87,14 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
          * it doesn't flap the window every auto-repeat interval. */
         if(m == WM_SYSKEYDOWN && w == VK_RETURN && !(l & (1<<30))){
             set_fullscreen(!fullscreen);
+            return 0;
+        }
+        /* F11 saves a screenshot; bit 30 filters key-repeat like Alt+Enter
+         * above.  Not Print Screen: Windows 11 intercepts that itself and
+         * launches Snipping Tool before this window ever sees it.  F11 isn't
+         * one of the keys the game reads (see the scan-code list above). */
+        if(m == WM_KEYDOWN && w == VK_F11 && !(l & (1<<30))){
+            screenshot_pending = 1;
             return 0;
         }
         if(sc) kbd_key(sc | (ext?0xE000:0), 1);
@@ -272,6 +281,26 @@ static void save_ppm(const char *path, const uint32_t *pix, int w, int h){
         fwrite(rgb,1,3,f);
     }
     fclose(f);
+}
+
+/* F11 screenshots: timestamped filename, written via save_png() (src/png.c). */
+static void take_screenshot(const uint32_t *pix, int w, int h){
+    SYSTEMTIME st;
+    char path[96];
+    int n;
+    CreateDirectoryA("screenshots", NULL); /* ok if it already exists */
+    GetLocalTime(&st);
+    for(n=0; n<100; n++){
+        if(n==0)
+            sprintf(path, "screenshots/pfemu_%04d%02d%02d_%02d%02d%02d.png",
+                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        else
+            sprintf(path, "screenshots/pfemu_%04d%02d%02d_%02d%02d%02d_%d.png",
+                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, n);
+        if(GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) break;
+    }
+    if(save_png(path, pix, w, h)) fprintf(stderr, "[pfemu] screenshot saved: %s\n", path);
+    else fprintf(stderr, "[pfemu] screenshot failed: %s\n", path);
 }
 
 /* "t:scancode:updown,..." - drive the keyboard from a script for testing */
@@ -476,6 +505,10 @@ int main(int argc, char **argv){
                 next_shot = real + shot_every;
                 sprintf(nm, "seq%03d.ppm", shot_n++);
                 save_ppm(nm, fb, fbw, fbh);
+            }
+            if(screenshot_pending){
+                screenshot_pending = 0;
+                take_screenshot(fb, fbw, fbh);
             }
           } }
         plat_sleep_ms(1);
