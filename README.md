@@ -59,8 +59,9 @@ into one flat `FANTASYDX\` folder: `PINBALL.EXE`, `SETSOUND.EXE`, and the
 ## Playing the game
 
 Running `pfemu.exe` without arguments opens the launcher. It lets you configure
-sound, balls, table angle, scrolling, in-game music, resolution, color mode,
-trainer support, and whether the game starts in fullscreen. If it finds both
+sound, volume, sound quality, balls, table angle, scrolling, in-game music,
+resolution, color mode, trainer support, and whether the game starts in
+fullscreen. If it finds both
 `FANTASY\` (floppy) and `FANTASYDX\` (Deluxe CD-ROM) installs, it also shows a
 choice between them at the top of the window.
 
@@ -97,6 +98,8 @@ game controls rather than emulator-specific bindings.
 | `F5` | Open the game's options menu |
 | `Alt+Enter` | Toggle borderless fullscreen |
 | `F11` | Save a PNG screenshot |
+| `-` / `+` | Turn the volume down / up in 5% steps; shown on screen |
+| `Keypad *` | Mute, and restore the previous level; shown on screen |
 | `Scroll Lock` | Quit pfemu |
 
 Fullscreen can also be enabled with the launcher's **Start in fullscreen**
@@ -108,6 +111,39 @@ subdirectory (created next to `pfemu.exe` if it doesn't already exist), e.g.
 `screenshots/pfemu_20260916_143005.png`. Not Print Screen: Windows 11
 intercepts that key itself and pops up Snipping Tool instead of reaching
 pfemu.
+
+### Sound
+
+The 1992 original expected a volume wheel on the sound card and another on the
+speakers. Since neither exists here, the launcher has a **Volume** slider and
+the game window takes `-` / `+` and keypad `*`, all of which only scale what
+pfemu hands to Windows â€” nothing emulated changes, and `-wav` captures are
+written at the card's own level regardless. 100% is the level pfemu played at
+before the slider existed, and the default is 70%.
+
+The level is remembered per install, whether it was set with the slider or
+with `-` / `+` in the game window â€” quit and the next session starts where you
+left it. Muting is the exception: it is a momentary thing, so quitting while
+muted saves the level the mute is hiding rather than silence. Riding `-` all
+the way down to 0 does save 0. `-vol N` overrides the saved level for one run
+without replacing it.
+
+**Quality** is the game's own setting, the five notches `SETSOUND.EXE` offered
+between Low and High. It picks the rate at which `SBLASTER.SDR` mixes the
+music, which is also the rate the emulated card plays at:
+
+| Notch | Mixing rate |
+| --- | --- |
+| 1 | 12000 Hz |
+| 2 | 16000 Hz |
+| 3 | 20000 Hz |
+| 4 | 21000 Hz |
+| 5 | 21000 Hz, plus a longer per-voice mixing routine |
+
+The mixer is guest code, so a higher notch spends more of the emulated 386's
+budget per second of audio â€” exactly the trade the setting existed to offer in
+1992. If a high notch starves the game loop, `-ips` models a faster CPU.
+Notch 1 is what pfemu used before this setting was exposed.
 
 ### Optional trainer
 
@@ -151,6 +187,7 @@ custom installations and development.
 | `-nopatch` | Disable the Pinball Fantasies compatibility patches |
 | `-speed X` | Run at `X` times normal speed |
 | `-ips N` | Set the emulated instruction rate; default: 6,000,000 |
+| `-vol N` | Output volume, 0â€“100, for this run only; overrides the saved level |
 
 `-d` only affects direct runs; pass `-d FANTASYDX` to boot the Deluxe CD-ROM
 install this way. The launcher instead picks between `FANTASY/PINBALL.EXE` and
@@ -176,10 +213,11 @@ These options were used to reverse-engineer and verify the emulator:
 | `-dosdbg` | Trace DOS `INT 21h` calls |
 | `-iotrace N` | Trace the first `N` DMA, Sound Blaster, and OPL I/O accesses |
 | `-pll N` | Trace `N` timer reloads during audio calibration |
-| `-snddbg` | Enable additional sound diagnostics |
+| `-snddbg` | Log each DSP transfer with its DMA buffer and the gap since the last one |
 | `-flipdbg`, `-vscan N`, `-dmd` | Trace display timing and page changes |
 | `-balldbg` | Time the ball erase/redraw gap and how often a frame lands in it |
 | `-nophaselock` | Present on the old wall timer instead of a fixed frame phase |
+| `-dmairq` | Interrupt on each DMA buffer wrap instead of when the DSP's transfer length runs out |
 | `-noballsync` | Stop pairing the displayed camera with the ball; show the raw camera |
 | `-nolatch` | Read the CRTC start address live instead of latching it at retrace |
 | `-force256`, `-nodbl`, `-oldtiming` | Disable rendering behaviors to isolate display problems |

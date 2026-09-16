@@ -1,20 +1,61 @@
 /* Sound: 8237 DMA controller, Sound Blaster DSP, and a Win32 waveOut sink.
  *
- * What the game's SBLASTER.SDR actually does, observed with -iotrace:
+ * What the game's SBLASTER.SDR actually does.  Re-derived by disassembling
+ * the driver, after an -snddbg trace disagreed with the description that used
+ * to be here; offsets are into the driver's load image:
  *
- *   out 0Ah,05      mask DMA channel 1
- *   out 0Ch,00      clear the address flip-flop
- *   out 0Bh,59      channel 1, memory->device, auto-init, single transfer
- *   out 83h,08      page 08  -> buffer at 08:0020 physical
- *   out 02h,20/00   offset 0020
- *   out 03h,2F/2A   count 2A2Fh, i.e. a 10800-byte block
- *   out 226h,1 / 0  DSP reset, then poll 22Ah for AAh
- *   ... 40h time constant, 1Ch auto-init 8-bit output, 0Ah unmask
+ *   out 0Ah,05        mask DMA channel 1
+ *   out 0Ch,00        clear the address flip-flop
+ *   out 0Bh,59        mode = channel | 58h: memory->device, single transfer,
+ *                     and auto-init SET                              (14BF)
+ *   out 83h,08        page 08 -> buffer at 08:0020 physical
+ *   out 02h,20/00     offset 0020
+ *   out 03h,lo/hi     count = DMA block length - 1                   (14DB)
+ *   out 226h,1 / 0    DSP reset, then poll 22Ah for AAh              (1427)
+ *   out 22Ch,D1       speaker on                                     (1465)
+ *   out 22Ch,40,tc    time constant, computed from the quality notch's
+ *                     mixing rate (see cfg_sblaster in src/launch.c) (1473)
+ *   out 22Ch,14,len   8-bit SINGLE-CYCLE DMA output                  (16ED)
  *
- * So this is ordinary 8-bit auto-init DMA playback: the driver's software MOD
- * mixer fills one half of the buffer while the card plays the other, and the
- * card's interrupt at each block end is what paces the mixer.  Everything here
- * exists to make that loop work.
+ * The last line is the correction.  This comment used to say the driver
+ * issues 1Ch, the auto-init DSP command.  It does not: that byte appears
+ * nowhere in SBLASTER.SDR, nor in any other SoundBlaster driver the game
+ * ships - SB20 and SBPRO set a block size with 48h first and then also use
+ * 14h, SB16 likewise.  What is auto-init here is the *controller*, not the
+ * DSP: the 0Bh write above.  So the 8237 wraps the buffer on its own and the
+ * driver hands the DSP a fresh 14h each time its transfer runs out, which is
+ * the standard SB 1.x way of playing continuously - and why -snddbg logs one
+ * "start single" line per re-arm rather than a single line at the start.
+ *
+ * The DSP length is deliberately huge: the driver takes the largest whole
+ * multiple of the DMA block length that fits under 64 KB (1733: 0FFFFh / L
+ * * L, which came out as 65520 in the traces) so that re-arming happens as
+ * seldom as it can.  At 21 kHz that is one DSP interrupt every three
+ * seconds, far too rare to be what paces the software MOD mixer; the
+ * driver's PLL calibration against the retrace is the likelier pacer, but
+ * that has not been traced and is not claimed here.
+ *
+ * pfemu had the interrupt wrong until this was traced.  It ended a
+ * single-cycle transfer at the *controller's* terminal count, raising the
+ * DSP interrupt once per DMA wrap instead of once per DSP transfer.
+ * -snddbg measured the gap, and it was not small:
+ *
+ *   phase   DMA buffer         wrap            DSP transfer
+ *   intro   10920 B @ 0020     every 0.513 s   every 3.08 s   (6x)
+ *   table     840 B @ AD00     every 0.040 s   every 3.08 s   (78x)
+ *
+ * 65520 is exactly 6 x 10920 and 78 x 840 - the 0FFFFh / L * L formula
+ * landing on a whole number of buffers both times, as intended.
+ *
+ * Which of the two was right could not be argued from the disassembly, since
+ * an 840-byte buffer is 39.5 ms of audio and something has to refill it at
+ * least that often.  It was settled by ear instead: with the DSP counting
+ * its own transfer the music plays exactly as it did before, which it could
+ * not do if the driver refilled that buffer from this interrupt.  So the
+ * refill is paced by the driver's own retrace-locked timer, and 77 of every
+ * 78 interrupts pfemu used to raise were spurious.  sb_tick now counts the
+ * DSP transfer; -dmairq goes back to the controller wrap if something ever
+ * turns up that wants it.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -22,6 +63,40 @@
 #include "pfemu.h"
 
 int sound_debug = 0;
+
+/* -dmairq: go back to interrupting on the DMA controller's wrap rather than
+ * on the DSP's own transfer count.  Kept as a way back, not as a tuning
+ * knob - see the header for why the default changed. */
+int sb_dmairq = 0;
+
+/* ------------------------------------------------------------------ gain */
+/* A real SB had a volume wheel on the bracket and the speakers had another;
+ * the guest has neither, and the mixer writes full-scale samples, so every
+ * build before this one played at whatever the Windows mixer was set to.
+ * This is that missing wheel.  It lives in the host sink only: no emulated
+ * state, no timing, and nothing the guest can observe depends on it, and the
+ * -wav dump is written upstream of it so captures stay at the level the card
+ * actually produced.  See plat_audio_push(). */
+int audio_volume = AUDIO_VOLUME_DEFAULT;
+
+/* Set when the in-window keys move the level, so main() knows to write it
+ * back on the way out.  A -vol run that nobody touches leaves the saved
+ * level alone. */
+int audio_volume_dirty = 0;
+
+/* Amplitude multiplier in Q15, square-law rather than linear.  Loudness
+ * tracks amplitude far from proportionally, so a slider scaling amplitude
+ * directly does nearly all of its audible work in the bottom third and feels
+ * dead across the top; squaring spreads that out at 12 dB per halving of the
+ * slider, near enough to how an audio-taper pot behaves.  100 returns exactly
+ * 32768, so unity - the level every previous build played at - is still
+ * reachable, and costs a memcpy rather than a multiply per sample. */
+static int audio_gain_q15(void){
+    int v = audio_volume;
+    if(v < 0) v = 0;
+    if(v > 100) v = 100;
+    return (v * v * 32768) / 10000;
+}
 
 /* ------------------------------------------------------------------ 8237 */
 typedef struct {
@@ -117,7 +192,8 @@ static struct {
     uint8_t outbuf[8]; int outlen, outpos;
     uint8_t cmd; int need_args; uint8_t arg[2]; int nargs;
     int  time_constant;
-    int  block_size;          /* from command 48h, in bytes-1 */
+    int  block_size;          /* bytes in one DSP transfer */
+    int  dsp_left;            /* bytes still owed on it, for -dspcount */
     int  playing, auto_init;
     int  speaker;
     int  irq_pending;
@@ -140,6 +216,7 @@ static void sb_start(int auto_init, int len){
     sb.playing = 1;
     sb.auto_init = auto_init;
     if(len > 0) sb.block_size = len;
+    sb.dsp_left = sb.block_size;
     if(sb.time_constant > 0 && sb.time_constant < 256)
         sb.rate = 1000000.0 / (256.0 - (double)sb.time_constant);
     if(sb.rate < 4000.0) sb.rate = 4000.0;
@@ -147,9 +224,20 @@ static void sb_start(int auto_init, int len){
     sb.last_t = emu_now();
     sb.frac = 0.0;
     plat_audio_init((int)(sb.rate + 0.5));
-    if(sound_debug)
-        fprintf(stderr, "[sb] start %s, %d bytes, tc=%d -> %.0f Hz\n",
-                auto_init ? "auto-init" : "single", len, sb.time_constant, sb.rate);
+    if(sound_debug){
+        /* Both lengths and the gap between re-arms, because the interesting
+         * question is how the DSP's transfer length relates to the DMA
+         * block the controller is actually looping - see the header. */
+        static double prev_start = -1.0;
+        fprintf(stderr,
+                "[sb] start %s, %d bytes, tc=%d -> %.0f Hz | t=%.3f dt=%.3f | "
+                "dma1 mode=%02X (%s) page=%02X addr=%04X count=%u\n",
+                auto_init ? "auto-init" : "single", len, sb.time_constant, sb.rate,
+                sb.last_t, prev_start < 0.0 ? 0.0 : sb.last_t - prev_start,
+                dma[1].mode, (dma[1].mode & 0x10) ? "auto-init" : "single",
+                dma[1].page, dma[1].base_addr, (unsigned)dma[1].base_count + 1u);
+        prev_start = sb.last_t;
+    }
 }
 
 static void sb_command(uint8_t c){
@@ -260,11 +348,21 @@ void sb_tick(void){
         if(b < 0){ sb.playing = 0; break; }
         pcm[pcm_n++] = (int16_t)((b - 128) * 192);
         if(pcm_n == SB_CHUNK){ plat_audio_push(pcm, pcm_n); pcm_n = 0; }
-        if(eob){
-            sb.irq_pending = 1;
-            pic_raise(sb_irq);
-            if(!sb.auto_init) sb.playing = 0;
-        }
+        /* What ends a transfer, and so interrupts: the DSP's own byte count,
+         * which is the card's job on hardware.  The controller's wrap (eob)
+         * is invisible to the DSP - it just reloads and keeps going.  With no
+         * length ever given (a 1Ch with no preceding 48h, which none of the
+         * drivers here do) there is no count to run down, so fall back to the
+         * wrap rather than fire on every single sample. */
+        { int fire;
+          if(sb_dmairq || sb.block_size <= 0) fire = eob;
+          else fire = (--sb.dsp_left <= 0);
+          if(fire){
+              sb.dsp_left = sb.block_size;
+              sb.irq_pending = 1;
+              pic_raise(sb_irq);
+              if(!sb.auto_init) sb.playing = 0;
+          } }
     }
 }
 
@@ -345,15 +443,18 @@ void wav_close(void){
 
 void plat_audio_push(const int16_t *s, int n){
     WAVEHDR *h;
-    int take;
+    int take, g;
     if(wav_fp){ fwrite(s, 2, (size_t)n, wav_fp); wav_samples += (unsigned long)n; }
     if(!hwo) return;
+    g = audio_gain_q15();                          /* read once: -/+ can move it */
     while(n > 0){
         h = &hdrs[hdr_i];
         if(!(h->dwFlags & WHDR_DONE)) return;      /* queue full: drop, stay live */
         if(h->lpData) waveOutUnprepareHeader(hwo, h, sizeof(*h));
         take = n > BUFSAMP ? BUFSAMP : n;
-        memcpy(bufs[hdr_i], s, (size_t)take * 2);
+        if(g >= 32768) memcpy(bufs[hdr_i], s, (size_t)take * 2);
+        else if(g == 0) memset(bufs[hdr_i], 0, (size_t)take * 2);
+        else { int k; for(k=0;k<take;k++) bufs[hdr_i][k] = (int16_t)(((int)s[k] * g) / 32768); }
         memset(h, 0, sizeof(*h));
         h->lpData = (LPSTR)bufs[hdr_i];
         h->dwBufferLength = (DWORD)(take * 2);

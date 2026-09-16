@@ -38,8 +38,71 @@ static int win_w = 960, win_h = 600;
 static int integer_scale = 0;
 static int fullscreen = 0;
 static int screenshot_pending = 0;
+/* Mute state for the keypad-* toggle, kept out here because the exit path
+ * needs it: see the volume keys in wndproc() and the save in main(). */
+static int vol_premute = -1, vol_muted = 0;
 static LONG windowed_style;
 static RECT windowed_rect;
+
+/* ----------------------------------------------------------------- OSD --
+ * Host-only on-screen notification, drawn straight into the presented
+ * framebuffer after vga_render(), so it is independent of whatever video
+ * page or mode the game is using and there is nothing the guest can see or
+ * overwrite.  It started out as the trainer's confirmation message and lived
+ * in src/fantasies.c; the volume keys want the same thing and are not game
+ * behaviour, so it sits here with the rest of the host presentation and
+ * fantasies.c calls in like any other caller. */
+static char osd_text[48] = "";
+static double osd_until = 0;
+
+void osd_show(const char *text){
+    snprintf(osd_text, sizeof(osd_text), "%s", text);
+    osd_until = emu_time + 1.6;
+}
+
+void osd_clear(void){
+    osd_text[0] = 0;
+    osd_until = 0;
+}
+
+void osd_draw(uint32_t *fb_, int w, int h){
+    int scale, len, tw, th, x0, y0, i, x, y;
+    if(!osd_text[0] || emu_time >= osd_until) return;
+    if(!fb_ || w <= 0 || h <= 0) return;
+    len = (int)strlen(osd_text);
+    scale = (w >= 160 && (len+1)*8*2 + 8 <= w) ? 2 : 1;
+    tw = len*8*scale + 8*scale;
+    if(tw > w) tw = w;
+    th = 8*scale + 6*scale;
+    x0 = (w - tw) / 2;
+    if(x0 < 0) x0 = 0;
+    y0 = h - th - 6*scale;
+    if(y0 < 0) y0 = 0;
+    for(y=0; y<th; y++){
+        for(x=0; x<tw; x++){
+            int px = x0+x, py = y0+y;
+            if(px>=0 && px<w && py>=0 && py<h) fb_[py*w+px] = 0x00181818u;
+        }
+    }
+    for(i=0; i<len; i++){
+        uint8_t ch = (uint8_t)osd_text[i];
+        int cx = x0 + 4*scale + i*8*scale;
+        int cy = y0 + 3*scale;
+        int r, c2, sx, sy;
+        for(r=0; r<8; r++){
+            uint8_t bits = vga_font8x8[ch*8+r];
+            for(c2=0; c2<8; c2++){
+                if(!((bits >> (7-c2)) & 1)) continue;
+                for(sy=0; sy<scale; sy++){
+                    for(sx=0; sx<scale; sx++){
+                        int px = cx + c2*scale + sx, py = cy + r*scale + sy;
+                        if(px>=0 && px<w && py>=0 && py<h) fb_[py*w+px] = 0x00FFE040u;
+                    }
+                }
+            }
+        }
+    }
+}
 
 static void set_fullscreen(int on){
     if(on == fullscreen) return;
@@ -95,6 +158,47 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
          * one of the keys the game reads (see the scan-code list above). */
         if(m == WM_KEYDOWN && w == VK_F11 && !(l & (1<<30))){
             screenshot_pending = 1;
+            return 0;
+        }
+        /* Volume: - and + (main row or keypad) in 5% steps, keypad * mutes
+         * and restores.  The launcher's slider only sets the starting level,
+         * so this is how the right one gets found without quitting first.
+         * Key-repeat is deliberately left on: holding - to fade out is the
+         * point.  Nothing emulated moves - audio_volume is host sink gain.
+         *
+         * The table's own INT 9 handler reads only the flippers, the plunger,
+         * space and F11/F12 (WRITEUP-PHASE2.md 5.11), so none of these
+         * collide there; unhandled keys do still reach the game through the
+         * BIOS buffer, so high-score name entry loses - and + (it keeps
+         * every letter, and Backspace, which is why Backspace is not the
+         * mute key). */
+        if(m == WM_KEYDOWN && (w == VK_OEM_MINUS || w == VK_SUBTRACT ||
+                               w == VK_OEM_PLUS  || w == VK_ADD ||
+                               w == VK_MULTIPLY)){
+            if(w == VK_MULTIPLY){
+                if(l & (1<<30)) return 0;          /* mute doesn't auto-repeat */
+                if(audio_volume > 0){
+                    vol_premute = audio_volume; vol_muted = 1; audio_volume = 0;
+                } else {
+                    audio_volume = vol_premute > 0 ? vol_premute : AUDIO_VOLUME_DEFAULT;
+                    vol_muted = 0;
+                }
+            } else {
+                int up = (w == VK_OEM_PLUS || w == VK_ADD);
+                audio_volume += up ? 5 : -5;
+                if(audio_volume < 0) audio_volume = 0;
+                if(audio_volume > 100) audio_volume = 100;
+                vol_muted = 0;
+                audio_volume_dirty = 1;            /* main() writes it on exit */
+            }
+            { char msg[32];
+              /* Muted reads as MUTED rather than 0%: a level of zero reached
+               * by riding - down is a different thing from the toggle, and
+               * only one of the two comes back with the same key. */
+              if(vol_muted) snprintf(msg, sizeof(msg), "VOLUME: MUTED");
+              else snprintf(msg, sizeof(msg), "VOLUME: %d%%", audio_volume);
+              osd_show(msg); }
+            fprintf(stderr, "[snd] volume %d%%\n", audio_volume);
             return 0;
         }
         if(sc) kbd_key(sc | (ext?0xE000:0), 1);
@@ -361,6 +465,7 @@ int main(int argc, char **argv){
     const char *keyscript = NULL;
     double shot_every = 0, next_shot = 0;
     double speed = 1.0;
+    int vol_override = -1;    /* -vol N overrides the saved slider position */
     unsigned long mem_lo = 0;
     int shot_n = 0;
     int i;
@@ -389,6 +494,8 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-iotrace") && i+1<argc){ extern int io_trace; io_trace = atoi(argv[++i]); }
         else if(!strcmp(argv[i],"-wav") && i+1<argc){ extern const char *wav_path; wav_path = argv[++i]; }
         else if(!strcmp(argv[i],"-snddbg")){ extern int sound_debug; sound_debug = 1; }
+        else if(!strcmp(argv[i],"-vol") && i+1<argc) vol_override = atoi(argv[++i]);
+        else if(!strcmp(argv[i],"-dmairq")){ extern int sb_dmairq; sb_dmairq = 1; }
         else if(!strcmp(argv[i],"-nopatch")){ extern int dos_no_patch; dos_no_patch = 1; }
         else if(!strcmp(argv[i],"-mem") && i+1<argc){ mem_lo = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-balldbg")){ balldbg_on = 1; }
@@ -420,6 +527,14 @@ int main(int argc, char **argv){
         dir = lc.dir; prog = lc.prog;
         if(lc.fullscreen) start_fullscreen = 1;
     }
+
+    /* Output level: -vol wins, else whatever the launcher's slider was left
+     * at for this install (read after the dialog, which has just written it).
+     * Headless and -nolauncher runs land on the same saved value, so a
+     * scripted run sounds like an interactive one. */
+    audio_volume = vol_override >= 0 ? vol_override : read_volume_cfg(dir);
+    if(audio_volume < 0) audio_volume = 0;
+    if(audio_volume > 100) audio_volume = 100;
 
     /* Arm the Fantasies session (launcher choice or its CLI equivalent).
      * Sibling games (DREAMS/ILLUSION/...) never arm it, so no Fantasies-only
@@ -574,7 +689,7 @@ int main(int argc, char **argv){
             last_present = plat_time();
             fantasies_ballgap_present(fell_behind);
             vga_render(fb, &fbw, &fbh);
-            fantasies_draw_osd(fb, fbw, fbh);
+            osd_draw(fb, fbw, fbh);
             plat_present(fb, fbw, fbh);
             if(shot_every > 0 && real >= next_shot){
                 char nm[64];
@@ -590,6 +705,20 @@ int main(int argc, char **argv){
         plat_sleep_ms(1);
     }
     }
+
+    /* Whatever -/+ settled on outlives the session: the launcher's slider
+     * sets the starting level, and having to go back to the dialog to make a
+     * level stick would defeat the point of the keys.  First thing after the
+     * loop, so a wobble anywhere in the exit report below can't lose it.
+     *
+     * Muting is deliberately not a saved preference - quitting while muted
+     * saves the level the mute is hiding, so the next session isn't silent
+     * for no visible reason.  Riding - all the way down to 0 does save 0:
+     * that one is explicit, and the launcher shows it as 0%.
+     *
+     * -vol on its own never writes; only an in-window change does. */
+    if(audio_volume_dirty)
+        write_volume_cfg(dir, vol_muted && vol_premute > 0 ? vol_premute : audio_volume);
 
     vga_render(fb,&fbw,&fbh);
     plat_present(fb,fbw,fbh);

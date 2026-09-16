@@ -37,6 +37,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <commctrl.h>
 #include <stdio.h>
 #include "pfemu.h"
 
@@ -58,6 +59,9 @@
 #define ID_FULLSCREEN   109
 #define ID_VER_FLOPPY   110
 #define ID_VER_DELUXE   111
+#define ID_QUALITY      112
+#define ID_VOLUME       113
+#define ID_VOLLABEL     114
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
@@ -70,15 +74,46 @@ static const uint8_t cfg_nosound[16] = {
  * driver's config parse (open, lseek to 0x0E/0x11/0x14, one answer byte
  * each, masked with 7 through lookup tables for base port, IRQ, quality):
  * byte 0x0E = base-port index (1 -> 220h), 0x11 = IRQ index (3 -> IRQ 7),
- * 0x14 = quality index (0).  The gap bytes are never read by the driver. */
-static void cfg_sblaster(uint8_t out[25]){
+ * 0x14 = quality index.  The gap bytes are never read by the driver.
+ *
+ * The quality byte is SETSOUND's five-notch Low..High setting, and the
+ * driver's own table says exactly what it buys (disassembled at image
+ * 0x1969, table at DS:6BA2 = image 0x25D3, five 4-byte entries):
+ *
+ *   notch  mixing rate   second word
+ *     0      12000 Hz       0
+ *     1      16000 Hz       0
+ *     2      20000 Hz       0
+ *     3      21000 Hz       0
+ *     4      21000 Hz     0x00FF
+ *
+ * The first word is the mixing rate.  Notch 0's 12000 is the rate pfemu
+ * already sees at today's default, so the word does reach the DSP time
+ * constant; the other four are read out of the table, not measured, and
+ * -snddbg prints what each one actually programs.
+ *
+ * The second word picks which of two templates the driver's code generator
+ * at 0x1752 stamps out 64 times, patching each copy with its own index 0-63
+ * (a per-volume-level mixing routine, on the usual MOD-player pattern):
+ * 11 bytes per copy for notches 0-3, 31 bytes for notch 4.  What the longer
+ * one computes has not been decoded, so notch 4 is offered but not described
+ * beyond "21 kHz plus something extra" - it is the only way it differs from
+ * notch 3.
+ *
+ * Cost is real and lands on the emulated 386, not the host: the mixer is
+ * guest code, so a higher rate spends more of the fixed ~6 MIPS budget
+ * (src/dev.c emu_ips) per second of audio, exactly as it would have on
+ * period hardware.  -ips raises the modelled CPU if a high notch starves
+ * the game loop. */
+static void cfg_sblaster(uint8_t out[25], int quality){
     int i;
     for(i=0;i<25;i++) out[i]=0;
     memcpy(out, "SBLASTER.SDR", 12);
-    out[0x0E]=1; out[0x11]=3; out[0x14]=0;
+    out[0x0E]=1; out[0x11]=3;
+    out[0x14]=(uint8_t)(quality < 0 ? 0 : (quality > 4 ? 4 : quality));
 }
 
-void write_sound_cfg(const char *dir, int on){
+void write_sound_cfg(const char *dir, int on, int quality){
     char path[600], sub[600];
     FILE *f;
     snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
@@ -86,7 +121,7 @@ void write_sound_cfg(const char *dir, int on){
     snprintf(path, sizeof(path), "%s/PFEMU-STATE/SOUND.CFG", dir);
     f = fopen(path, "wb");
     if(!f) return;
-    if(on){ uint8_t cfg[25]; cfg_sblaster(cfg); fwrite(cfg, 1, 25, f); }
+    if(on){ uint8_t cfg[25]; cfg_sblaster(cfg, quality); fwrite(cfg, 1, 25, f); }
     else fwrite(cfg_nosound, 1, sizeof(cfg_nosound), f);
     fclose(f);
 }
@@ -112,6 +147,92 @@ int read_sound_is_sb(const char *dir){
                strncmp(name, "SB16", 4)==0 || strncmp(name, "SB20", 4)==0;
     }
     return 0;
+}
+
+/* ------------------------------------------------------------- audio I/O
+ *
+ * Two bytes in a host-only file: {volume 0-100, quality notch 0-4}.
+ *
+ * Volume is host-only by nature.  The guest has nothing to configure: the
+ * driver mixes at full scale, and the card's mixer registers are an SB Pro
+ * feature this DSP-1.05 card does not have - so the setting is a property of
+ * the host sink alone (see the comment over audio_volume in src/sound.c).
+ *
+ * Quality *is* a guest setting - it goes in SOUND.CFG byte 0x14, where the
+ * driver reads it - but it is mirrored here so that turning sound off and on
+ * again doesn't silently reset it: a NOSOUND.SDR config is 16 bytes long and
+ * has no byte 0x14 to remember it in.  SOUND.CFG still wins when it has one,
+ * so running the real SETSOUND (-setup) is still picked up here. */
+static void read_audio_cfg(const char *dir, int *vol, int *qual){
+    char path[600];
+    FILE *f;
+    uint8_t b[2];
+    size_t n;
+    *vol = AUDIO_VOLUME_DEFAULT;
+    *qual = 0;
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_audio.cfg", dir);
+    f = fopen(path, "rb");
+    if(!f) return;
+    n = fread(b, 1, 2, f);
+    fclose(f);
+    if(n >= 1 && b[0] <= 100) *vol = b[0];
+    if(n >= 2 && b[1] <= 4) *qual = b[1];
+}
+
+static void write_audio_cfg(const char *dir, int vol, int qual){
+    char path[600], sub[600];
+    FILE *f;
+    uint8_t b[2];
+    if(vol < 0) vol = 0;
+    if(vol > 100) vol = 100;
+    if(qual < 0) qual = 0;
+    if(qual > 4) qual = 4;
+    b[0] = (uint8_t)vol;
+    b[1] = (uint8_t)qual;
+    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
+    CreateDirectoryA(sub, NULL);
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_audio.cfg", dir);
+    f = fopen(path, "wb");
+    if(!f) return;
+    fwrite(b, 1, 2, f);
+    fclose(f);
+}
+
+int read_volume_cfg(const char *dir){
+    int vol, qual;
+    read_audio_cfg(dir, &vol, &qual);
+    return vol;
+}
+
+/* Volume alone, for the in-window -/+ keys on their way out (src/main.c).
+ * Reads first so the quality notch in byte 1 survives: the game window has no
+ * way to change that, and clobbering it would silently undo the launcher. */
+void write_volume_cfg(const char *dir, int vol){
+    int cur, qual;
+    read_audio_cfg(dir, &cur, &qual);
+    write_audio_cfg(dir, vol, qual);
+}
+
+/* Quality notch actually in force: the effective SOUND.CFG when it is an SB
+ * config long enough to carry one (overlay first, then installed, same order
+ * as read_sound_is_sb), otherwise the mirror above. */
+int read_sound_quality(const char *dir){
+    FILE *f;
+    uint8_t buf[25];
+    size_t n;
+    int i, vol, qual;
+    char path[600];
+    for(i=0;i<2;i++){
+        snprintf(path, sizeof(path), i==0 ? "%s/PFEMU-STATE/SOUND.CFG" : "%s/SOUND.CFG", dir);
+        f = fopen(path, "rb");
+        if(!f) continue;
+        n = fread(buf, 1, sizeof(buf), f);
+        fclose(f);
+        if(n > 0x14 && buf[0x14] <= 4) return buf[0x14];
+        break;
+    }
+    read_audio_cfg(dir, &vol, &qual);
+    return qual;
 }
 
 /* --------------------------------------------------- launcher options I/O
@@ -252,8 +373,22 @@ static void write_fullscreen_cfg(const char *dir, int on){
 }
 
 /* ------------------------------------------------------------------ UI */
+/* Quality notch labels.  SETSOUND offered these as five unlabelled steps
+ * between "Low" and "High"; the rate is what the driver's table actually
+ * selects for each (see cfg_sblaster above), which is more use than the
+ * original wording. */
+static const char *quality_labels[5] = {
+    "1 - 12000 Hz (lowest)",
+    "2 - 16000 Hz",
+    "3 - 20000 Hz",
+    "4 - 21000 Hz",
+    "5 - 21000 Hz (highest)"
+};
+
 typedef struct {
     int sound;              /* checkbox state */
+    int quality;            /* combo state: SOUND.CFG quality notch, 0-4 */
+    int volume;             /* slider state: host output gain, 0-100 */
     uint8_t cfg[6];         /* PINBALL.CFG option bytes */
     int cheat_enable;        /* checkbox state: trainer (infinite balls + ball control) */
     int fullscreen;          /* checkbox state: start the window fullscreen */
@@ -263,8 +398,15 @@ typedef struct {
     int deluxe;              /* radio state: 0 = floppy (FANTASY), 1 = Deluxe (FANTASYDX) */
     int ver_y;                /* top of the version radio row, 0 if not shown (one install only) */
     HWND hSound, hOpt[6], hCheatEnable, hFullscreen, hVerFloppy, hVerDeluxe;
+    HWND hQuality, hVolume, hVolLabel;
     HFONT hFont;
 } LaunchState;
+
+static void set_vol_label(LaunchState *st){
+    char t[16];
+    snprintf(t, sizeof(t), "%d%%", st->volume);
+    if(st->hVolLabel) SetWindowTextA(st->hVolLabel, t);
+}
 
 static const char *cur_game_dir(const LaunchState *st){
     return st->deluxe ? GAME_DIR_DELUXE : GAME_DIR_FLOPPY;
@@ -278,12 +420,17 @@ static void reload_for_dir(HWND h, LaunchState *st){
     const char *dir = cur_game_dir(st);
     int i, balls, spring;
     st->sound = read_sound_is_sb(dir);
+    st->quality = read_sound_quality(dir);
+    st->volume = read_volume_cfg(dir);
     read_pinball_cfg(dir, st->cfg);
     read_cheats_cfg(dir, &balls, &spring);
     st->cheat_enable = balls || spring;
     st->fullscreen = read_fullscreen_cfg(dir);
     if(st->hSound){
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
+        SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
+        SendMessageA(st->hVolume,TBM_SETPOS,TRUE,st->volume);
+        set_vol_label(st);
         for(i=0;i<6;i++) SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
         CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
@@ -331,7 +478,41 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             WS_CHILD|WS_VISIBLE,
                             24,60+base,324,28,h,(HMENU)ID_NOTE,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        y = 96+base;
+        y = 92+base;
+        /* Quality: SETSOUND's five-notch setting, written straight to
+         * SOUND.CFG byte 0x14 for the driver to read. */
+        c = CreateWindowExA(0,"STATIC","Quality:",WS_CHILD|WS_VISIBLE,
+                            24,y+3,100,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hQuality = CreateWindowExA(0,"COMBOBOX","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
+                            128,y,180,200,h,(HMENU)ID_QUALITY,cs->hInstance,0);
+        SendMessageA(st->hQuality,WM_SETFONT,(WPARAM)st->hFont,0);
+        for(i=0;i<5;i++)
+            SendMessageA(st->hQuality,CB_ADDSTRING,0,(LPARAM)quality_labels[i]);
+        SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
+        y += 24;
+        c = CreateWindowExA(0,"STATIC",
+                            "Driver mixing rate. Higher costs emulated 386 time.",
+                            WS_CHILD|WS_VISIBLE,24,y,324,14,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        y += 20;
+        /* Volume: host-side only, applied where waveOut is fed. */
+        c = CreateWindowExA(0,"STATIC","Volume:",WS_CHILD|WS_VISIBLE,
+                            24,y+6,100,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hVolume = CreateWindowExA(0,TRACKBAR_CLASSA,"",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|TBS_HORZ|TBS_AUTOTICKS,
+                            124,y,180,28,h,(HMENU)ID_VOLUME,cs->hInstance,0);
+        SendMessageA(st->hVolume,TBM_SETRANGE,TRUE,MAKELPARAM(0,100));
+        SendMessageA(st->hVolume,TBM_SETTICFREQ,25,0);
+        SendMessageA(st->hVolume,TBM_SETPAGESIZE,0,10);
+        SendMessageA(st->hVolume,TBM_SETPOS,TRUE,st->volume);
+        st->hVolLabel = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_RIGHT,
+                            306,y+6,42,16,h,(HMENU)ID_VOLLABEL,cs->hInstance,0);
+        SendMessageA(st->hVolLabel,WM_SETFONT,(WPARAM)st->hFont,0);
+        set_vol_label(st);
+        y += 36;
         for(i=0;i<6;i++){
             int k;
             c = CreateWindowExA(0,"STATIC",opts[i].label,WS_CHILD|WS_VISIBLE,
@@ -375,10 +556,20 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             272,y+8,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         return 0; }
+    /* The trackbar reports through WM_HSCROLL, not WM_COMMAND. */
+    case WM_HSCROLL:
+        if(st && st->hVolume && (HWND)l == st->hVolume){
+            st->volume = (int)SendMessageA(st->hVolume,TBM_GETPOS,0,0);
+            set_vol_label(st);
+        }
+        return 0;
     case WM_COMMAND: {
         int id = LOWORD(w);
         if(id==ID_SOUND){
             st->sound = IsDlgButtonChecked(h,ID_SOUND)==BST_CHECKED;
+        } else if(id==ID_QUALITY && HIWORD(w)==CBN_SELCHANGE){
+            LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
+            if(sel != CB_ERR) st->quality = (int)sel;
         } else if(id==ID_CHEAT_ENABLE){
             st->cheat_enable = IsDlgButtonChecked(h,ID_CHEAT_ENABLE)==BST_CHECKED;
         } else if(id==ID_FULLSCREEN){
@@ -396,7 +587,10 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             "pfemu",MB_OK|MB_ICONERROR);
                 return 0;
             }
-            write_sound_cfg(dir, st->sound);
+            { LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
+              if(sel != CB_ERR) st->quality = (int)sel; }
+            write_sound_cfg(dir, st->sound, st->quality);
+            write_audio_cfg(dir, st->volume, st->quality);
             for(i=0;i<6;i++){
                 LRESULT sel = SendMessageA(st->hOpt[i],CB_GETCURSEL,0,0);
                 st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_pinball_defaults[i] : sel);
@@ -427,10 +621,16 @@ int show_launcher(LaunchChoice *out){
     MSG msg;
     LaunchState st;
     int sw, sh;
-    int winw = 372, winh = 430;
+    int winw = 372, winh = 506;
     DWORD atf, atd;
+    INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     memset(&st,0,sizeof(st));
+    /* The volume slider is a common control; without this its window class
+     * is not registered and CreateWindowEx for it just returns NULL. */
+    icc.dwSize = sizeof(icc);
+    icc.dwICC = ICC_BAR_CLASSES;
+    InitCommonControlsEx(&icc);
     wc.lpfnWndProc = launch_proc;
     wc.hInstance = GetModuleHandleA(NULL);
     wc.lpszClassName = "pfemu-launcher";
@@ -446,6 +646,8 @@ int show_launcher(LaunchChoice *out){
     { const char *dir = cur_game_dir(&st);
       int balls, spring;
       st.sound = read_sound_is_sb(dir);
+      st.quality = read_sound_quality(dir);
+      st.volume = read_volume_cfg(dir);
       read_pinball_cfg(dir, st.cfg);
       read_cheats_cfg(dir, &balls, &spring);
       st.cheat_enable = balls || spring;

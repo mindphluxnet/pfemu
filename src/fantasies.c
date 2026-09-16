@@ -35,7 +35,6 @@ static char session_dir[512];   /* game directory, for the options file below */
 static int table_num = 0;              /* 1-4 while a table is running, else 0 */
 static int trainer_enabled = 0;        /* launcher: arm the '1'/'2' hotkeys below */
 static int spring_cheat_on = 0;        /* our own state for the '2' toggle - see below */
-static void fantasies_osd_clear(void); /* defined below, near the OSD drawer */
 
 /* Upper-cased basename of a guest/host path (drives, slashes handled). */
 static void base_up(const char *path, char *out, size_t n){
@@ -105,7 +104,7 @@ void fantasies_on_exec(const char *dospath){
         if(fix_on){ fix_on = 0; kbd_clear_held(); }
         table_num = 0;
         spring_cheat_on = 0;
-        fantasies_osd_clear();
+        osd_clear();
         return;
     }
     base_up(dospath, b, sizeof(b));
@@ -114,7 +113,7 @@ void fantasies_on_exec(const char *dospath){
         fix_on = 1;
         table_num = b[5] - '0';
         spring_cheat_on = 0;
-        fantasies_osd_clear();
+        osd_clear();
         return;
     }
     dot = strrchr(b,'.');
@@ -125,7 +124,7 @@ void fantasies_on_exec(const char *dospath){
         fix_on = 0;
         table_num = 0;
         spring_cheat_on = 0;
-        fantasies_osd_clear();
+        osd_clear();
         kbd_clear_held();
     }
 }
@@ -875,64 +874,6 @@ void fantasies_spring_tick(void){
     }
 }
 
-/* Host-only on-screen notification for the two hotkeys below: drawn straight
- * into the presented framebuffer by fantasies_draw_osd() (called from
- * main.c right after vga_render(), so it's independent of whatever video
- * page/mode the game itself is using), not through anything the guest can
- * see or overwrite. */
-static char osd_text[48] = "";
-static double osd_until = 0;
-
-static void fantasies_osd_show(const char *text){
-    snprintf(osd_text, sizeof(osd_text), "%s", text);
-    osd_until = emu_time + 1.6;
-}
-
-static void fantasies_osd_clear(void){
-    osd_text[0] = 0;
-    osd_until = 0;
-}
-
-void fantasies_draw_osd(uint32_t *fb, int w, int h){
-    extern const uint8_t vga_font8x8[256*8];
-    int scale, len, tw, th, x0, y0, i, x, y;
-    if(!osd_text[0] || emu_time >= osd_until) return;
-    if(!fb || w <= 0 || h <= 0) return;
-    len = (int)strlen(osd_text);
-    scale = (w >= 160 && (len+1)*8*2 + 8 <= w) ? 2 : 1;
-    tw = len*8*scale + 8*scale;
-    if(tw > w) tw = w;
-    th = 8*scale + 6*scale;
-    x0 = (w - tw) / 2;
-    if(x0 < 0) x0 = 0;
-    y0 = h - th - 6*scale;
-    if(y0 < 0) y0 = 0;
-    for(y=0; y<th; y++){
-        for(x=0; x<tw; x++){
-            int px = x0+x, py = y0+y;
-            if(px>=0 && px<w && py>=0 && py<h) fb[py*w+px] = 0x00181818u;
-        }
-    }
-    for(i=0; i<len; i++){
-        uint8_t ch = (uint8_t)osd_text[i];
-        int cx = x0 + 4*scale + i*8*scale;
-        int cy = y0 + 3*scale;
-        int r, c2, sx, sy;
-        for(r=0; r<8; r++){
-            uint8_t bits = vga_font8x8[ch*8+r];
-            for(c2=0; c2<8; c2++){
-                if(!((bits >> (7-c2)) & 1)) continue;
-                for(sy=0; sy<scale; sy++){
-                    for(sx=0; sx<scale; sx++){
-                        int px = cx + c2*scale + sx, py = cy + r*scale + sy;
-                        if(px>=0 && px<w && py>=0 && py<h) fb[py*w+px] = 0x00FFE040u;
-                    }
-                }
-            }
-        }
-    }
-}
-
 /* Called from dev.c's kbd_key() on every fresh (non-autorepeat) key make,
  * host scancode already stripped of the E0 prefix bit. '1' and '2' are
  * plain, unextended scancodes, so no E0 check is needed here.  Gated on
@@ -946,10 +887,10 @@ void fantasies_key_event(int scancode, int down){
         return;
     if(scancode == 0x02){
         r = fantasies_toggle_balls();
-        if(r >= 0) fantasies_osd_show(r ? "INFINITE BALLS: ON" : "INFINITE BALLS: OFF");
+        if(r >= 0) osd_show(r ? "INFINITE BALLS: ON" : "INFINITE BALLS: OFF");
     } else if(scancode == 0x03){
         r = fantasies_toggle_spring();
-        if(r >= 0) fantasies_osd_show(r ? "BALL CONTROL: ON" : "BALL CONTROL: OFF");
+        if(r >= 0) osd_show(r ? "BALL CONTROL: ON" : "BALL CONTROL: OFF");
     }
 }
 

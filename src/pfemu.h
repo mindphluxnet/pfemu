@@ -135,7 +135,6 @@ FILE *fantasies_open_cdmarker(const char *fname);
 int  fantasies_fix_active(void);
 int  fantasies_session_armed(void);
 void fantasies_key_event(int scancode, int down);
-void fantasies_draw_osd(uint32_t *fb, int w, int h);
 void dreams_patch_image(uint32_t load_base, uint32_t imglen);
 
 /* ------------------------------------------------------------ platform --- */
@@ -148,13 +147,31 @@ void plat_audio_init(int hz);
 void plat_audio_push(const int16_t *samples, int count);
 void plat_set_fullscreen(int on);     /* runtime toggle; also Alt+Enter in-window */
 
+/* Host-only on-screen message, drawn over the presented frame (src/main.c).
+ * Used by the volume keys and by the trainer's hotkeys in src/fantasies.c. */
+void osd_show(const char *text);
+void osd_clear(void);
+void osd_draw(uint32_t *fb, int w, int h);
+
+/* Host output gain, 0-100 (src/sound.c).  Set from the launcher's slider, the
+ * -vol switch, or the -/+ keys in the game window.  100 is the level every
+ * build before this one played at; the default is lower because a 1992 SB
+ * expected a knob on the card and another on the speakers, and there is no
+ * knob anywhere in here. */
+#define AUDIO_VOLUME_DEFAULT 70
+extern int audio_volume;
+extern int audio_volume_dirty;   /* the -/+ keys moved it; save it on exit */
+
 /* ------------------------------------------------------------ launcher --- */
 /* Win32 game picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
  * into the game's PFEMU-STATE/ overlay so installed files stay pristine. */
 typedef struct { const char *dir, *prog; int fullscreen; } LaunchChoice;
 int  show_launcher(LaunchChoice *out);   /* 1 = launch, 0 = quit */
-void write_sound_cfg(const char *dir, int on);
+void write_sound_cfg(const char *dir, int on, int quality);
 int  read_sound_is_sb(const char *dir);
+int  read_sound_quality(const char *dir);      /* SOUND.CFG byte 14h, 0-4 */
+int  read_volume_cfg(const char *dir);         /* host-only file, 0-100 */
+void write_volume_cfg(const char *dir, int vol); /* keeps the stored quality */
 
 /* ------------------------------------------------------------- imaging --- */
 int save_png(const char *path, const uint32_t *pix, int w, int h); /* src/png.c */
