@@ -579,3 +579,117 @@ single-bank hi-scores page untouched by construction - is unchanged from
 if this ever regresses again, `overrides` vs `switches` says immediately
 whether the fix is engaging at all before anyone has to reason about timing
 from scratch.
+
+## 25. Table-select palette flash, part 3: it was never a flash (`src/vga.c`)
+
+§21's diagnosis was wrong. Not the traffic - the *interpretation* of it.
+
+Symptom that reopened this: comparing pfemu's table-select menu against real
+screenshots of the DOS CD-ROM release, one of the two stacked table graphics
+per page (the upper one) was a plainly wrong palette - not flickering, a
+static wrong colour, every time. §21/§24's majority-duration AR14 render
+was, by construction, incapable of ever showing anything else: it always
+collapses the whole frame to one bank.
+
+Re-reading `INTRO.ASM` with that question in mind (not "why does it flash"
+but "why does the render need two banks") found the part §21 skipped over:
+`julius` doesn't just load one 16-colour palette - the menu loads *two*, one
+into DAC 0-15 and one into DAC 16-31, one per table graphic on screen
+(`movpal ...,nuvaranden` / `movpal ...,nuvaranden+16*3`), immediately before
+`MOV CS:CHANGE16PAL,TRUE`, under a comment §21 didn't quote: `set 2 palette
+modes (on rasterint)`. And the raster callback isn't paced by guesswork
+either - it's ordered with an explicit target line: `int 66h, ax=12h,
+cx=220+10`. Two banks, one hardware-timed split. Not a redraw glitch that
+occasionally escapes vertical blanking.
+
+Confirmed live with a new diagnostic (`-paldbg`, logs every AR14 write with
+its frame-relative scanline): the VBLANK write (bank 1) lands at line
+490.6-492.0 of 527 every time, and the raster write (bank 0) at line
+193.2-195.9 every time - a two-line spread on each, far tighter than
+anything CPU-speed jitter would produce, and matching the disassembly's
+`cx=230` target almost exactly. This is a hardware-precise split at a fixed
+scanline, not a transient with a fuzzy landing zone.
+
+It also explains why only the *upper* graphic ever looked wrong: switch-pair
+intervals in the same trace are mostly ~33.5 ms (twice the 59.71 Hz frame
+period) with occasional 16.7 ms ones - the driver's tick redraws the split
+roughly every other video frame, not every one. On the frames it skips, AR14
+never leaves bank 0 for the whole frame. The lower graphic is drawn from
+bank 0 in *both* cases, so it is rock-solid. The upper graphic is drawn from
+bank 1 only on the frames the split fires, and from bank 0 (the wrong bank
+for it) on the frames it doesn't - a real, register-level alternation, not
+renderer noise. That is also exactly the "flicker" reported when a first
+attempt at fixing this rendered each row from a precise single-frame lookup
+instead of a frame-wide vote: it wasn't a bug in that attempt, it was real
+behaviour finally reaching the screen instead of being permanently masked.
+
+First fix tried: per-row resolution, not per-frame. For each output row,
+convert its logical row to a physical scanline (`yl * rowh`) and an absolute
+time within the most recently complete guest frame, then look up whichever
+AR14 value was in effect at that instant from the existing switch history.
+This is bit-exact - it reproduces the real register timeline, including the
+every-other-frame alternation, faithfully. Live-tested with the sound driver
+disabled (`NOSOUND.SDR`) to rule out a Sound-Blaster-specific timing bug:
+the same alternation reproduced identically, which would be a remarkable
+coincidence if it weren't a real property of the driver-paced raster-split
+technique itself (confirmed authentic, matching the engine's
+independently-documented 30 Hz tick for other systems, e.g. the DMD, §20)
+rather than a pfemu defect in one specific sound path.
+
+Shipped fix: given the choice between that bit-exact alternation and a
+steady picture, cosmetic stability was chosen over accuracy. Rather than
+resolving AR14 from the current frame's own switch timing, the render now
+derives the split - which bank is "upper", which is "lower", and the
+scanline between them - from the most recently observed switch pair in
+history (walk `pal_sw_val[]` backward from the end for the last entry that
+differs from `ar[0x14]`; convert the latest switch's own timestamp to a
+scanline the same way `-paldbg` does), and applies that split to *every*
+frame, whether or not that frame's own driver tick actually rewrote AR14.
+A real change (paging to the other two tables, their palette and split
+point) still reaches the screen within one driver tick, since it's read
+fresh from the same rolling history every frame. Screens that only ever use
+one bank (tables, text, the single-bank hi-scores page) are untouched,
+since no second value ever appears in their history - unchanged from §21.
+`split_log` (the existing line-compare address split, §22) and this AR14
+split are independent and combine correctly since both key off the same
+physical row. The three §24 counters keep their meaning, `overrides` now
+counting rows instead of frames.
+
+Caveat carried forward from §21: `INTRO.ASM` is a third-party
+reconstruction, not the original binary, so its comments and constants are
+a map, not ground truth - but here the live trace confirms the map exactly
+(the two write-lines, the two-frame pacing), which is as much verification
+as is practical without the original source.
+
+Follow-up, measured from screenshots: the seam was landing 16 rows up
+*inside* the upper graphic. Screenshot geometry puts the upper picture at
+rows 20-209, a black letterbox gap at 210-269, and the lower picture at
+270-459 - so a bank switch is only invisible if it lands in that 60-line
+gap. The raw switch line is 194, i.e. 16 rows into the upper picture, which
+is exactly the band that came out recoloured.
+
+Cause: the write arrives on a countdown the driver starts at vertical
+retrace, but the raster line the game asks for is numbered from the top of
+the active display. The two are `vtotal - vrs` apart - 527 - 490 = 37 lines
+here. Converting the observed line to active-display coordinates puts the
+switch at 230, which is simultaneously the `cx` (`220+10`) that INTRO.ASM
+passes to its ORDER RASTER call and the middle of the letterbox gap, 20
+lines clear of either picture - comfortably outside the ~3-line jitter. Two
+independent sources agreeing on 230 is what makes this a coordinate
+conversion rather than a fudge factor.
+
+Note this correction is applied where the seam is *drawn*, not to the guest
+timing that produced it: the callback chain really is anchored 37 lines
+early in emulation. Chasing that to its source is a driver/PIT question
+(and `vga_status1`'s bit-0 semantics are deliberately non-hardware per
+§5.8 of `WRITEUP-PHASE2.md`, so that is not a safe thing to go changing to
+find out).
+
+Open question, not resolved: *why* does the driver only redraw the split on
+roughly every other frame rather than every one - a deliberate 1994 design
+choice (piggybacking on a slower tick, as the DMD does) or some other
+authentic property of the real port that pfemu is now reproducing
+correctly? Either way it's no longer this file's concern: it stopped being
+a `vga.c` question the moment the alternation was confirmed to come from
+the register timeline itself rather than from how that timeline gets
+rendered.

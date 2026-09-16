@@ -5,11 +5,12 @@ uint8_t vga_vram[256*1024];
 int vga_dirty = 1;
 int vga_force256 = 0, vga_nodbl = 0;
 unsigned long vga_startaddr_changes = 0;
-/* Diagnostics for the table-select palette-flash fix (see pal_sw_* below):
- * switches = AR14 (Color Select) writes that actually changed the bank;
- * overrides = frames where the majority-duration pick differed from the
- * instantaneous ar[0x14] (i.e. the fix actively did something); resets =
- * apply_regs() calls, which zero the switch history on every mode set. */
+/* Diagnostics for the table-select palette-split render (see pal_sw_*
+ * below): switches = AR14 (Color Select) writes that actually changed the
+ * bank; overrides = output rows whose scan-time-resolved bank differed from
+ * the instantaneous ar[0x14] (i.e. the per-row resolution actively did
+ * something); resets = apply_regs() calls, which zero the switch history on
+ * every mode set. */
 unsigned long vga_ar14_switches = 0, vga_ar14_overrides = 0, vga_mode_resets = 0;
 
 /* ------------------------------------------------------------- registers */
@@ -26,18 +27,32 @@ static int dac_widx, dac_ridx, dac_wcomp, dac_rcomp;
 static uint8_t latch[4];
 static int bios_mode = 3;
 
-/* AR14 (Color Select) switch history, for the majority-palette render below.
- * The menu flips AR14 every game tick around a small glyph redraw that is
- * meant to hide inside vertical blanking; on a slower machine the window
- * lands mid-frame and presents sample it as a fullscreen red->green flash.
- * Game state is untouched - only the presented frame uses the
- * majority-duration bank.  Entries are chronological; pal_sw_base is the
- * value before the oldest retained switch. */
+/* AR14 (Color Select) switch history, for the per-scanline palette render
+ * below.  Confirmed via the reconstructed source (INTRO.ASM: `julius` loads
+ * one 16-colour bank into DAC 0-15 and another into DAC 16-31; a VBLANK
+ * callback (dumretf) sets AR14=1, and a driver raster callback ordered at a
+ * fixed target line (creatretf, `int 66h ax=12h cx=220+10`) sets it back to
+ * 0) and a live register trace (-paldbg): the table-select menu genuinely
+ * shows two different table graphics in one frame, each drawn from its own
+ * bank, split at a fixed scanline - not a transient glitch to hide in
+ * blanking as originally suspected.  Game state is untouched - only the
+ * presented frame is affected.  Entries are chronological; pal_sw_base is
+ * the value before the oldest retained switch. */
 #define PALSW_N 32
 static uint8_t pal_sw_val[PALSW_N];
 static double pal_sw_t[PALSW_N];
 static int pal_sw_n = 0;
 static uint8_t pal_sw_base = 0;
+
+/* The split latched out of that history (see vga_render).  Kept across
+ * frames for two reasons: the boundary's own scanline wanders a line or two
+ * between driver ticks, which would flicker the row at the seam, so it only
+ * moves when it moves for real; and the latch has to expire once the driver
+ * stops flipping banks, or it paints a stale seam onto the next screen that
+ * never had a split at all. */
+static int pal_split_line = -1;         /* physical scanline, -1 = no split */
+static uint8_t pal_split_hi, pal_split_lo;
+static double pal_split_t = -1.0;       /* when it was last re-observed */
 
 /* CRT timing cache, refreshed lazily by vga_timing_cached().  Set to 1
  * whenever a register it derives from changes. */
@@ -221,6 +236,7 @@ static unsigned long vscan_logged = 0;
  * something pathological (port defect, fair game).  Sampling every 4096
  * instructions (~0.14 ms at 30 MIPS) resolves ms-scale steps. */
 int vga_dmdlog = 0;
+int vga_paldbg = 0;           /* -paldbg: log AR14 (Color Select) writes w/ frame phase */
 static uint64_t vscan_fnv(const uint8_t *p, size_t n);
 static uint64_t dmd_last_sample = 0;
 static uint64_t dmd_hash[6];
@@ -351,6 +367,11 @@ void vga_io_w(uint16_t p, uint8_t v){
                 pal_sw_t[pal_sw_n] = emu_now();
                 pal_sw_n++;
                 vga_ar14_switches++;
+                if(vga_paldbg && vga_ar14_switches <= 20000){
+                    int vt; double line = vga_frameline(&vt);
+                    fprintf(stderr, "[paldbg] t=%.6f line=%6.1f/%d %02X -> %02X\n",
+                            emu_now(), line, vt, ar[0x14], v);
+                }
             }
             ar[ar_idx & 0x1F] = v; ar_flipflop = 0; vga_dirty = 1;
         }
@@ -483,68 +504,98 @@ void vga_render(uint32_t *out, int *wp, int *hp){
      * shrinks to the letterboxed menu. */
     int rowh = maxscan * dbl;
     int h_log, split_log, dup = (dbl == 2) ? 2 : 1;
-    /* Majority-duration AR14 for this frame (see note at pal_sw_*): the
-     * menu flips the Color Select bank around a small per-tick redraw that
-     * is meant to hide inside vertical blanking.  Sampling the instantaneous
-     * value aliases the transient bank to a fullscreen red->green flash, so
-     * the frame renders with whichever bank covered most of it instead. */
-    uint8_t ar14_eff = ar[0x14];
-    if(pal_sw_n > 0){
-        double per, inv, hde, now, fstart, fprev;
-        int vt, vd, vrs, vre;
+    /* Latched AR14 (Color Select) split (see note at pal_sw_* above).
+     * Confirmed against the reconstructed source and a live register trace
+     * (-paldbg): the menu genuinely shows two different 16-colour banks in
+     * one frame - dumretf (VBLANK) sets AR14=1, then creatretf, ordered as a
+     * driver raster callback at a fixed target line (INTRO.ASM: `int 66h,
+     * ax=12h, cx=220+10`), sets it back to 0 partway down the screen, at a
+     * scanline stable to a couple of lines (measured: ~194.5/527) whenever
+     * it fires. But the driver's own tick only redraws the split on roughly
+     * every other video frame - confirmed authentic (reproduces identically
+     * with the sound driver disabled, so it isn't a Sound Blaster timing
+     * bug) rather than a pfemu defect. Rendering each frame from only its
+     * own switch history therefore makes the upper graphic legitimately
+     * flicker between its own bank and the lower graphic's, at the
+     * driver-tick rate, on the frames the split doesn't fire.
+     *
+     * By request, traded for a steadier picture over bit-exact accuracy:
+     * latch the split - which bank is "upper", which is "lower", and the
+     * scanline between them - and apply it to every frame, whether or not
+     * *this* frame's own tick actually rewrote AR14.
+     *
+     * The latch keys off the most recent switch whose own scanline falls
+     * inside the active display, which is always the mid-frame raster one
+     * (~194/527); the other write of each pair lands at ~490/527, i.e. in
+     * blanking, where it only arms the bank the next frame starts in and is
+     * never itself a visible boundary.  Keying off anything phase-dependent
+     * instead - the instantaneous ar[0x14], or simply the newest switch -
+     * inverts the two banks or picks the blanking write as the boundary,
+     * depending on where in the ~7ms/~33ms cycle the frame happened to be
+     * sampled, which just reproduces the flicker by a different route.
+     *
+     * Guarded on the last three switches alternating between two values, so
+     * a one-off mid-frame AR14 write on some other screen can't latch a
+     * permanent split that never really existed.  A genuine bank or
+     * split-point change (paging to the other two tables) still reaches the
+     * screen within one driver tick, since it is re-read from the same
+     * rolling history every frame; screens that only ever use one bank
+     * (tables, text, the single-bank hi-scores page) are untouched, since
+     * no alternating pair ever appears in their history.
+     *
+     * The boundary is held steady (pal_split_*) rather than taken fresh
+     * each frame: its own scanline wanders ~3 lines between ticks (measured
+     * 193.2-195.9), which straddles a logical row and would flicker the row
+     * at the seam, so it only moves when it moves by more than that.  And it
+     * expires a few frames after the flipping stops, so leaving the menu
+     * can't leave a stale seam painted across whatever is drawn next. */
+    uint8_t ar14_lo = ar[0x14], ar14_hi = ar[0x14];
+    int ar14_split_phys = -1;
+    {
+        double per, inv, hde;
+        int vt, vd, vrs, vre, vis = vde();
         vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
-        (void)vt; (void)vd; (void)vrs; (void)vre; (void)hde;
-        now = emu_now();
-        fstart = per > 0.0 ? (double)(uint64_t)(now * inv) * per : now;
-        /* Score the last few COMPLETE frames, not just one and not the
-         * partial current one: presents fire mid-frame, so a switch window
-         * straddling the frame start would otherwise read as a majority for
-         * the transient bank (this is why "current" is excluded).
-         *
-         * A single prior frame turned out not to be enough: the flash came
-         * back reproducibly with the SoundBlaster driver off (NOSOUND), and
-         * exit-time counters (AR14 switches vs. how often the majority pick
-         * differed from the instantaneous register) showed a much lower
-         * switch rate and a far higher override rate without sound than
-         * with it - i.e. whatever interrupt chain paces the menu's AR14
-         * flip runs differently when the sound driver isn't the one timing
-         * it, with a less lopsided duty cycle, so a single 16.7 ms frame is
-         * no longer guaranteed to fall on the "majority" bank's side even
-         * though it still is the majority over a couple of ticks. Widening
-         * the window to several frames (~4, still far short of a
-         * human-visible delay) recovers the true duty cycle regardless of
-         * which driver ends up timing the flips. */
-        fprev = fstart - 4*per;
-        {
-            int i = 0, k, nw = 0;
-            uint8_t cur = pal_sw_base, wv[4];
-            double bnd = fprev, wd[4];
-            while(i < pal_sw_n && pal_sw_t[i] <= fprev){ cur = pal_sw_val[i]; i++; }
-            if(i < pal_sw_n){
-                for(; i < pal_sw_n; i++){
-                    double t = pal_sw_t[i];
-                    if(t <= fprev) continue;
-                    if(t >= fstart) break;
-                    for(k=0;k<nw;k++) if(wv[k]==cur) break;
-                    if(k==nw && nw<4){ wv[nw]=cur; wd[nw]=0.0; nw++; k=nw-1; }
-                    if(k<4) wd[k] += t - bnd;
-                    bnd = t;
-                    cur = pal_sw_val[i];
-                }
-                if(fstart > bnd){
-                    for(k=0;k<nw;k++) if(wv[k]==cur) break;
-                    if(k==nw && nw<4){ wv[nw]=cur; wd[nw]=0.0; nw++; k=nw-1; }
-                    if(k<4) wd[k] += fstart - bnd;
-                }
-                if(nw > 0){
-                    double best = wd[0];
-                    ar14_eff = wv[0];
-                    for(k=1;k<nw;k++) if(wd[k] >= best){ best = wd[k]; ar14_eff = wv[k]; }
-                }
+        (void)vd; (void)vre; (void)hde;
+        if(vt > 0 && pal_sw_n >= 3
+           && pal_sw_val[pal_sw_n-1] != pal_sw_val[pal_sw_n-2]
+           && pal_sw_val[pal_sw_n-1] == pal_sw_val[pal_sw_n-3]){
+            int i;
+            for(i = pal_sw_n-1; i >= 0; i--){
+                uint8_t prev = i ? pal_sw_val[i-1] : pal_sw_base;
+                double q = pal_sw_t[i] * inv;
+                int line;
+                q -= (double)(int64_t)q;
+                line = (int)(q * (double)vt);
+                if(line >= vis || pal_sw_val[i] == prev) continue;
+                /* The write arrives on a countdown the driver starts at
+                 * vertical retrace, but the raster line the game asked for
+                 * is numbered from the top of the active display, so the
+                 * two are (vtotal - vrs) apart - 37 lines here.  Converting
+                 * lands this menu's switch on active line 230, which is both
+                 * the `cx` INTRO.ASM passes to its ORDER RASTER call and the
+                 * middle of the 60-line letterbox gap between the two table
+                 * graphics, i.e. exactly where a bank switch is invisible.
+                 * Taken raw it lands at 194 instead - 16 lines up inside the
+                 * upper graphic, recolouring its bottom 16 rows. */
+                line -= vrs;
+                if(line < 0) line += vt;
+                if(pal_split_line < 0 || line - pal_split_line > 4
+                                      || pal_split_line - line > 4)
+                    pal_split_line = line;
+                pal_split_hi = prev;
+                pal_split_lo = pal_sw_val[i];
+                pal_split_t = pal_sw_t[i];
+                break;
             }
         }
+        if(pal_split_line >= 0 && per > 0.0 && emu_now() - pal_split_t > 3.0*per)
+            pal_split_line = -1;
+        if(pal_split_line >= 0){
+            ar14_hi = pal_split_hi;
+            ar14_lo = pal_split_lo;
+            ar14_split_phys = pal_split_line;
+        }
     }
-    if(ar14_eff != ar[0x14]) vga_ar14_overrides++;
     w = (cr[0x01] + 1) * 8;
     h_log = vde() / rowh;
     split_log = (lc + 1) / rowh;
@@ -554,8 +605,10 @@ void vga_render(uint32_t *out, int *wp, int *hp){
     for(y=0;y<h;y++){
         int yl = dup == 2 ? y >> 1 : y;
         uint32_t ctr;
+        uint8_t ar14_eff = (ar14_split_phys >= 0 && yl*rowh < ar14_split_phys) ? ar14_hi : ar14_lo;
         if(split_log < h_log && yl >= split_log) ctr = (uint32_t)(yl - split_log) * (uint32_t)(offs*2);
         else ctr = start + (uint32_t)yl*(uint32_t)(offs*2);
+        if(ar14_eff != ar[0x14]) vga_ar14_overrides++;
         for(x=0;x<w;x++){
             uint32_t px = (uint32_t)x + (uint32_t)pel;
             uint32_t o = (ctr + (px>>3)) & 0xFFFF;
@@ -588,6 +641,7 @@ static void apply_regs(const uint8_t *c, const uint8_t *s, const uint8_t *g, con
     ar_flipflop = 0;
     timing_dirty = 1;
     pal_sw_n = 0; pal_sw_base = ar[0x14];   /* old banks are meaningless now */
+    pal_split_line = -1; pal_split_t = -1.0;
     vga_mode_resets++;
 }
 

@@ -87,6 +87,7 @@ void vga_vscan_poll(void);           /* per-batch sampler, no-op unless set */
 void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
 extern int vga_smooth;               /* -nosmooth disables scroll interp */
 extern int vga_dmdlog;               /* -dmd: log DMD VRAM step cadence */
+extern int vga_paldbg;               /* -paldbg: log AR14 writes w/ frame phase */
 
 /* ---------------------------------------------------------------- BIOS --- */
 void bios_init(void);
