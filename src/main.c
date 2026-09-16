@@ -403,7 +403,6 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
         else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
-        else if(!strcmp(argv[i],"-nosmooth")) vga_smooth = 0;
         else if(!strcmp(argv[i],"-dmd")) vga_dmdlog = 1;
         else if(!strcmp(argv[i],"-paldbg")) vga_paldbg = 1;
         else if(!strcmp(argv[i],"-vscan") && i+1<argc) vscan_step = strtoull(argv[++i],NULL,10);
@@ -601,10 +600,6 @@ int main(int argc, char **argv){
              st1_calls, st1_bit0, st1_bit3); }
     { extern void st1_report(void); st1_report(); }
     fantasies_ballgap_report();
-    { extern unsigned long smooth_calls, smooth_interp, smooth_late;
-      if(smooth_calls)
-        printf("[pfemu] smooth-scroll: %lu presents, %lu interpolated (%.2f%%), %lu past-last\n",
-               smooth_calls, smooth_interp, smooth_interp*100.0/smooth_calls, smooth_late); }
     { extern unsigned long vsync_edges;
       printf("[pfemu] vsync edges seen = %lu (%.1f/s)\n",
              vsync_edges, vsync_edges/(emu_time>0?emu_time:1)); }

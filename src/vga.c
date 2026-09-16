@@ -230,7 +230,8 @@ static unsigned long vscan_logged = 0;
 
 /* DMD step cadence (-dmd): the dot-matrix panel lives in VRAM chunks 46-47
  * (see dmd.log mask 0000C00000000000) and ignores the CRTC start address, so
- * viewport smoothing can't touch it.  This watches chunks 44-49 and logs
+ * viewport interpolation could not have touched it.  This watches chunks
+ * 44-49 and logs
  * every transition with delta-t since the previous DMD change: the number
  * tells us whether choppy text is slow game pacing (design, off-limits) or
  * something pathological (port defect, fair game).  Sampling every 4096
@@ -323,31 +324,6 @@ void vga_vscan_poll(void){
             emu_now(), line, vt, changed, (unsigned long long)mask);
 }
 
-/* Smooth scrolling: the engine re-asserts the CRTC start address every
- * other frame (~30 Hz flip cadence), so sampling it raw steps visibly.
- * Interpolate between the last two published positions per present instead
- * of changing any game state.  -nosmooth disables.  hi/lo register pairs
- * arrive microseconds apart and would look like tiny extra flips, so writes
- * within 2 ms extend the current event rather than starting a new one;
- * jumps over half the address space are taken as wraps, not motion. */
-int vga_smooth = 1;
-static uint32_t sm_prev = 0, sm_last = 0, sm_seen = 0;
-static double sm_prev_t = 0.0, sm_last_t = 0.0;
-static int sm_have = 0;
-
-static void smooth_note(uint32_t s){
-    double now = emu_now();
-    if(!sm_have){ sm_prev = sm_last = sm_seen = s; sm_prev_t = sm_last_t = now; sm_have = 1; return; }
-    if(s == sm_seen) return;
-    sm_seen = s;
-    if(now - sm_last_t < 0.002){ sm_last = s; sm_last_t = now; return; }
-    sm_prev = sm_last; sm_prev_t = sm_last_t;
-    sm_last = s; sm_last_t = now;
-}
-
-/* Instrumentation for the question "does this ever actually interpolate?" -
- * smooth_calls counts presents that reached it, smooth_interp the ones that
- * returned a blended position rather than the raw register. */
 double vga_last_start_write = -1.0;
 double vga_last_start_line = -1.0;
 
@@ -447,24 +423,6 @@ static uint32_t vga_display_start(uint32_t live){
 }
 
 
-unsigned long smooth_calls = 0, smooth_interp = 0, smooth_late = 0;
-
-static uint32_t smooth_start(uint32_t actual){
-    double now, r, d;
-    smooth_calls++;
-    if(!vga_smooth || !sm_have) return actual;
-    if(sm_last == sm_prev) return actual;
-    if(sm_last_t <= sm_prev_t) return actual;
-    d = (double)(int32_t)(sm_last - sm_prev);
-    if(d > 32768.0 || d < -32768.0) return actual;   /* wrap, not motion */
-    now = emu_now();
-    r = (now - sm_prev_t) / (sm_last_t - sm_prev_t);
-    if(r <= 0.0) return sm_prev;
-    if(r >= 1.0){ smooth_late++; return actual; }
-    smooth_interp++;
-    return (uint32_t)((double)sm_prev + d * r);
-}
-
 void vga_io_w(uint16_t p, uint8_t v){
     switch(p){
     case 0x3C0:
@@ -514,7 +472,6 @@ void vga_io_w(uint16_t p, uint8_t v){
         if(cr_idx==0x0C && cr[0x0C]!=v) vga_startaddr_changes++;
         cr[cr_idx & 63] = v; vga_dirty = 1; timing_dirty = 1;
         if(cr_idx==0x0C || cr_idx==0x0D){
-            smooth_note((((uint32_t)cr[0x0C])<<8) | cr[0x0D]);
             vga_last_start_write = emu_now();   /* for -balldbg skew analysis */
             vga_last_start_line = vga_frameline(NULL);
             sa_note((((uint32_t)cr[0x0C])<<8) | cr[0x0D]);
@@ -561,7 +518,7 @@ void vga_render(uint32_t *out, int *wp, int *hp){
     if(vga_nodbl) dbl = 1;
     int offs = cr[0x13] ? cr[0x13] : 40;
     int is256 = (ar[0x10] & 0x40) != 0 || vga_force256;
-    uint32_t start = smooth_start(vga_display_start((((uint32_t)cr[0x0C])<<8) | cr[0x0D]));
+    uint32_t start = vga_display_start((((uint32_t)cr[0x0C])<<8) | cr[0x0D]);
     int lc = line_compare();
     int pel = ar[0x13] & 0x0F;
 
@@ -809,7 +766,9 @@ void vga_set_mode_bios(int mode){
     bios_mode = mode;
     memset(vga_vram,0,sizeof(vga_vram));
     default_dac();
-    sm_have = 0;   /* drop scroll history: old positions are meaningless now */
+    /* old start addresses mean nothing in the new mode: drop the retrace
+     * latch history and the ball pairing along with them */
+    vga_reset_start_pairing();
     switch(mode & 0x7F){
     case 0x13: apply_regs(c_13h,s_13h,g_13h,a_13h,0x63); break;
     case 0x12: apply_regs(c_12h,s_12h,g_12h,a_12h,0xE3); break;

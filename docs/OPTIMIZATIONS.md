@@ -359,23 +359,57 @@ emulated time, scan-line phase and caller; `-vscan N` hashes VRAM in 64
 stderr is now only reattached to the parent console when it isn't
 redirected, so `2>file` captures logs from the windowed binary.
 
-## 19. Smooth scrolling via start-address interpolation (`src/vga.c`)
+## 19. Smooth scrolling via start-address interpolation - REMOVED, never worked
 
-The §18 timeline settled it: the engine re-asserts the start address every
-other frame (30 Hz flip cadence — authentic, also on period hardware), which
-reads as stepping. Since gameplay itself is off-limits but presentation may
-be improved, presents now interpolate: `vga_render` uses a host-side blend
-of the last two published start positions by emulated time instead of the
-raw register. No game state changes — physics, logic and timing are
-untouched; only displayed rows shift smoothly between the game's own
-positions. Details: hi/lo register pairs arriving microseconds apart extend
-one flip event instead of starting a new one (no torn origins); jumps over
-half the address space are treated as wraps; history resets on mode set;
-`-nosmooth` restores raw sampling. DMD text steps are deliberately *not*
-smoothed — those are game-redrawn content pacing, i.e. gameplay, verified
-game-driven by the mask timeline (writes appear as the game makes them, not
-pipeline-batched). The scan
-also logs the 64-bit changed-chunk mask (`m=`), which localizes writes:
+**This section described a feature that never did anything. It has been
+removed (see §29). The text below is kept because §20, §26 and §27 refer to
+it, and because the claim it made was believed for several releases.**
+
+The original claim: the §18 timeline showed the engine re-asserting the start
+address every other frame (30 Hz flip cadence - authentic, also on period
+hardware), which reads as stepping. Since gameplay is off-limits but
+presentation may be improved, `vga_render` would interpolate between the last
+two published start positions by emulated time instead of sampling the raw
+register, with `-nosmooth` to restore raw sampling.
+
+It never ran. `smooth_start()` computed
+
+```c
+r = (now - sm_prev_t) / (sm_last_t - sm_prev_t);
+if (r >= 1.0) return actual;      /* always taken */
+```
+
+where both `sm_prev_t` and `sm_last_t` are the times of past start-address
+writes and `now` is always later than `sm_last_t`. With writes ~33 ms apart
+and presents ~16.7 ms apart, `r` lands between 1 and 2 every time and the raw
+register was returned unchanged. It was written as if interpolating toward a
+future sample, but only two past samples exist. Instrumented and confirmed at
+0 interpolated out of 7733 presents (7385 hitting the early-out), and a blind
+`-nosmooth` A/B showed no perceptible difference, as it could not.
+
+So the 30 Hz scroll stepping was never smoothed, and what everyone has been
+looking at all along is the raw camera. Judged on that basis the stepping was
+found acceptable - it is what the original did - so the feature was removed
+rather than repaired.
+
+What repairing it would have taken, if it is ever wanted: either extrapolate
+forward from the last two positions (no added latency, but it guesses and
+overshoots when the camera stops or reverses), or render at
+`now - one_flip_interval` and interpolate between two known positions
+(correct, but ~33 ms of background latency). Either way the result must be
+quantised to whole rows - the value is a byte address, the row pitch is 84
+bytes, and in mode X one address unit is 4 pixels *horizontally*, so an
+interpolated start that is not a multiple of the pitch shears the image
+diagonally rather than scrolling it. And critically, interpolating the
+viewport under a sprite the game draws at 30 Hz is exactly what
+desynchronises them: it would reintroduce the camera/ball skew that §27
+fixes, so any revival has to sit downstream of the ball pairing or
+interpolate the ball's drawn position by the same amount.
+
+DMD text steps were deliberately never smoothed - those are game-redrawn
+content pacing, i.e. gameplay, verified game-driven by the mask timeline
+(writes appear as the game makes them, not pipeline-batched). The `-vscan`
+scan also logs the 64-bit changed-chunk mask (`m=`), which localizes writes:
 low chunks are the split-screen dot-matrix region, higher chunks the
 scrolling playfield, so their timelines separate game-driven DMD updates
 from playfield draws.
@@ -991,3 +1025,23 @@ histogram resets when a new table image loads or when the CRTC timing changes,
 so a hi-res toggle - which moves `MIDDLE_RASTER`, and with it the bands -
 re-learns instead of pinning the window to stale geometry. `-balldbg` reports
 the derived window at exit.
+
+## 29. Removing the inert smooth-scroll path (`src/vga.c`, `src/main.c`)
+
+§19's `smooth_start()` was measured to interpolate on 0 of 7733 presents and
+was returning the raw register on every call (the mechanism is written up in
+the rewritten §19). With the scroll stepping judged acceptable as-is - which
+is a judgement about the *unsmoothed* picture, since that is what the feature
+was actually showing - it was removed rather than repaired: `smooth_start()`,
+`smooth_note()`, the `sm_*` history, the `smooth_calls`/`_interp`/`_late`
+counters, `vga_smooth`, and the `-nosmooth` flag are gone, and §19 now
+records what was found instead of the benefit it claimed.
+
+One live detail came out of the removal. `vga_set_mode_bios()` cleared
+`sm_have` to drop stale scroll history on a mode set; the modern equivalent
+of that history is the retrace latch's write ring and the ball/camera
+pairing (§27), so the reset now calls `vga_reset_start_pairing()`. Old start
+addresses are just as meaningless to those after a mode change, and without
+this the latch could have served a pre-mode-set value into the new mode.
+
+Nothing else changes: the feature had no effect to lose.

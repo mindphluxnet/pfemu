@@ -85,7 +85,6 @@ extern int vga_flipdbg;              /* -flipdbg: log page flips w/ phase */
 extern uint64_t vscan_step;          /* -vscan N: VRAM mutation timeline */
 void vga_vscan_poll(void);           /* per-batch sampler, no-op unless set */
 void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
-extern int vga_smooth;               /* -nosmooth disables scroll interp */
 extern int vga_dmdlog;               /* -dmd: log DMD VRAM step cadence */
 extern int vga_paldbg;               /* -paldbg: log AR14 writes w/ frame phase */
 double vga_scanline_now(int *vtotal_out); /* frame-relative scan line, for -balldbg */
