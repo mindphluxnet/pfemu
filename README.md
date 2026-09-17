@@ -28,7 +28,9 @@ For full disclosure: this emulator was developed with the help of AI models -
 Anthropic's Claude Opus 5 (initial reverse engineering work, MVP emulator
 code), OpenAI's ChatGPT Sol 5.6 (additional features), and Meta AI's
 Muse Spark 1.3 (additional reverse engineering, trainer and replay features,
-UI redesign, testing).
+UI redesign, testing). The original source code, published at
+https://github.com/historicalsource/pinballfantasies, was used as reference
+during development.
 
 ## Quick start
 
