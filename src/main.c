@@ -86,13 +86,14 @@ static void fail_msg(const char *fmt, ...){
 }
 
 /* ----------------------------------------------------------------- OSD --
- * Host-only on-screen notification, drawn straight into the presented
- * framebuffer after vga_render(), so it is independent of whatever video
- * page or mode the game is using and there is nothing the guest can see or
- * overwrite.  It started out as the trainer's confirmation message and lived
- * in src/fantasies.c; the volume keys want the same thing and are not game
- * behaviour, so it sits here with the rest of the host presentation and
- * fantasies.c calls in like any other caller. */
+ * Host-only on-screen notification (volume level, trainer toggles),
+ * composed into the back buffer in screen space like the session badges:
+ * independent of whatever video page or mode the game is using, nothing
+ * the guest can see or overwrite, crisp system text, and invisible to the
+ * -shotevery/-shot/screenshot captures.  It started out as the trainer's
+ * confirmation message and lived in src/fantasies.c; the volume keys want
+ * the same thing and are not game behaviour, so it sits here with the rest
+ * of the host presentation and fantasies.c calls in like any other caller. */
 static char osd_text[48] = "";
 static double osd_until = 0;
 
@@ -115,9 +116,8 @@ void osd_clear(void){
  * compose tear-free in one blit, and can never leak into
  * -shotevery/-shot/screenshot captures (those read the framebuffer, which
  * badges never touch).  Deliberately minimal and static (no blink,
- * 1x glyphs, one corner): they must never cover playfield or distract.
- * (The transient OSD text stays image-space on purpose: it is centered
- * content that should scale with the picture.) */
+ * one corner): they must never cover playfield or distract.  The transient
+ * OSD notice below joins them in screen space (bottom-center). */
 /* Badge typeface and swatches, created once (process-lifetime objects, like
  * the back buffer itself).  Segoe UI is the system font on every supported
  * Windows; the stock GUI font is the fallback, never a failure. */
@@ -178,43 +178,32 @@ static void rec_draw_dc(HDC dc){
     SelectObject(dc, oldf);
 }
 
-void osd_draw(uint32_t *fb_, int w, int h){
-    int scale, len, tw, th, x0, y0, i, x, y;
+void osd_draw_screen(HDC dc){
+    int len, boxw, boxh, x0, y0;
+    SIZE sz;
+    RECT r;
+    HFONT oldf;
+    int oldbk;
+    COLORREF oldtx;
     if(!osd_text[0] || emu_time >= osd_until) return;
-    if(!fb_ || w <= 0 || h <= 0) return;
+    badge_gdi_init();
+    if(!badge_font || !badge_box) return;
     len = (int)strlen(osd_text);
-    scale = (w >= 160 && (len+1)*8*2 + 8 <= w) ? 2 : 1;
-    tw = len*8*scale + 8*scale;
-    if(tw > w) tw = w;
-    th = 8*scale + 6*scale;
-    x0 = (w - tw) / 2;
-    if(x0 < 0) x0 = 0;
-    y0 = h - th - 6*scale;
-    if(y0 < 0) y0 = 0;
-    for(y=0; y<th; y++){
-        for(x=0; x<tw; x++){
-            int px = x0+x, py = y0+y;
-            if(px>=0 && px<w && py>=0 && py<h) fb_[py*w+px] = 0x00181818u;
-        }
-    }
-    for(i=0; i<len; i++){
-        uint8_t ch = (uint8_t)osd_text[i];
-        int cx = x0 + 4*scale + i*8*scale;
-        int cy = y0 + 3*scale;
-        int r, c2, sx, sy;
-        for(r=0; r<8; r++){
-            uint8_t bits = vga_font8x8[ch*8+r];
-            for(c2=0; c2<8; c2++){
-                if(!((bits >> (7-c2)) & 1)) continue;
-                for(sy=0; sy<scale; sy++){
-                    for(sx=0; sx<scale; sx++){
-                        int px = cx + c2*scale + sx, py = cy + r*scale + sy;
-                        if(px>=0 && px<w && py>=0 && py<h) fb_[py*w+px] = 0x00FFE040u;
-                    }
-                }
-            }
-        }
-    }
+    oldf = (HFONT)SelectObject(dc, badge_font);
+    GetTextExtentPoint32A(dc, osd_text, len, &sz);
+    boxw = sz.cx + 24;
+    boxh = sz.cy + 12;
+    if(win_w < boxw+16 || win_h < boxh+16){ SelectObject(dc, oldf); return; }
+    x0 = (win_w - boxw) / 2;
+    y0 = win_h - boxh - 12;
+    r.left = x0; r.top = y0; r.right = x0+boxw; r.bottom = y0+boxh;
+    FillRect(dc, &r, badge_box);
+    oldbk = SetBkMode(dc, TRANSPARENT);
+    oldtx = SetTextColor(dc, RGB(0xFF,0xE0,0x40));
+    TextOutA(dc, x0+12, y0+(boxh-sz.cy)/2, osd_text, len);
+    SetTextColor(dc, oldtx);
+    SetBkMode(dc, oldbk);
+    SelectObject(dc, oldf);
 }
 
 static void set_fullscreen(int on){
@@ -506,9 +495,10 @@ void plat_present(const uint32_t *pix, int w, int h){
     }
     SetStretchBltMode(dst, COLORONCOLOR);
     StretchDIBits(dst, dx,dy,dw,dh, 0,0,w,h, pix, &bmi, DIB_RGB_COLORS, SRCCOPY);
-    /* Screen-space badges go last, in window pixels: the REC indicator in
-     * particular must sit in the true window corner (see rec_draw_dc),
-     * not inside the stretched picture. */
+    /* Screen-space overlays go last, in window pixels: the OSD notice and
+     * the REC/PLAY badges (see rec_draw_dc).  None of it touches the
+     * framebuffer, so captures stay clean. */
+    osd_draw_screen(dst);
     rec_draw_dc(dst);
     if(dst == back_dc)
         BitBlt(hdc, 0,0,win_w,win_h, dst, 0,0, SRCCOPY);
@@ -1160,7 +1150,6 @@ int main(int argc, char **argv){
                 screenshot_pending = 0;
                 take_screenshot(fb, fbw, fbh);
             }
-            osd_draw(fb, fbw, fbh);
             plat_present(fb, fbw, fbh);
           } }
         plat_sleep_ms(1);

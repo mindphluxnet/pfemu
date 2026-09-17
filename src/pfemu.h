@@ -282,7 +282,6 @@ void plat_set_fullscreen(int on);     /* runtime toggle; also Alt+Enter in-windo
  * Used by the volume keys and by the trainer's hotkeys in src/fantasies.c. */
 void osd_show(const char *text);
 void osd_clear(void);
-void osd_draw(uint32_t *fb, int w, int h);
 
 /* Host output gain, 0-100 (src/sound.c).  Set from the launcher's slider, the
  * -vol switch, or the -/+ keys in the game window.  100 is the level every
