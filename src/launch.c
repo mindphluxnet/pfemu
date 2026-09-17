@@ -393,11 +393,11 @@ static void write_fullscreen_cfg(const char *dir, int on){
  * selects for each (see cfg_sblaster above), which is more use than the
  * original wording. */
 static const char *quality_labels[5] = {
-    "1 - 12000 Hz (lowest)",
+    "1 - 12000 Hz",
     "2 - 16000 Hz",
     "3 - 20000 Hz",
     "4 - 21000 Hz",
-    "5 - 21000 Hz (highest)"
+    "5 - 21000 Hz (extended mix)"
 };
 
 typedef struct {
@@ -756,25 +756,32 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     case WM_CREATE: {
         CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
         HWND c;
-        int i, y, base;
+        int i, y, gh, gy;
         SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         st = (LaunchState*)cs->lpCreateParams;
         st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        y = 10;
         c = CreateWindowExA(0,"STATIC","Pinball Fantasies",WS_CHILD|WS_VISIBLE,
-                            12,12,336,16,h,0,cs->hInstance,0);
+                            14,y,400,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        base = 0;
+        y += 22;
+        /* Game group: install picker (when needed) + read-only detection
+         * line with Details for the full report. */
+        gy = y;
+        gh = (st->ninst > 1) ? 70 : 46;
+        c = CreateWindowExA(0,"BUTTON","Game",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            12,gy,416,gh,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         if(st->ninst > 1){
-            /* Only shown when several installations sit side by side, and it
-             * picks a *directory*, not a version - what is in each one is
+            /* Picks a *directory*, not a version - what is in each one is
              * whatever its hashes said it is. */
             int k;
             c = CreateWindowExA(0,"STATIC","Installation:",WS_CHILD|WS_VISIBLE,
-                                24,35,80,16,h,0,cs->hInstance,0);
+                                24,gy+20,80,16,h,0,cs->hInstance,0);
             SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
             st->hInstall = CreateWindowExA(0,"COMBOBOX","",
                                 WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                                108,32,240,240,h,(HMENU)ID_INSTALL,cs->hInstance,0);
+                                106,gy+18,292,240,h,(HMENU)ID_INSTALL,cs->hInstance,0);
             SendMessageA(st->hInstall,WM_SETFONT,(WPARAM)st->hFont,0);
             for(k=0;k<st->ninst;k++){
                 char item[200];
@@ -783,142 +790,144 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                 SendMessageA(st->hInstall,CB_ADDSTRING,0,(LPARAM)item);
             }
             SendMessageA(st->hInstall,CB_SETCURSEL,st->sel,0);
-            base = 28;
+        } else {
+            st->hInstall = NULL;
         }
-        /* The detection result, read-only.  There is nothing here for the
-         * user to choose: the files decide.  Details prints the whole report,
-         * which is the only place a failure explains itself. */
+        /* The detection result, read-only: the files decide, Details explains. */
         st->hDetected = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
-                            24,34+base,258,16,h,0,cs->hInstance,0);
+                            24,gy+gh-22,296,16,h,0,cs->hInstance,0);
         SendMessageA(st->hDetected,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hDetails = CreateWindowExA(0,"BUTTON","Details",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            288,31+base,60,22,h,(HMENU)ID_DETAILS,cs->hInstance,0);
+                            328,gy+gh-26,70,22,h,(HMENU)ID_DETAILS,cs->hInstance,0);
         SendMessageA(st->hDetails,WM_SETFONT,(WPARAM)st->hFont,0);
-        base += 22;
-        st->hSound = CreateWindowExA(0,"BUTTON","Sound on (SoundBlaster)",
+        y += gh + 8;
+        /* Sound group: checkbox carries the hardware detail, the combo
+         * carries the rates - no extra notes needed. */
+        gy = y; gh = 104;
+        c = CreateWindowExA(0,"BUTTON","Sound",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            12,gy,416,gh,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hSound = CreateWindowExA(0,"BUTTON","Sound on (SoundBlaster 220h / IRQ 7)",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,36+base,324,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
+                            24,gy+18,374,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
         SendMessageA(st->hSound,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
-        c = CreateWindowExA(0,"STATIC",
-                            "On: SoundBlaster 220h/IRQ 7. Off: silent.\r\n"
-                            "Writes SOUND.CFG, game files stay pristine.",
-                            WS_CHILD|WS_VISIBLE,
-                            24,60+base,324,28,h,(HMENU)ID_NOTE,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        y = 92+base;
         /* Quality: SETSOUND's five-notch setting, written straight to
          * SOUND.CFG byte 0x14 for the driver to read. */
         c = CreateWindowExA(0,"STATIC","Quality:",WS_CHILD|WS_VISIBLE,
-                            24,y+3,100,16,h,0,cs->hInstance,0);
+                            24,gy+44,70,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hQuality = CreateWindowExA(0,"COMBOBOX","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                            128,y,180,200,h,(HMENU)ID_QUALITY,cs->hInstance,0);
+                            100,gy+42,230,200,h,(HMENU)ID_QUALITY,cs->hInstance,0);
         SendMessageA(st->hQuality,WM_SETFONT,(WPARAM)st->hFont,0);
         for(i=0;i<5;i++)
             SendMessageA(st->hQuality,CB_ADDSTRING,0,(LPARAM)quality_labels[i]);
         SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
-        y += 24;
-        c = CreateWindowExA(0,"STATIC",
-                            "Driver mixing rate. Higher costs emulated 386 time.",
-                            WS_CHILD|WS_VISIBLE,24,y,324,14,h,0,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        y += 20;
         /* Volume: host-side only, applied where waveOut is fed. */
         c = CreateWindowExA(0,"STATIC","Volume:",WS_CHILD|WS_VISIBLE,
-                            24,y+6,100,16,h,0,cs->hInstance,0);
+                            24,gy+70,70,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hVolume = CreateWindowExA(0,TRACKBAR_CLASSA,"",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|TBS_HORZ|TBS_AUTOTICKS,
-                            124,y,180,28,h,(HMENU)ID_VOLUME,cs->hInstance,0);
+                            96,gy+66,190,28,h,(HMENU)ID_VOLUME,cs->hInstance,0);
         SendMessageA(st->hVolume,TBM_SETRANGE,TRUE,MAKELPARAM(0,100));
         SendMessageA(st->hVolume,TBM_SETTICFREQ,25,0);
         SendMessageA(st->hVolume,TBM_SETPAGESIZE,0,10);
         SendMessageA(st->hVolume,TBM_SETPOS,TRUE,st->volume);
         st->hVolLabel = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_RIGHT,
-                            306,y+6,42,16,h,(HMENU)ID_VOLLABEL,cs->hInstance,0);
+                            290,gy+70,44,16,h,(HMENU)ID_VOLLABEL,cs->hInstance,0);
         SendMessageA(st->hVolLabel,WM_SETFONT,(WPARAM)st->hFont,0);
         set_vol_label(st);
-        y += 36;
+        y += gh + 8;
+        /* Game options in two columns instead of six stacked rows. Row-major
+         * order preserves the PINBALL.CFG layout: Balls|Angle, Scrolling|
+         * Music, Resolution|Color. */
+        gy = y; gh = 94;
+        c = CreateWindowExA(0,"BUTTON","Game options",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            12,gy,416,gh,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         for(i=0;i<6;i++){
-            int k;
+            int k, row = i / 2, col = i % 2;
+            int lx = (col == 0) ? 24 : 218;
+            int cx = (col == 0) ? 110 : 304;
+            int ry = gy + 20 + row * 24;
             c = CreateWindowExA(0,"STATIC",opts[i].label,WS_CHILD|WS_VISIBLE,
-                                24,y+3,100,16,h,0,cs->hInstance,0);
+                                lx,ry+3,82,16,h,0,cs->hInstance,0);
             SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
             st->hOpt[i] = CreateWindowExA(0,"COMBOBOX","",
                                 WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|
                                 CBS_DROPDOWNLIST,
-                                128,y,120,200,h,(HMENU)(INT_PTR)(ID_OPT_FIRST+i),cs->hInstance,0);
+                                cx,ry,94,200,h,(HMENU)(INT_PTR)(ID_OPT_FIRST+i),cs->hInstance,0);
             SendMessageA(st->hOpt[i],WM_SETFONT,(WPARAM)st->hFont,0);
             for(k=0;k<opts[i].n;k++)
                 SendMessageA(st->hOpt[i],CB_ADDSTRING,0,(LPARAM)opts[i].values[k]);
             SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
-            y += 26;
         }
-        y += 6;
-        st->hCheatEnable = CreateWindowExA(0,"BUTTON","Enable trainer ('1'-'3', 'Z')",
+        y += gh + 8;
+        /* Extras: trainer and fullscreen side by side, one shared hint line. */
+        gy = y; gh = 60;
+        c = CreateWindowExA(0,"BUTTON","Extras",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            12,gy,416,gh,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hCheatEnable = CreateWindowExA(0,"BUTTON","Enable trainer",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,y,324,20,h,(HMENU)ID_CHEAT_ENABLE,cs->hInstance,0);
+                            24,gy+18,180,20,h,(HMENU)ID_CHEAT_ENABLE,cs->hInstance,0);
         SendMessageA(st->hCheatEnable,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
-        y += 20;
-        c = CreateWindowExA(0,"STATIC",
-                            "Infinite balls/tilts, ball control\r\n"
-                            "'1'-'3' toggle; down-arrow/'Z' move the ball.",
-                            WS_CHILD|WS_VISIBLE,24,y,324,28,h,0,cs->hInstance,0);
-        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        y += 34;
         st->hFullscreen = CreateWindowExA(0,"BUTTON","Start in fullscreen",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,y,324,20,h,(HMENU)ID_FULLSCREEN,cs->hInstance,0);
+                            218,gy+18,180,20,h,(HMENU)ID_FULLSCREEN,cs->hInstance,0);
         SendMessageA(st->hFullscreen,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
-        y += 30;
-        /* Session record / replay (docs/REPLAY.md section 4): same dialog,
-         * below fullscreen.  CLI -record/-replay and these radios are thin
-         * frontends to the same emu-time injector; the header auto-captures
-         * release, ips, quality and options on record. */
-        c = CreateWindowExA(0,"STATIC","Session:",WS_CHILD|WS_VISIBLE,
-                            24,y+3,56,16,h,0,cs->hInstance,0);
+        c = CreateWindowExA(0,"STATIC",
+                            "Trainer: '1'-'3' toggle, arrows / 'Z' move the ball. Alt+Enter toggles fullscreen.",
+                            WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,24,gy+40,374,14,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        y += gh + 8;
+        /* Session record / replay (docs/REPLAY.md section 4): the group title
+         * replaces the old "Session:" label; CLI -record/-replay are thin
+         * frontends to the same emu-time injector. */
+        gy = y; gh = 76;
+        c = CreateWindowExA(0,"BUTTON","Session",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            12,gy,416,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hModePlay = CreateWindowExA(0,"BUTTON","Play",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_GROUP|BS_AUTORADIOBUTTON,
-                            84,y,56,20,h,(HMENU)ID_MODE_PLAY,cs->hInstance,0);
+                            24,gy+18,60,20,h,(HMENU)ID_MODE_PLAY,cs->hInstance,0);
         SendMessageA(st->hModePlay,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hModeRecord = CreateWindowExA(0,"BUTTON","Record",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
-                            144,y,70,20,h,(HMENU)ID_MODE_RECORD,cs->hInstance,0);
+                            94,gy+18,80,20,h,(HMENU)ID_MODE_RECORD,cs->hInstance,0);
         SendMessageA(st->hModeRecord,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hModeReplay = CreateWindowExA(0,"BUTTON","Replay",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
-                            218,y,70,20,h,(HMENU)ID_MODE_REPLAY,cs->hInstance,0);
+                            184,gy+18,80,20,h,(HMENU)ID_MODE_REPLAY,cs->hInstance,0);
         SendMessageA(st->hModeReplay,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_MODE_PLAY,st->mode==LAUNCH_PLAY?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_MODE_RECORD,st->mode==LAUNCH_RECORD?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_MODE_REPLAY,st->mode==LAUNCH_REPLAY?BST_CHECKED:BST_UNCHECKED);
-        y += 24;
         st->hPathLabel = CreateWindowExA(0,"STATIC","File:",WS_CHILD|WS_VISIBLE,
-                            24,y+3,36,16,h,0,cs->hInstance,0);
+                            24,gy+46,32,16,h,0,cs->hInstance,0);
         SendMessageA(st->hPathLabel,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hPath = CreateWindowExA(0,"EDIT","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,
-                            64,y,216,22,h,(HMENU)ID_REPLAY_PATH,cs->hInstance,0);
+                            60,gy+44,268,22,h,(HMENU)ID_REPLAY_PATH,cs->hInstance,0);
         SendMessageA(st->hPath,WM_SETFONT,(WPARAM)st->hFont,0);
         if(st->replay_path[0]) SetWindowTextA(st->hPath, st->replay_path);
         st->hBrowse = CreateWindowExA(0,"BUTTON","Browse...",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            286,y,62,22,h,(HMENU)ID_BROWSE,cs->hInstance,0);
+                            334,gy+44,64,22,h,(HMENU)ID_BROWSE,cs->hInstance,0);
         SendMessageA(st->hBrowse,WM_SETFONT,(WPARAM)st->hFont,0);
-        y += 30;
+        y += gh + 12;
         c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
-                            184,y+8,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
+                            260,y,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         c = CreateWindowExA(0,"BUTTON","Quit",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            272,y+8,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
+                            344,y,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         apply_mode_ui(h, st);   /* needs the Launch button to exist */
         return 0; }
@@ -1076,7 +1085,7 @@ int show_launcher(LaunchChoice *out){
      * report text to put on the stack for a dialog that runs once. */
     static LaunchState st;
     int sw, sh;
-    int winw = 372, winh = 584;
+    int winw = 458, winh = 536;
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -1105,7 +1114,7 @@ int show_launcher(LaunchChoice *out){
     { int i;
       for(i=0;i<st.ninst;i++)
           if(release_runnable(&st.inst[i])){ st.sel = i; break; } }
-    if(st.ninst > 1) winh += 28;
+    if(st.ninst > 1) winh += 24;
     { const char *dir = cur_game_dir(&st);
       int balls, spring;
       st.sound = read_sound_is_sb(dir);
