@@ -40,6 +40,7 @@
 #include <commdlg.h>
 #include <stdio.h>
 #include "pfemu.h"
+#include "../res/resource.h"
 
 /* Which release is in front of us is not something this dialog decides any
  * more, and not something it reads off a directory name.  src/release.c
@@ -1068,7 +1069,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
 /* Modal launcher.  Returns 1 with *out filled when the user picks Launch,
  * 0 when they quit (caller should exit without booting). */
 int show_launcher(LaunchChoice *out){
-    WNDCLASSA wc;
+    WNDCLASSEXA wc;
     HWND hwnd;
     MSG msg;
     /* static: it now carries a RelResult per installation, which is a lot of
@@ -1078,6 +1079,7 @@ int show_launcher(LaunchChoice *out){
     int winw = 372, winh = 584;
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
+    wc.cbSize = sizeof(wc);
     memset(&st,0,sizeof(st));
     /* The volume slider is a common control; without this its window class
      * is not registered and CreateWindowEx for it just returns NULL. */
@@ -1089,7 +1091,11 @@ int show_launcher(LaunchChoice *out){
     wc.lpszClassName = "pfemu-launcher";
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
-    RegisterClassA(&wc);
+    /* Same app icon as the game window (res/pfemu.ico, IDI_PFEMU). */
+    wc.hIcon = LoadIcon(wc.hInstance, MAKEINTRESOURCE(IDI_PFEMU));
+    wc.hIconSm = (HICON)LoadImage(wc.hInstance, MAKEINTRESOURCE(IDI_PFEMU),
+                                  IMAGE_ICON, 16, 16, 0);
+    RegisterClassExA(&wc);
     /* Every directory that holds an INTRO.PRG, identified by content.  GAME
      * comes first when it exists, then the rest alphabetically, so the
      * default selection is stable rather than filesystem-order. */

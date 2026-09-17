@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <stdarg.h>
 #include "pfemu.h"
+#include "../res/resource.h"
 
 extern void  emu_advance(void);
 extern double emu_time;
@@ -428,16 +429,23 @@ static void suppress_accessibility_shortcuts(void){
 }
 
 void plat_init(const char *title){
-    WNDCLASSA wc;
+    WNDCLASSEXA wc;
     RECT r;
     suppress_accessibility_shortcuts();
     memset(&wc,0,sizeof(wc));
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = wndproc;
     wc.hInstance = GetModuleHandle(NULL);
     wc.lpszClassName = "pfemu";
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    RegisterClassA(&wc);
+    /* App icon (res/pfemu.ico, IDI_PFEMU): the first ICON in the .res becomes
+     * the executable's file icon automatically; the class icons put the same
+     * image in the title bar, taskbar and Alt+Tab switcher. */
+    wc.hIcon = LoadIcon(wc.hInstance, MAKEINTRESOURCE(IDI_PFEMU));
+    wc.hIconSm = (HICON)LoadImage(wc.hInstance, MAKEINTRESOURCE(IDI_PFEMU),
+                                  IMAGE_ICON, 16, 16, 0);
+    RegisterClassExA(&wc);
     r.left=0; r.top=0; r.right=win_w; r.bottom=win_h;
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     hwnd = CreateWindowA("pfemu", title, WS_OVERLAPPEDWINDOW|WS_VISIBLE,
