@@ -15,13 +15,20 @@
  * memory layout you are about to poke.  Get it wrong and the six option
  * bytes land in the middle of the credits strings.
  *
- * So identity comes from content: SHA-256 over INTRO.PRG and TABLE1-4.PRG,
- * matched as a five-file vector against the table below.  INTRO.PRG alone is
- * already unique across all three, but checking all five is what separates a
- * coherent installation from one assembled out of parts - and a mixture is
- * reported as a mixture, never resolved by picking whichever release matches
- * the most files.  Guessing there would mean applying one intro's memory
- * layout to a different intro's code.
+ * So identity comes from content: SHA-256 over the programs a distribution
+ * ships, matched as a whole vector against the table below.  The intro alone
+ * is already unique across all four, but checking every program is what
+ * separates a coherent installation from one assembled out of parts - and a
+ * mixture is reported as a mixture, never resolved by picking whichever
+ * release matches the most files.  Guessing there would mean applying one
+ * intro's memory layout to a different intro's code.
+ *
+ * Which programs those are is not a constant either.  The full game ships
+ * INTRO.PRG and TABLE1-4.PRG; the 1993 five-minute demo ships DEMO.PRG and
+ * PLAND.PRG - an intro and the one table it came with, both renamed.  So a
+ * release names the CodeLayout it uses, a directory is assigned a layout by
+ * which anchor program is in it, and a directory holding two anchors is
+ * ambiguous rather than resolved in favour of either.
  *
  * What is deliberately NOT part of identity:
  *   - the directory name (the whole point of this file);
@@ -153,27 +160,48 @@ static void hex32(const uint8_t d[32], char out[65]){
  * nonzero only where the hash deliberately covers less than the whole file. */
 #include "reltable.h"
 
+/* The two program layouts collected so far.  Order matters only for the
+ * report; a directory is assigned whichever layout's anchor it actually
+ * holds, and holding both anchors is an error rather than a preference. */
+static const CodeLayout layout_full = {
+    "full", { "INTRO.PRG", "TABLE1.PRG", "TABLE2.PRG", "TABLE3.PRG", "TABLE4.PRG" }, 5
+};
+static const CodeLayout layout_demo = {
+    "demo", { "DEMO.PRG", "PLAND.PRG" }, 2
+};
+static const CodeLayout *const layouts[] = { &layout_full, &layout_demo };
+#define NLAYOUTS ((int)(sizeof(layouts)/sizeof(layouts[0])))
+
 /* Per-release runtime metadata.  cfg_buf is the intro's six-byte options
  * structure (see fantasies.c); it is normally re-derived from the loaded
  * image by signature, and this value is the cross-check that the derivation
- * found the right thing.  scroll_clobber / opt_validate say which of the two
- * known "no config file on disk" fallbacks that intro build uses, so a patch
- * that does not match is a real warning in one release and an expected
- * absence in another.  cd_marker is Deluxe's boot-time CD-presence check. */
+ * found the right thing.  Zero is not "unknown" but "this build has none":
+ * the demo's intro carries neither the F5 options menu nor the PINBALL.CFG
+ * that feeds it, so a signature match there would be a contradiction, and
+ * fantasies.c treats it as one.  scroll_clobber / opt_validate say which of
+ * the two known "no config file on disk" fallbacks that intro build uses, so
+ * a patch that does not match is a real warning in one release and an
+ * expected absence in another; a build with no options structure has neither.
+ * cd_marker is Deluxe's boot-time CD-presence check. */
 static const Release releases[] = {
-  { "floppy", "Pinball Fantasies (floppy release)", "PINBALL.EXE",
+  { "floppy", "Pinball Fantasies (floppy release)", "PINBALL.EXE", &layout_full,
     0x49A3, 1, 0, 0, files_floppy, (int)(sizeof(files_floppy)/sizeof(RelFile)) },
-  { "power_pack", "Pinball Power Pack (1996)", "PF.EXE",
+  { "power_pack", "Pinball Power Pack (1996)", "PF.EXE", &layout_full,
     0x4846, 0, 1, 0, files_power_pack, (int)(sizeof(files_power_pack)/sizeof(RelFile)) },
-  { "deluxe", "Pinball Fantasies Deluxe CD-ROM (1995)", "PINBALL.EXE",
+  { "deluxe", "Pinball Fantasies Deluxe CD-ROM (1995)", "PINBALL.EXE", &layout_full,
     0x48D7, 0, 1, 1, files_deluxe, (int)(sizeof(files_deluxe)/sizeof(RelFile)) },
+  { "demo", "Pinball Fantasies 5 Min Demo (1993)", "PFDEMO.EXE", &layout_demo,
+    0, 0, 0, 0, files_demo, (int)(sizeof(files_demo)/sizeof(RelFile)) },
 };
 #define NRELEASES ((int)(sizeof(releases)/sizeof(releases[0])))
 
-/* The five programs that make up a release's code vector, in report order. */
-static const char *code_names[5] = {
-    "INTRO.PRG", "TABLE1.PRG", "TABLE2.PRG", "TABLE3.PRG", "TABLE4.PRG"
-};
+int release_prog_slot(const Release *r, const char *base){
+    int i;
+    if(!r || !r->layout) return -1;
+    for(i=0;i<r->layout->n;i++)
+        if(!_stricmp(r->layout->names[i], base)) return i;
+    return -1;
+}
 
 const Release *release_by_id(const char *id){
     int i;
@@ -239,6 +267,17 @@ static const char *dir_find(const DirList *dl, const char *want){
     return NULL;
 }
 
+/* Does this directory hold the anchor program of any known layout? */
+static const CodeLayout *anchor_in(const char *dir){
+    char probe[700];
+    int i;
+    for(i=0;i<NLAYOUTS;i++){
+        snprintf(probe, sizeof(probe), "%s\\%s", dir, layouts[i]->names[0]);
+        if(GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES) return layouts[i];
+    }
+    return NULL;
+}
+
 /* One level down only, and only to explain the mistake - never to recurse
  * into it and pick a winner.  GAME/FANTASY/INTRO.PRG is a common unpacking
  * result, and "game not found" is a useless thing to say about it. */
@@ -253,8 +292,8 @@ static int nested_install(const char *dir, char *sub, size_t subn){
     do {
         if(!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
         if(fd.cFileName[0] == '.') continue;
-        snprintf(probe, sizeof(probe), "%s\\%s\\INTRO.PRG", dir, fd.cFileName);
-        if(GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES){
+        snprintf(probe, sizeof(probe), "%s\\%s", dir, fd.cFileName);
+        if(anchor_in(probe)){
             snprintf(sub, subn, "%s", fd.cFileName);
             found = 1;
             break;
@@ -311,7 +350,8 @@ int release_detect(const char *dir, RelResult *out){
     int code_have[5];
     const Release *origin[5];
     const Release *cand;
-    int i, j, wrong = 0, foreign = 0;
+    const CodeLayout *lay = NULL;
+    int i, j, ncode, wrong = 0, foreign = 0;
     char hx[65];
 
     memset(out, 0, sizeof(*out));
@@ -334,14 +374,35 @@ int release_detect(const char *dir, RelResult *out){
                   "clean the directory so each DOS name appears once.\n", dl.dupname);
         return 0;
     }
-    if(!dir_find(&dl, "INTRO.PRG")){
-        char sub[64];
+    /* Which shape of distribution is this?  The anchor program answers it,
+     * and two anchors in one directory means two distributions have been
+     * poured into the same folder - which is not a preference to resolve,
+     * since the programs of one release do not run under the other's boot. */
+    for(i=0;i<NLAYOUTS;i++){
+        if(!dir_find(&dl, layouts[i]->names[0])) continue;
+        if(lay){
+            out->state = REL_AMBIGUOUS;
+            snprintf(out->summary, sizeof(out->summary),
+                     "Two installations mixed in one directory (%s and %s).",
+                     lay->names[0], layouts[i]->names[0]);
+            addf(out, "state: ambiguous\nboth %s and %s are here, so this holds "
+                      "more than one\ndistribution.  Give each its own directory.\n",
+                 lay->names[0], layouts[i]->names[0]);
+            return 0;
+        }
+        lay = layouts[i];
+    }
+    if(!lay){
+        char sub[64], anchors[128];
         out->state = REL_ABSENT;
-        addf(out, "state: absent\nINTRO.PRG is not in this directory.\n");
+        anchors[0] = 0;
+        for(i=0;i<NLAYOUTS;i++) addlist(anchors, sizeof(anchors), layouts[i]->names[0]);
+        addf(out, "state: absent\nno game program is in this directory "
+                  "(looked for %s).\n", anchors);
         if(nested_install(out->dir, sub, sizeof(sub))){
             snprintf(out->summary, sizeof(out->summary),
                      "Game files are one level down, in '%s'.", sub);
-            addf(out, "'%s\\INTRO.PRG' does exist - the files look like they are\n"
+            addf(out, "'%s' does hold one - the files look like they are\n"
                       "one directory too deep.  Move the contents of '%s' up.\n",
                  sub, sub);
         } else {
@@ -350,14 +411,18 @@ int release_detect(const char *dir, RelResult *out){
         }
         return 0;
     }
+    ncode = lay->n;
+    addf(out, "programs: %s layout (%s)\n", lay->id, lay->names[0]);
 
-    for(i=0;i<5;i++){
-        code_have[i] = hash_in_dir(out->dir, &dl, code_names[i], 0,
+    for(i=0;i<ncode;i++){
+        code_have[i] = hash_in_dir(out->dir, &dl, lay->names[i], 0,
                                    code_sha[i], &code_size[i]) == 0;
         origin[i] = NULL;
         if(!code_have[i]) continue;
         for(j=0;j<NRELEASES;j++){
-            const RelFile *rf = rel_find(&releases[j], code_names[i]);
+            const RelFile *rf;
+            if(releases[j].layout != lay) continue;
+            rf = rel_find(&releases[j], lay->names[i]);
             if(rf && rf->size == code_size[i] && !memcmp(rf->sha, code_sha[i], 32)){
                 origin[i] = &releases[j];
                 break;
@@ -369,23 +434,24 @@ int release_detect(const char *dir, RelResult *out){
     if(!cand){
         out->state = REL_UNKNOWN;
         snprintf(out->summary, sizeof(out->summary),
-                 "Unrecognised build - INTRO.PRG is not a known release.");
+                 "Unrecognised build - %s is not a known release.", lay->names[0]);
         addf(out, "state: unknown\n"
-                  "INTRO.PRG does not match any release in this build's database.\n"
-                  "Code vector, for adding this release (see docs/VERSIONS.md):\n");
-        for(i=0;i<5;i++){
-            if(!code_have[i]){ addf(out, "  %-11s MISSING\n", code_names[i]); continue; }
+                  "%s does not match any release in this build's database.\n"
+                  "Code vector, for adding this release (see docs/VERSIONS.md):\n",
+             lay->names[0]);
+        for(i=0;i<ncode;i++){
+            if(!code_have[i]){ addf(out, "  %-11s MISSING\n", lay->names[i]); continue; }
             hex32(code_sha[i], hx);
-            addf(out, "  %-11s %8u  %s\n", code_names[i], code_size[i], hx);
+            addf(out, "  %-11s %8u  %s\n", lay->names[i], code_size[i], hx);
         }
         return 0;
     }
 
     out->rel = cand;
-    for(i=1;i<5;i++){
+    for(i=1;i<ncode;i++){
         const RelFile *rf;
         if(!code_have[i]) continue;
-        rf = rel_find(cand, code_names[i]);
+        rf = rel_find(cand, lay->names[i]);
         if(rf && rf->size == code_size[i] && !memcmp(rf->sha, code_sha[i], 32)) continue;
         wrong++;
         if(origin[i]) foreign++;
@@ -398,14 +464,14 @@ int release_detect(const char *dir, RelResult *out){
         out->state = REL_MIXED;
         snprintf(out->summary, sizeof(out->summary),
                  "Mixed installation - programs come from different releases.");
-        addf(out, "state: mixed\nthe five programs do not all come from one release:\n");
-        for(i=0;i<5;i++){
-            if(!code_have[i]) addf(out, "  %-11s MISSING\n", code_names[i]);
-            else if(origin[i]) addf(out, "  %-11s %s\n", code_names[i], origin[i]->id);
+        addf(out, "state: mixed\nthe programs do not all come from one release:\n");
+        for(i=0;i<ncode;i++){
+            if(!code_have[i]) addf(out, "  %-11s MISSING\n", lay->names[i]);
+            else if(origin[i]) addf(out, "  %-11s %s\n", lay->names[i], origin[i]->id);
             else {
                 hex32(code_sha[i], hx);
                 addf(out, "  %-11s unknown  %8u  %s\n",
-                     code_names[i], code_size[i], hx);
+                     lay->names[i], code_size[i], hx);
             }
         }
         addf(out, "no single release's memory layout fits this mixture.\n");
@@ -415,14 +481,14 @@ int release_detect(const char *dir, RelResult *out){
         out->state = REL_MODIFIED;
         snprintf(out->summary, sizeof(out->summary),
                  "Modified install - a program does not match %s.", cand->id);
-        addf(out, "state: modified\nidentified as '%s' from INTRO.PRG, but:\n",
-             cand->id);
-        for(i=1;i<5;i++){
-            const RelFile *rf = rel_find(cand, code_names[i]);
+        addf(out, "state: modified\nidentified as '%s' from %s, but:\n",
+             cand->id, lay->names[0]);
+        for(i=1;i<ncode;i++){
+            const RelFile *rf = rel_find(cand, lay->names[i]);
             if(!code_have[i] || !rf) continue;
             if(rf->size == code_size[i] && !memcmp(rf->sha, code_sha[i], 32)) continue;
             hex32(rf->sha, hx);
-            addf(out, "  %-11s expected %8u  %s\n", code_names[i], rf->size, hx);
+            addf(out, "  %-11s expected %8u  %s\n", lay->names[i], rf->size, hx);
             hex32(code_sha[i], hx);
             addf(out, "  %-11s actual   %8u  %s\n", "", code_size[i], hx);
         }
@@ -434,17 +500,17 @@ int release_detect(const char *dir, RelResult *out){
      * reported separately, exactly as docs/VERSIONS.md asks. */
     {
         int npresent = 0;
-        for(i=0;i<5;i++) npresent += code_have[i];
+        for(i=0;i<ncode;i++) npresent += code_have[i];
         addf(out, "release: %s (%s)\ncode vector: %s\n", cand->id, cand->label,
-             npresent == 5 ? "all five programs match."
-                           : "every program present matches, but not all five are here.");
+             npresent == ncode ? "every program matches."
+                               : "every program present matches, but some are missing.");
     }
     {
         int nmiss = 0, nodd = 0;
         char missnames[512];
         missnames[0] = 0;
-        for(i=0;i<5;i++)
-            if(!code_have[i]){ nmiss++; addlist(missnames, sizeof(missnames), code_names[i]); }
+        for(i=0;i<ncode;i++)
+            if(!code_have[i]){ nmiss++; addlist(missnames, sizeof(missnames), lay->names[i]); }
         for(i=0;i<cand->nfiles;i++){
             const RelFile *rf = &cand->files[i];
             uint8_t sha[32];
@@ -528,16 +594,20 @@ int release_detect(const char *dir, RelResult *out){
                  out->odd, out->odd==1 ? "" : "s", out->odd==1 ? "s" : "");
     else
         snprintf(out->summary, sizeof(out->summary), "%s", cand->label);
-    addf(out, "state: recognized\nboot program: %s\n"
-              "intro options buffer: DS:%04X\n", out->boot, cand->cfg_buf);
+    addf(out, "state: recognized\nboot program: %s\n", out->boot);
+    if(cand->cfg_buf)
+        addf(out, "intro options buffer: DS:%04X\n", cand->cfg_buf);
+    else
+        addf(out, "intro options buffer: none - this build has no options menu\n");
     return 0;
 }
 
 /* --------------------------------------------------------- install search */
 /* GAME is the documented place to put one installation (docs/VERSIONS.md).
- * Any other top-level directory holding an INTRO.PRG is offered as well, so a
- * collection of releases sitting side by side keeps working - the directory
- * is then only a location to look in, never the identity of what is found. */
+ * Any other top-level directory holding the anchor program of a known layout
+ * is offered as well, so a collection of releases sitting side by side keeps
+ * working - the directory is then only a location to look in, never the
+ * identity of what is found. */
 static const char *skip_dirs[] = {
     "src", "docs", "tools", "trainer", "screenshots", "PFEMU-STATE", NULL
 };
@@ -553,9 +623,8 @@ int release_scan(RelResult *out, int max){
     HANDLE h;
     char names[64][64];
     int n = 0, i, k = 0, first;
-    char probe[300];
 
-    if(GetFileAttributesA("GAME\\INTRO.PRG") != INVALID_FILE_ATTRIBUTES)
+    if(anchor_in("GAME"))
         snprintf(names[n++], sizeof(names[0]), "GAME");
     first = n;
 
@@ -566,8 +635,7 @@ int release_scan(RelResult *out, int max){
             if(fd.cFileName[0] == '.') continue;
             if(is_skipped(fd.cFileName) || !_stricmp(fd.cFileName, "GAME")) continue;
             if(strlen(fd.cFileName) >= sizeof(names[0])) continue;
-            snprintf(probe, sizeof(probe), "%s\\INTRO.PRG", fd.cFileName);
-            if(GetFileAttributesA(probe) == INVALID_FILE_ATTRIBUTES) continue;
+            if(!anchor_in(fd.cFileName)) continue;
             if(n < 64) snprintf(names[n++], sizeof(names[0]), "%s", fd.cFileName);
         } while(FindNextFileA(h, &fd));
         FindClose(h);

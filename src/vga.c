@@ -62,6 +62,7 @@ static int timing_vtotal, timing_vde, timing_vrs, timing_vre;
 
 uint32_t vga_retrace_hz = 70;
 
+
 /* --------------------------------------------------------------- helpers */
 static int chain4(void){ return (sq[4] & 0x08) != 0; }
 static int oddeven(void){ return (sq[4] & 0x04) == 0; }   /* 0 in bit2 => odd/even on */
@@ -886,6 +887,7 @@ uint32_t mem_r32(uint32_t a){
 }
 void mem_w8(uint32_t a, uint8_t v){
     a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a == memwatch_addr) memwatch_hit(a, v);
     if(a >= VGA_LO && a < VGA_HI){ vga_mem_w(a,v); return; }
     if(a >= 0xC0000 && a < 0x100000) return;       /* ROM */
     ram[a] = v;
@@ -893,6 +895,8 @@ void mem_w8(uint32_t a, uint8_t v){
 void mem_w16(uint32_t a, uint16_t v){
     a &= a20_mask; a &= (RAM_SIZE-1);
     if(a + 1u >= VGA_LO && a < 0x100000){ mem_w8(a,(uint8_t)v); mem_w8(a+1,(uint8_t)(v>>8)); return; }
+    if(a == memwatch_addr) memwatch_hit(a, (uint8_t)v);
+    else if(a + 1u == memwatch_addr) memwatch_hit(a + 1u, (uint8_t)(v >> 8));
     ram[a]=(uint8_t)v; ram[a+1]=(uint8_t)(v>>8);
 }
 void mem_w32(uint32_t a, uint32_t v){
@@ -900,5 +904,79 @@ void mem_w32(uint32_t a, uint32_t v){
     if(a + 3u >= VGA_LO && a < 0x100000){
         mem_w8(a,(uint8_t)v); mem_w8(a+1,(uint8_t)(v>>8));
         mem_w8(a+2,(uint8_t)(v>>16)); mem_w8(a+3,(uint8_t)(v>>24)); return; }
+    if(a <= memwatch_addr && memwatch_addr < a + 4u)
+        memwatch_hit(memwatch_addr, (uint8_t)(v >> ((memwatch_addr - a) * 8)));
     ram[a]=(uint8_t)v; ram[a+1]=(uint8_t)(v>>8); ram[a+2]=(uint8_t)(v>>16); ram[a+3]=(uint8_t)(v>>24);
+}
+
+/* -vgastate: the whole visible pipeline, printed once at exit.
+ *
+ * "The screen is black" has three completely different causes that look
+ * identical from outside: the palette entries the picture uses are black, the
+ * CRTC start address points at memory nothing drew into, or nothing drew at
+ * all.  Guessing between them is what this exists to stop.  So it prints the
+ * mode and the registers that select the picture, then the DAC entries that
+ * picture can actually reach, and finally what is *in* the memory the CRTC is
+ * pointing at - which is the part no register dump can substitute for. */
+int vga_state_dump_on = 0;
+
+void vga_state_dump(void){
+    uint32_t start, i, plane;
+    int nz_dac = 0, mode256, planar;
+    if(!vga_state_dump_on) return;
+
+    start = ((uint32_t)cr[0x0C] << 8) | cr[0x0D];
+    mode256 = (gc[5] & 0x40) != 0;
+    planar  = gfx_mode() && !mode256;
+
+    printf("[vga] BIOS mode %02X  misc=%02X  gfx=%d  256col=%d  chain4=%d  oddeven=%d\n",
+           bios_mode, misc_out, gfx_mode(), mode256, chain4(), oddeven());
+    printf("[vga] start=%04X offset(stride)=%u linecmp=%u  base=%05X\n",
+           start, cr[0x13], (unsigned)(cr[0x18] | ((cr[0x07] & 0x10) << 4) |
+                                       ((cr[0x09] & 0x40) << 3)), vga_base());
+    printf("[vga] sq: %02X %02X %02X %02X %02X   gc0-8:", sq[0],sq[1],sq[2],sq[3],sq[4]);
+    for(i=0;i<9;i++) printf(" %02X", gc[i]);
+    printf("\n[vga] ar mode=%02X overscan=%02X planeen=%02X AR14=%02X  dacmask=%02X\n",
+           ar[0x10], ar[0x11], ar[0x12], ar[0x14], dac_mask);
+    printf("[vga] ar palette 0-15:");
+    for(i=0;i<16;i++) printf(" %02X", ar[i]);
+    printf("\n");
+
+    for(i=0;i<256;i++) if(dac[i][0] | dac[i][1] | dac[i][2]) nz_dac++;
+    printf("[vga] DAC: %d of 256 entries non-black\n", nz_dac);
+    for(i=0;i<32;i++){
+        if((i & 7) == 0) printf("[vga]   dac %02X:", i);
+        printf(" %02X%02X%02X", dac[i][0], dac[i][1], dac[i][2]);
+        if((i & 7) == 7) printf("\n");
+    }
+
+    /* What the CRTC is actually pointing at.  Per plane, because a planar
+     * screen whose picture is entirely in planes the attribute controller has
+     * masked off is black for a reason no palette dump would show. */
+    if(planar){
+        printf("[vga] VRAM from start (planar, 4 planes x 16000 bytes):\n");
+        for(plane=0; plane<4; plane++){
+            uint32_t nz = 0, hist[4] = {0,0,0,0};
+            for(i=0;i<16000;i++){
+                uint8_t v = vga_vram[(((start + i) & 0xFFFF) * 4 + plane) & 0x3FFFF];
+                if(v) nz++;
+                hist[(v >> 6) & 3]++;
+            }
+            printf("[vga]   plane %u: %5u/16000 non-zero  (00-3F %u, 40-7F %u, 80-BF %u, C0-FF %u)\n",
+                   plane, nz, hist[0], hist[1], hist[2], hist[3]);
+        }
+    } else {
+        uint32_t nz = 0, n = 64000;
+        unsigned counts[16];
+        for(i=0;i<16;i++) counts[i] = 0;
+        for(i=0;i<n;i++){
+            uint8_t v = vga_vram[(start*4 + i) & 0x3FFFF];
+            if(v) nz++;
+            counts[v & 15]++;
+        }
+        printf("[vga] VRAM from start (linear/chain4): %u/%u non-zero\n", nz, n);
+        printf("[vga]   low-nibble histogram:");
+        for(i=0;i<16;i++) printf(" %u", counts[i]);
+        printf("\n");
+    }
 }

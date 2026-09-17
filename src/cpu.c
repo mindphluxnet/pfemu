@@ -30,6 +30,7 @@ static int mod_, reg_, rm_;
 static uint32_t ea, ea_off;
 static int ea_isreg;
 static int no_iret;
+static void cpu_undef(const char *what);   /* defined with the trace ring below */
 
 #define MASK(sz) ((sz)==32?0xFFFFFFFFu:((sz)==16?0xFFFFu:0xFFu))
 
@@ -61,6 +62,7 @@ static inline uint32_t cpu_ld32(uint32_t a){
 }
 static inline void cpu_st8(uint32_t a, uint8_t v){
     a &= a20_mask; a &= (RAM_SIZE-1);
+    if(a == memwatch_addr) memwatch_hit(a, v);
     if(a >= CPU_VGA_LO && a < CPU_VGA_HI){ vga_mem_w(a, v); return; }
     if(a >= 0xC0000 && a < 0x100000) return;   /* ROM */
     ram[a] = v;
@@ -68,6 +70,8 @@ static inline void cpu_st8(uint32_t a, uint8_t v){
 static inline void cpu_st16(uint32_t a, uint16_t v){
     a &= a20_mask; a &= (RAM_SIZE-1);
     if(a + 1u >= CPU_VGA_LO && a < 0x100000){ cpu_st8(a, (uint8_t)v); cpu_st8(a+1, (uint8_t)(v >> 8)); return; }
+    if(a == memwatch_addr) memwatch_hit(a, (uint8_t)v);
+    else if(a + 1u == memwatch_addr) memwatch_hit(a + 1u, (uint8_t)(v >> 8));
     ram[a] = (uint8_t)v; ram[a+1] = (uint8_t)(v >> 8);
 }
 static inline void cpu_st32(uint32_t a, uint32_t v){
@@ -75,6 +79,8 @@ static inline void cpu_st32(uint32_t a, uint32_t v){
     if(a + 3u >= CPU_VGA_LO && a < 0x100000){
         cpu_st8(a, (uint8_t)v); cpu_st8(a+1, (uint8_t)(v >> 8));
         cpu_st8(a+2, (uint8_t)(v >> 16)); cpu_st8(a+3, (uint8_t)(v >> 24)); return; }
+    if(a <= memwatch_addr && memwatch_addr < a + 4u)
+        memwatch_hit(memwatch_addr, (uint8_t)(v >> ((memwatch_addr - a) * 8)));
     ram[a] = (uint8_t)v; ram[a+1] = (uint8_t)(v >> 8);
     ram[a+2] = (uint8_t)(v >> 16); ram[a+3] = (uint8_t)(v >> 24);
 }
@@ -275,7 +281,25 @@ static void strop(int op, int sz){
          * uses these for asset copies and buffer clears; the per-byte loop
          * below costs a full decode's worth of branches per byte.  Anything
          * touching VGA/ROM, wrapping the segment, or running backwards keeps
-         * the exact slow path.  memmove covers (unlikely) overlap. */
+         * the exact slow path.
+         *
+         * So does a forward REP MOVS whose destination lies inside its own
+         * source run, and that exclusion is not a detail - it is the whole
+         * difference between this path and the instruction it stands in for.
+         * x86 copies one element at a time, in order, so when DI is within
+         * CX elements ahead of SI the bytes it just wrote are what it reads
+         * next and the run propagates.  That is not a pathological case to
+         * be tolerated: it is the LZ77 run-expansion idiom (`mov si,di; sub
+         * si,dist; rep movsb` with a length greater than the distance), and
+         * every self-extracting executable uses it.  memmove is specified to
+         * do the opposite - it copies as if through a temporary, so the
+         * source is the *old* contents - and an earlier comment here claimed
+         * it "covers overlap", which is backwards.  Nothing in the game's own
+         * files noticed, because none of them is compressed; the 1993 demo's
+         * PKLITE sound drivers are, and a wrong run left the resident driver
+         * with `02 AC 01` where `EC A8 01` (in al,dx / test al,1) belonged -
+         * a calibration loop that could never see the port it was counting.
+         * The slow loop below is byte-exact, so overlap simply goes there. */
         if((op == 0 || op == 2) && !cpu.df && cnt >= 16){
             int el = sz / 8;
             uint64_t n = ((uint64_t)cnt - 1u) * (uint64_t)el;
@@ -294,8 +318,21 @@ static void strop(int op, int sz){
                     s0 = (uint32_t)(dsb + soff); d0 = (uint32_t)(esb + doff); ok = 1;
                 }
             }
+            /* Destination inside the source run: propagating copy, slow path. */
+            if(ok && op == 0 && d0 > s0 &&
+               (uint64_t)(d0 - s0) < (uint64_t)cnt * (uint64_t)el) ok = 0;
             if(ok){
                 size_t len = (size_t)cnt * (size_t)el;
+                /* This path writes ram[] directly, so -memwatch would miss a
+                 * block store that happens to cover the watched byte - and a
+                 * watch that can silently miss its writer is worse than none. */
+                extern uint32_t insn_ip;
+                if(memwatch_addr >= d0 && memwatch_addr < d0 + len)
+                    printf("[memw] %05X covered by a %s of %u bytes at %05X"
+                           "  t=%.6f  by %04X:%04X\n",
+                           (unsigned)memwatch_addr, op == 0 ? "REP MOVS" : "REP STOS",
+                           (unsigned)len, (unsigned)d0, emu_now(),
+                           cpu.sreg[S_CS], (unsigned)insn_ip);
                 if(op == 0) memmove(&ram[d0], &ram[s0], len);
                 else if(sz == 8) memset(&ram[d0], REG8(0), len);
                 else if(sz == 16){
@@ -447,10 +484,244 @@ static void op0f(void){
         if(!no_iret){ uint16_t ip=pop16(), c=pop16(), f=pop16();
                       cpu.eip=ip; set_sreg(S_CS,c); cpu_setflags(f); }
         break; }
-    default:
-        trc("[cpu] unhandled 0F %02X at %04X:%04X\n", op, cpu.sreg[S_CS], cpu.eip);
-        break;
+    default: {
+        char w[32];
+        snprintf(w, sizeof(w), "unhandled 0F %02X", op);
+        cpu_undef(w);
+        break; }
     }
+}
+
+/* Report an instruction this CPU does not implement.
+ *
+ * Two things this has to get right, learned the hard way from a 118 MB log
+ * that was 3.2 million copies of one line.  An undecoded opcode is almost
+ * never a one-off: either the guest loops over it forever, or the decoder has
+ * drifted mid-instruction and every following byte is "unhandled" too.  So
+ * each distinct site is reported once, the whole thing stops after a cap, and
+ * what gets printed is the bytes - a bare opcode byte and a CS:IP say nothing
+ * about whether this is a real instruction or data being executed, and the
+ * bytes say both.  insn_ip is the start of the instruction, not wherever the
+ * decoder had got to, so the dump can be pasted straight into a disassembler.
+ *
+ * Note this reports; it does not fault.  Execution continues past the bytes
+ * the decoder consumed, exactly as it did before - the point is to find out
+ * what they were.
+ *
+ * -undefdump goes further and writes the whole code segment out once, the
+ * first time this fires.  Sixteen bytes tell you whether the decoder drifted;
+ * they do not tell you where it left real code, and when the program that got
+ * there arrived compressed on disk (PKLITE .SDR drivers, LZEXE .PRG programs)
+ * there is no file to disassemble instead.  The guest's own memory is the
+ * only copy of what is actually executing. */
+uint32_t insn_ip;   /* also read by -memwatch in vga.c, to name the writer */
+#define UNDEF_SITES 32
+#define UNDEF_MAX   64
+static uint32_t undef_site[UNDEF_SITES];
+static int undef_nsite = 0, undef_n = 0;
+int undef_dump = 0;                     /* -undefdump */
+
+/* Write one 64K segment as the guest sees it, so a file offset is an IP and
+ * the result drops straight into a disassembler.  Shared by -undefdump (which
+ * calls it for CS at the first undecodable instruction) and -dumpseg (which
+ * names a segment up front, for a program that misbehaves without ever
+ * executing a bad opcode).  Both exist for the same reason: a program that
+ * arrived compressed - a PKLITE .SDR, an LZEXE .PRG - has no file anywhere
+ * that matches what is running. */
+void cpu_dump_segment(uint16_t seg, const char *why){
+    char path[64];
+    uint32_t lin = (uint32_t)seg << 4;
+    FILE *f;
+    snprintf(path, sizeof(path), "pfemu_seg_%04X.bin", seg);
+    f = fopen(path, "wb");
+    if(!f){ printf("[cpu] %s: could not write %s\n", why, path); return; }
+    fwrite(&ram[lin & (RAM_SIZE-1)], 1, 0x10000, f);
+    fclose(f);
+    printf("[cpu] %s: wrote %s (64K at linear %05X, offset 0 = %04X:0000)\n",
+           why, path, lin, seg);
+}
+
+int dump_seg_on = 0;                    /* -dumpseg SEG */
+uint16_t dump_seg_which = 0;
+
+/* -memwatch LIN : which instruction writes this byte.
+ *
+ * Reading a guest's code tells you which instructions *could* write a flag; it
+ * cannot tell you which one does, and a flag that a wait loop spins on is
+ * exactly where that difference decides the diagnosis.
+ *
+ * It has to live on the CPU's own store path.  The first cut of this sat in
+ * mem_w8/16/32 in vga.c, which looked like "the" memory interface and is not:
+ * cpu_st8/16/32 above write ram[] directly, so every guest store missed the
+ * watch and it reported a confident zero for a byte the guest was writing
+ * thousands of times.  A watch that can silently miss its writer is worse than
+ * no watch, which is also why strop()'s bulk path reports separately.
+ *
+ * Bounded to MEMWATCH_MAX reports with a running total, for the same reason
+ * the undefined-opcode report is bounded: a byte written every frame would
+ * otherwise bury the run in a log nobody can open.  The address is linear and
+ * post-mask, so it is the same number the other dumps print. */
+uint32_t memwatch_addr = 0xFFFFFFFFu;
+#define MEMWATCH_HEAD 32                 /* printed live, as they happen */
+#define MEMWATCH_TAIL 32                 /* kept, so the *end* is visible too */
+static int memwatch_left = MEMWATCH_HEAD;
+unsigned long memwatch_n = 0;
+/* A watch that only shows a sequence's first N answers "did this ever happen"
+ * and not "when did it stop", which is the question whenever a guest was
+ * working and then wasn't.  So keep the last few as well. */
+static struct { double t; uint32_t a; uint8_t v, old; uint16_t cs, ip; }
+    mw_tail[MEMWATCH_TAIL];
+static unsigned mw_tail_pos = 0;
+
+void memwatch_hit(uint32_t a, uint8_t v){
+    unsigned s = mw_tail_pos & (MEMWATCH_TAIL - 1);
+    memwatch_n++;
+    mw_tail[s].t = emu_now(); mw_tail[s].a = a;
+    mw_tail[s].v = v;         mw_tail[s].old = ram[a];
+    mw_tail[s].cs = cpu.sreg[S_CS]; mw_tail[s].ip = (uint16_t)insn_ip;
+    mw_tail_pos++;
+    if(memwatch_left <= 0) return;
+    memwatch_left--;
+    printf("[memw] %05X <- %02X (was %02X)  t=%.6f  by %04X:%04X\n",
+           (unsigned)a, v, ram[a], emu_now(),
+           cpu.sreg[S_CS], (unsigned)insn_ip);
+}
+
+void memwatch_report(void){
+    unsigned n, i, first;
+    if(memwatch_addr == 0xFFFFFFFFu) return;
+    n = memwatch_n < MEMWATCH_TAIL ? (unsigned)memwatch_n : MEMWATCH_TAIL;
+    if(memwatch_n > MEMWATCH_HEAD){
+        printf("[memw] last %u writes:\n", n);
+        first = (mw_tail_pos - n) & (MEMWATCH_TAIL - 1);
+        for(i = 0; i < n; i++){
+            unsigned s = (first + i) & (MEMWATCH_TAIL - 1);
+            printf("[memw]   %05X <- %02X (was %02X)  t=%.6f  by %04X:%04X\n",
+                   (unsigned)mw_tail[s].a, mw_tail[s].v, mw_tail[s].old,
+                   mw_tail[s].t, mw_tail[s].cs, mw_tail[s].ip);
+        }
+    }
+    printf("[memw] %05X written %lu times total\n",
+           (unsigned)memwatch_addr, memwatch_n);
+}
+
+/* -prof: where the emulated CPU actually goes.
+ *
+ * "This loop is too slow" and "something else is eating the budget" look the
+ * same from a counter of how often the loop ran, and reasoning about which it
+ * is from instruction counts per iteration is exactly the guess this project
+ * keeps getting wrong.  A sampling profiler answers it directly: every 4096th
+ * instruction, note CS:IP; at exit, print the hottest sites with their share.
+ * One predictable branch per instruction when off, and no allocation. */
+int prof_on = 0;
+#define PROF_N 2048
+static uint32_t prof_key[PROF_N];
+static unsigned long prof_hit[PROF_N];
+static unsigned long prof_total = 0, prof_lost = 0;
+static unsigned prof_tick = 0;
+/* The per-instruction table answers "which instruction", but a flat profile -
+ * every entry within a tenth of a percent of the next, which is what a big
+ * unrolled loop body looks like - answers nothing.  The same samples bucketed
+ * by 1K of linear address answer the question that actually matters first:
+ * which *code* is running at all.  A guest that has stopped making progress
+ * shows up here as one or two regions holding everything, and the regions map
+ * straight onto the DOS allocations in the -t log. */
+#define PROF_RGN_SHIFT 10
+#define PROF_RGN_N     1104            /* (FFFF<<4)+FFFF, in 1K units */
+static unsigned long prof_region[PROF_RGN_N];
+
+static void prof_sample(void){
+    uint32_t key = ((uint32_t)cpu.sreg[S_CS] << 16) | (cpu.eip & 0xFFFF);
+    unsigned h = (unsigned)((key * 2654435761u) >> 21) & (PROF_N - 1);
+    unsigned i;
+    uint32_t lin = (((key >> 16) << 4) + (key & 0xFFFF)) >> PROF_RGN_SHIFT;
+    prof_total++;
+    if(lin < PROF_RGN_N) prof_region[lin]++;
+    for(i = 0; i < 64; i++){
+        unsigned s = (h + i) & (PROF_N - 1);
+        if(prof_hit[s] == 0){ prof_key[s] = key; prof_hit[s] = 1; return; }
+        if(prof_key[s] == key){ prof_hit[s]++; return; }
+    }
+    prof_lost++;
+}
+
+void prof_report(void){
+    unsigned i, j, n = 0;
+    unsigned idx[24];
+    if(!prof_on) return;
+    printf("[prof] %lu samples (1 per 4096 instructions), %lu unrecorded\n",
+           prof_total, prof_lost);
+    for(i = 0; i < PROF_N; i++){
+        if(!prof_hit[i]) continue;
+        if(n < 24){ idx[n++] = i; }
+        else {
+            unsigned lo = 0;
+            for(j = 1; j < n; j++) if(prof_hit[idx[j]] < prof_hit[idx[lo]]) lo = j;
+            if(prof_hit[i] > prof_hit[idx[lo]]) idx[lo] = i;
+        }
+    }
+    for(i = 0; i < n; i++)
+        for(j = i + 1; j < n; j++)
+            if(prof_hit[idx[j]] > prof_hit[idx[i]]){ unsigned t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+    for(i = 0; i < n; i++){
+        uint32_t k = prof_key[idx[i]];
+        printf("[prof]   %04X:%04X  lin=%05X  %8lu  %5.2f%%\n",
+               k >> 16, k & 0xFFFF,
+               ((k >> 16) << 4) + (k & 0xFFFF), prof_hit[idx[i]],
+               prof_total ? 100.0 * (double)prof_hit[idx[i]] / (double)prof_total : 0.0);
+    }
+    {   /* ...and the same samples by 1K region, which is the view that shows
+         * whether the guest is still running its program or only its ISRs. */
+        unsigned r, q, top[16], tn = 0;
+        for(r = 0; r < PROF_RGN_N; r++){
+            if(!prof_region[r]) continue;
+            if(tn < 16) top[tn++] = r;
+            else {
+                unsigned lo = 0;
+                for(q = 1; q < tn; q++)
+                    if(prof_region[top[q]] < prof_region[top[lo]]) lo = q;
+                if(prof_region[r] > prof_region[top[lo]]) top[lo] = r;
+            }
+        }
+        for(r = 0; r < tn; r++)
+            for(q = r + 1; q < tn; q++)
+                if(prof_region[top[q]] > prof_region[top[r]]){
+                    unsigned t = top[r]; top[r] = top[q]; top[q] = t; }
+        printf("[prof] by 1K region:\n");
+        for(r = 0; r < tn; r++)
+            printf("[prof]   lin %05X-%05X  %8lu  %5.2f%%\n",
+                   top[r] << PROF_RGN_SHIFT,
+                   (top[r] << PROF_RGN_SHIFT) + (1u << PROF_RGN_SHIFT) - 1,
+                   prof_region[top[r]],
+                   prof_total ? 100.0 * (double)prof_region[top[r]] /
+                                (double)prof_total : 0.0);
+    }
+}
+
+static void undef_write_seg(void){
+    static int done = 0;
+    if(done) return;
+    done = 1;
+    cpu_dump_segment(cpu.sreg[S_CS], "-undefdump");
+}
+
+static void cpu_undef(const char *what){
+    uint32_t at = cs_base + insn_ip;
+    char bytes[64];
+    int i, n = 0;
+    for(i = 0; i < undef_nsite; i++) if(undef_site[i] == at) return;
+    if(undef_nsite < UNDEF_SITES) undef_site[undef_nsite++] = at;
+    if(undef_dump) undef_write_seg();
+    if(undef_n >= UNDEF_MAX) return;
+    if(++undef_n == UNDEF_MAX){
+        trc("[cpu] %s at %04X:%04X lin=%05X - further reports suppressed\n",
+            what, cpu.sreg[S_CS], (unsigned)insn_ip, at);
+        return;
+    }
+    for(i = 0; i < 16; i++)
+        n += snprintf(bytes + n, sizeof(bytes) - (size_t)n, "%02X ", cpu_ld8(at + (uint32_t)i));
+    trc("[cpu] %s at %04X:%04X lin=%05X: %s\n",
+        what, cpu.sreg[S_CS], (unsigned)insn_ip, at, bytes);
 }
 
 /* Ring of recently executed instruction addresses.  When the guest runs off
@@ -461,6 +732,54 @@ uint32_t x_ring[XRING]; uint16_t x_cs[XRING], x_ip[XRING];
 unsigned x_pos = 0; int x_on = 0;
 uint32_t x_trap_lo = 1, x_trap_hi = 0;   /* -trap LO HI : stop on entry */
 int int_watch = -1;                     /* -intwatch NN : log INT NN calls */
+
+/* -intstat NN : the same calls, but bounded.
+ *
+ * -intwatch prints every call, which is the right tool for a vector the guest
+ * touches occasionally and useless for one it polls.  The sound driver's API
+ * (INT 66h) is polled ~50k times a second, so watching it that way produces a
+ * hundred megabytes of one repeated line and buries the handful of calls that
+ * change anything.  What matters when a guest stops making progress is the
+ * *sequence* of distinct requests, so record a call only when its function
+ * number differs from the previous call's: a long poll collapses to one entry
+ * and every transition survives.  128 entries, printed newest last at exit. */
+int int_stat = -1;
+#define IVS_N 128
+static struct { double t; uint16_t ax, bx, cs, ip; unsigned long run; } ivs[IVS_N];
+static unsigned ivs_pos = 0, ivs_seen = 0;
+static unsigned long ivs_al[256];
+static int ivs_last_al = -1;
+
+static void ivs_note(uint16_t ax, uint16_t bx, uint16_t cs, uint16_t ip){
+    unsigned al = ax & 0xFF;
+    ivs_al[al]++;
+    if((int)al == ivs_last_al){ ivs[(ivs_pos - 1) & (IVS_N - 1)].run++; return; }
+    ivs_last_al = (int)al;
+    ivs[ivs_pos & (IVS_N - 1)].t   = emu_now();
+    ivs[ivs_pos & (IVS_N - 1)].ax  = ax;
+    ivs[ivs_pos & (IVS_N - 1)].bx  = bx;
+    ivs[ivs_pos & (IVS_N - 1)].cs  = cs;
+    ivs[ivs_pos & (IVS_N - 1)].ip  = ip;
+    ivs[ivs_pos & (IVS_N - 1)].run = 1;
+    ivs_pos++; if(ivs_seen < IVS_N) ivs_seen++;
+}
+
+void intstat_report(void){
+    unsigned i, first;
+    if(int_stat < 0) return;
+    printf("[int%02X] calls by function:\n", int_stat);
+    for(i = 0; i < 256; i++)
+        if(ivs_al[i]) printf("[int%02X]   AL=%02X  %10lu\n", int_stat, i, ivs_al[i]);
+    printf("[int%02X] last %u distinct-function calls (oldest first):\n",
+           int_stat, ivs_seen);
+    first = (ivs_pos - ivs_seen) & (IVS_N - 1);
+    for(i = 0; i < ivs_seen; i++){
+        unsigned s = (first + i) & (IVS_N - 1);
+        printf("[int%02X]   t=%9.6f AX=%04X BX=%04X from %04X:%04X  x%lu\n",
+               int_stat, ivs[s].t, ivs[s].ax, ivs[s].bx,
+               ivs[s].cs, ivs[s].ip, ivs[s].run);
+    }
+}
 
 void cpu_step(void){
     uint8_t op;
@@ -500,6 +819,10 @@ void cpu_step(void){
         }
     }
 
+    if(prof_on && (++prof_tick & 0xFFF) == 0) prof_sample();
+    /* Before the prefix loop, so a report names the first byte of the whole
+     * instruction rather than wherever the decoder had got to. */
+    insn_ip = cpu.eip;
 again:
     op = fetch8();
     switch(op){
@@ -672,6 +995,9 @@ again:
     case 0xCB: { uint32_t o=popv(); uint16_t s=(uint16_t)popv(); cpu.eip=o&0xFFFF; set_sreg(S_CS,s); break; }
     case 0xCC: cpu_interrupt(3,1); break;
     case 0xCD: { uint8_t n=fetch8();
+        if(int_stat >= 0 && n == int_stat)
+            ivs_note(REG16(R_EAX), REG16(R_EBX),
+                     cpu.sreg[S_CS], (uint16_t)(cpu.eip-2));
         if(int_watch >= 0 && n == int_watch)
             printf("[int%02X] AX=%04X BX=%04X CX=%04X DX=%04X DS=%04X ES=%04X from %04X:%04X\n",
                    n, REG16(R_EAX), REG16(R_EBX), REG16(R_ECX), REG16(R_EDX),
@@ -694,7 +1020,9 @@ again:
     case 0xD7: REG8(0) = cpu_ld8(sb(S_DS) + ((REG16(R_EBX)+REG8(0))&0xFFFF)); break;
     case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: case 0xDD: case 0xDE: case 0xDF:
         modrm();
-        trc("[cpu] x87 esc %02X at %04X:%04X\n", op, cpu.sreg[S_CS], cpu.eip);
+        { char w[32];
+          snprintf(w, sizeof(w), "x87 esc %02X", op);
+          cpu_undef(w); }
         break;
 
     case 0xE0: case 0xE1: case 0xE2: { int8_t d=(int8_t)fetch8(); uint32_t c; int take;
@@ -783,9 +1111,11 @@ again:
         case 6: pushv(rdE(sz)); break;
         } break;
 
-    default:
-        trc("[cpu] unhandled opcode %02X at %04X:%04X\n", op, cpu.sreg[S_CS], cpu.eip-1);
-        break;
+    default: {
+        char w[32];
+        snprintf(w, sizeof(w), "unhandled opcode %02X", op);
+        cpu_undef(w);
+        break; }
     }
     cpu.cycles++;
 }

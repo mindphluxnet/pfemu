@@ -4,17 +4,19 @@ pfemu is a small, purpose-built PC emulator that runs the original DOS release
 of **Pinball Fantasies** on 64-bit Windows. It does not use DOSBox, NTVDM, or
 code from another emulator.
 
-Three releases of the game are supported, and pfemu works out which one it is
+Four releases of the game are supported, and pfemu works out which one it is
 looking at by hashing the installation rather than by asking:
 
-| Release | Boot program |
-|---|---|
-| Pinball Fantasies, the original floppy release | `PINBALL.EXE` |
-| Pinball Fantasies Deluxe CD-ROM (1995) | `PINBALL.EXE` |
-| Pinball Power Pack (1996) | `PF.EXE` |
+| Release | Boot program | Programs |
+|---|---|---|
+| Pinball Fantasies, the original floppy release | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
+| Pinball Fantasies Deluxe CD-ROM (1995) | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
+| Pinball Power Pack (1996) | `PF.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
+| Pinball Fantasies 5 Min Demo (1993)* | `PFDEMO.EXE` | `DEMO.PRG`, `PLAND.PRG` |
 
 It currently supports the complete launch sequence, intro, table selector, all
-four tables, keyboard controls, and Sound Blaster music. A native launcher lets
+four tables, keyboard controls, and Sound Blaster music. (*The 1993 demo boots
+and runs but stops at its title screen - see below.) A native launcher lets
 you choose the game's options before it starts, pick between installations when
 several are present, and borderless fullscreen is available from the launcher,
 the command line, or at any time with `Alt+Enter`. pfemu also includes targeted
@@ -55,10 +57,10 @@ repository.
 
 Put one installation's files **directly** in a directory named `GAME\` - not in
 the enclosing `FANTASY\` or `PFD\` folder the archive unpacks into. Any other
-top-level directory holding an `INTRO.PRG` is offered as well, so several
-releases can sit side by side (`FANTASY\`, `FANTASYDX\`, ...) and the launcher
-will list them. The directory name is only a place to look; which release it
-holds is decided by the files inside it.
+top-level directory holding an `INTRO.PRG` (or a `DEMO.PRG`, for the demo) is
+offered as well, so several releases can sit side by side (`FANTASY\`,
+`FANTASYDX\`, ...) and the launcher will list them. The directory name is only
+a place to look; which release it holds is decided by the files inside it.
 
 `pfemu.exe -releases` prints what was found in each installation, including the
 sizes and hashes of anything it did not recognise.
@@ -81,6 +83,44 @@ A later repackaging of the floppy-family release, with its own intro and its
 own Table 1 and Table 2 programs. Its launcher is called `PF.EXE`; pfemu runs
 that directly, so the `PINBALL.BAT` wrapper it ships with is not needed and is
 ignored. Copy the directory in as it is.
+
+### The 5 Min Demo (1993)
+
+The demo is a different shape from the other three, and pfemu handles it
+without any extra steps from you - run its `INSTALL.BAT` or just copy the
+directory in.
+
+It ships one intro and one table, both renamed and both LZEXE-compressed:
+`DEMO.PRG` and `PLAND.PRG`, which is Party Land. pfemu unpacks those two in
+its loader rather than letting them unpack themselves, because otherwise the
+fixes below - all of which find their target by scanning the loaded program -
+would have nothing to match. Unpacked, Party Land carries every one of the
+same code signatures Table 1 does, so it gets every one of the same fixes.
+`-nolzexe` turns that off, which is a way to see the difference.
+
+**The demo does not currently get past its title screen.** It is detected,
+both programs unpack, the driver calibrates, the music plays and the publisher
+and developer screens draw; the screen after them stays black and the program
+sits in the loop waiting for it. Scroll Lock still exits.
+
+That is a race in the demo's own code rather than an emulation error: it
+clears 64 KB of video memory with interrupts disabled, then switches the sound
+driver off, and then waits for a frame flag that only that driver's callback
+can set. Whether it survives depends on where in the clear the timer interrupt
+happens to fall, and no emulated CPU speed lands reliably inside the window -
+6, 14.4 and 24 MIPS each miss it for a different reason. The mechanism, the
+measurements, and the four things that were ruled out along the way are
+written up in `docs/VERSIONS.md`, under "Where the demo stops". Nothing about
+it affects the other three releases.
+
+Two further things are genuinely missing rather than disabled. The demo's
+intro has no options menu, so the launcher greys out the six game options for
+it - that build has nowhere to put them. And it plays one table, for five
+minutes.
+
+Its four `.PCX` screens are artwork from the distribution disk. Its own
+installer does not copy them and none of its programs reads one, so pfemu
+records them and ignores them.
 
 ## Playing the game
 
@@ -188,8 +228,9 @@ The launcher can enable two hotkeys recovered from the 1994 RAZOR DoX trainer:
 In ball control mode, `Down Arrow` launches the ball from anywhere on the
 table. Both features are disabled unless **Enable trainer** is selected in the
 launcher, and an on-screen message confirms each change. Both hotkeys locate
-their targets by signature scan, so they work on every supported
-releases alike even though the two ship differently laid-out table programs.
+their targets by signature scan, so they work across all four releases alike,
+even though each ships differently laid-out table programs - and even though
+the demo's are compressed.
 
 ## Keeping the original files clean
 
@@ -214,10 +255,17 @@ custom installations and development.
 | `-nolauncher` | Start the detected release's boot program without the launcher |
 | `-d DIR` | Use a specific game directory; default: the first one found |
 | `-releases` | Print the detection report for every installation, then exit |
-| `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`) whatever the hashes say |
+| `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`, `demo`) whatever the hashes say |
 | `-p PROGRAM` | Run a specific DOS program and skip the launcher |
 | `-setup` | Run `SETSOUND.EXE` and skip the launcher |
 | `-nopatch` | Disable the Pinball Fantasies compatibility patches |
+| `-nolzexe` | Load LZEXE-compressed programs packed and let them unpack themselves |
+| `-undefdump` | On the first instruction the CPU can't decode, dump that code segment to `pfemu_cs_<SEG>.bin` |
+| `-vgastate` | At exit, print the video mode, the registers that select the picture, the DAC, and what's in the memory the CRTC points at |
+| `-dumpseg SEG` | At exit, write that 64K guest segment to `pfemu_seg_<SEG>.bin` (hex segment) |
+| `-prof` | Sample `CS:IP` every 4096 instructions; print the hottest sites at exit, and the same samples bucketed by 1K of address so a flat profile still says which code is running |
+| `-memwatch LIN` | Name the instruction that writes a linear address: the first 32 writes as they happen, the last 32 at exit, and a total |
+| `-intstat NN` | Count `INT NN` by function and keep the last 128 calls whose function differs from the previous one, so a polled vector stays readable |
 | `-speed X` | Run at `X` times normal speed |
 | `-ips N` | Set the emulated instruction rate; default: 6,000,000 |
 | `-vol N` | Output volume, 0â€“100, for this run only; overrides the saved level |
@@ -294,9 +342,11 @@ dependencies beyond Windows and the original game data.
 Working:
 
 - the complete launch chain, including the intro and table selector, for all
-  three supported releases
+  four supported releases
 - Party Land, Speed Devils, Billion Dollar Gameshow, and Stones 'N Bones
 - Sound Blaster music in the intro, menus, and all four tables
+- the 1993 demo, unpacked in the loader so it gets the same fixes as the full
+  game (`-nolzexe` to compare)
 - the manual-lookup protection bypass, without modifying `INTRO.PRG` or
   `INTRO.MOD`
 - sustained operation above the original game's real-time speed

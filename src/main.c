@@ -501,6 +501,27 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-vol") && i+1<argc) vol_override = atoi(argv[++i]);
         else if(!strcmp(argv[i],"-dmairq")){ extern int sb_dmairq; sb_dmairq = 1; }
         else if(!strcmp(argv[i],"-nopatch")){ extern int dos_no_patch; dos_no_patch = 1; }
+        else if(!strcmp(argv[i],"-nolzexe")){ dos_no_lzexe = 1; }
+        /* -undefdump: on the first instruction the CPU cannot decode, write
+         * that whole code segment to pfemu_cs_<SEG>.bin.  For programs that
+         * arrive compressed (PKLITE .SDR, LZEXE .PRG) the guest's memory is
+         * the only disassemblable copy of what is running. */
+        else if(!strcmp(argv[i],"-undefdump")){ extern int undef_dump; undef_dump = 1; }
+        /* -vgastate: at exit, print the mode, the registers that select the
+         * picture, the DAC entries it can reach, and what is in the memory the
+         * CRTC points at.  "Black screen" has three unrelated causes that look
+         * identical from outside; this separates them. */
+        else if(!strcmp(argv[i],"-vgastate")){ vga_state_dump_on = 1; }
+        /* -prof: sample CS:IP every 4096 instructions and print the hottest
+         * sites at exit.  "Which code is spending the emulated budget" is not
+         * reliably answerable by counting instructions per loop iteration. */
+        else if(!strcmp(argv[i],"-prof")){ prof_on = 1; }
+        /* -dumpseg SEG: write that 64K segment out at exit.  The same need as
+         * -undefdump, for a program that misbehaves without ever executing a
+         * bad opcode - a compressed one has no file that matches what runs. */
+        else if(!strcmp(argv[i],"-dumpseg") && i+1<argc){
+            dump_seg_on = 1;
+            dump_seg_which = (uint16_t)strtoul(argv[++i], NULL, 16); }
         else if(!strcmp(argv[i],"-mem") && i+1<argc){ mem_lo = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-balldbg")){ balldbg_on = 1; }
         else if(!strcmp(argv[i],"-nophaselock")){ present_phaselock = 0; }
@@ -508,6 +529,8 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-noballsync")){ vga_ballsync = 0; }
         else if(!strcmp(argv[i],"-trapexit")){ extern int dos_trap_exit; extern int x_on; dos_trap_exit = 1; x_on = 1; }
         else if(!strcmp(argv[i],"-intwatch") && i+1<argc){ extern int int_watch; int_watch = (int)strtol(argv[++i],NULL,16); }
+        else if(!strcmp(argv[i],"-intstat") && i+1<argc){ extern int int_stat; int_stat = (int)strtol(argv[++i],NULL,16); }
+        else if(!strcmp(argv[i],"-memwatch") && i+1<argc){ memwatch_addr = (uint32_t)strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-trap") && i+2<argc){ extern uint32_t x_trap_lo, x_trap_hi; extern int x_on;
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-speed") && i+1<argc) speed = atof(argv[++i]);
@@ -719,7 +742,20 @@ int main(int argc, char **argv){
                             pit0_lat_n++;
                             pit0_lat_sum  += lat;  if(lat  > pit0_lat_max)  pit0_lat_max  = lat;
                             pit0_over_sum += over; if(over > pit0_over_max) pit0_over_max = over;
-                            pit0_wait_sum += wait; if(wait > pit0_wait_max) pit0_wait_max = wait;
+                            pit0_wait_sum += wait;
+                            if(wait > pit0_wait_max){
+                                /* Latch what was blocking the worst one, so
+                                 * the report can name it instead of just
+                                 * sizing it. */
+                                extern uint16_t pit0_raise_cs, pit0_raise_ip;
+                                extern int pit0_raise_if;
+                                extern uint16_t pit0_blk_cs, pit0_blk_ip, pit0_got_cs, pit0_got_ip;
+                                extern int pit0_blk_if;
+                                pit0_wait_max = wait;
+                                pit0_blk_cs = pit0_raise_cs; pit0_blk_ip = pit0_raise_ip;
+                                pit0_blk_if = pit0_raise_if;
+                                pit0_got_cs = cpu.sreg[S_CS]; pit0_got_ip = (uint16_t)cpu.eip;
+                            }
                             pit0_due = -1.0;
                         }
                     }
@@ -859,6 +895,11 @@ int main(int argc, char **argv){
     { extern unsigned long vga_ar14_switches, vga_ar14_overrides, vga_mode_resets;
       printf("[pfemu] AR14 switches=%lu overrides=%lu mode-resets=%lu\n",
              vga_ar14_switches, vga_ar14_overrides, vga_mode_resets); }
+    vga_state_dump();
+    prof_report();
+    intstat_report();
+    memwatch_report();
+    if(dump_seg_on) cpu_dump_segment(dump_seg_which, "-dumpseg");
     { extern unsigned long kbd_port60_reads; extern uint8_t pic_imr(void);
       printf("[pfemu] port60 reads=%lu  master IMR=%02X\n", kbd_port60_reads, pic_imr()); }
     printf("[pfemu] irqs: int8=%lu int9=%lu ticks=%u iflag=%d halted=%d cs:ip=%04X:%04X\n",

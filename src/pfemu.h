@@ -87,6 +87,17 @@ void vga_vscan_poll(void);           /* per-batch sampler, no-op unless set */
 void vga_timing_cached(double*,double*,int*,int*,int*,int*,double*);
 extern int vga_dmdlog;               /* -dmd: log DMD VRAM step cadence */
 extern int vga_paldbg;               /* -paldbg: log AR14 writes w/ frame phase */
+extern int vga_state_dump_on;        /* -vgastate: full pipeline dump at exit */
+void cpu_dump_segment(uint16_t seg, const char *why);
+extern int dump_seg_on;              /* -dumpseg SEG: dump that segment at exit */
+extern int prof_on;                  /* -prof: sample CS:IP, report hot sites */
+void prof_report(void);
+void intstat_report(void);
+void memwatch_report(void);
+void memwatch_hit(uint32_t a, uint8_t v);
+extern uint32_t memwatch_addr;
+extern uint16_t dump_seg_which;
+void vga_state_dump(void);
 double vga_scanline_now(int *vtotal_out); /* frame-relative scan line, for -balldbg */
 uint32_t vga_start_now(int *pitch_out);   /* raw CRTC start + row pitch */
 extern double vga_last_start_write;       /* emu time of last CRTC 0C/0D write */
@@ -109,10 +120,30 @@ int  dos_exec(const char *path, uint16_t psp_env, uint32_t cmdtail_ptr, uint32_t
 extern int dos_done;
 extern int dos_no_patch;        /* -nopatch : leave manual checks in place */
 
+/* ---------------------------------------------------------------- LZEXE -- */
+/* Self-extracting programs, unpacked by the loader instead of by the guest so
+ * that the image patches in src/fantasies.c have something to match.  Only
+ * LZEXE 0.91 is handled, and only as an optimisation of the boot: every
+ * failure here falls back to loading the packed file and letting its own stub
+ * run.  See src/lzexe.c for why, and for why PKLITE is left alone. */
+typedef struct {
+    uint8_t *image;       /* the unpacked load image (malloc'd) */
+    uint32_t imglen;
+    uint16_t cs, ip, ss, sp;   /* the original entry point and stack */
+    uint16_t minalloc, maxalloc;
+    uint32_t *rel;        /* relocations, (segment << 16) | offset (malloc'd) */
+    uint32_t nrel;
+} LzexeImage;
+
+int  lzexe_detect(const uint8_t *hdr32);
+int  lzexe_load(FILE *f, long fsize, LzexeImage *out);
+void lzexe_free(LzexeImage *im);
+extern int dos_no_lzexe;        /* -nolzexe : never unpack, let the stub run */
+
 /* ------------------------------------------------------------ releases --- */
 /* Checksum-based release identity (src/release.c).  An installation is
- * identified by the SHA-256 of its five program files, never by its directory
- * name or its boot filename - see docs/VERSIONS.md for why neither works. */
+ * identified by the SHA-256 of its program files, never by its directory name
+ * or its boot filename - see docs/VERSIONS.md for why neither works. */
 enum {
     RF_CODE    = 1,   /* part of the five-file identity vector */
     RF_BOOT    = 2,   /* the program pfemu executes to start this release */
@@ -130,11 +161,25 @@ typedef struct {
     uint8_t  sha[32];
 } RelFile;
 
+/* Which programs a distribution ships, and under which names.  The full game
+ * ships an intro and four tables; the 1993 five-minute demo ships an intro
+ * and one table, both renamed - so the identity vector is a property of the
+ * distribution's shape, not a constant.  names[0] is the anchor: the program
+ * whose presence says which shape a directory holds, and whose hash decides
+ * which release it is.  The rest are the tables, in table order. */
+typedef struct {
+    const char *id;           /* "full", "demo" - for the detection report */
+    const char *names[5];
+    int n;
+} CodeLayout;
+
 typedef struct {
     const char *id;       /* stable id: "floppy", "power_pack", "deluxe" */
     const char *label;    /* user-facing: "Pinball Power Pack (1996)" */
     const char *boot;     /* boot program basename for this release */
-    uint16_t cfg_buf;     /* intro's six-byte options structure, DS offset */
+    const CodeLayout *layout;  /* the programs this release ships */
+    uint16_t cfg_buf;     /* intro's six-byte options structure, DS offset;
+                           * 0 = this build has no options structure at all */
     uint8_t scroll_clobber; /* intro defaults Scrolling alone after a failed load */
     uint8_t opt_validate;   /* intro re-defaults all six after a failed load */
     uint8_t cd_marker;      /* boot program checks for cd.nfo (Deluxe CD-ROM) */
@@ -148,14 +193,14 @@ typedef enum {
     REL_INCOMPLETE,   /* known release, required file missing */
     REL_MODIFIED,     /* known intro, but an expected hash differs */
     REL_MIXED,        /* programs independently match different releases */
-    REL_UNKNOWN,      /* INTRO.PRG is not in the database */
+    REL_UNKNOWN,      /* the anchor program is not in the database */
     REL_AMBIGUOUS,    /* names differing only by case */
-    REL_ABSENT        /* no INTRO.PRG here at all */
+    REL_ABSENT        /* no program of any known layout here at all */
 } RelState;
 
 typedef struct {
     RelState state;
-    const Release *rel;   /* non-NULL once INTRO.PRG's hash is recognised */
+    const Release *rel;   /* non-NULL once the anchor's hash is recognised */
     char dir[512];        /* directory as given (relative stays relative) */
     char full[512];       /* ...and its absolute form, for the report */
     char boot[16];        /* boot program as actually spelled on disk */
@@ -163,6 +208,11 @@ typedef struct {
     char summary[160];    /* one line, for the launcher */
     char detail[8192];    /* the copyable report */
 } RelResult;
+
+/* Where a release keeps its program: 0 = the intro, 1..4 = that table,
+ * -1 = neither.  Resolves the renames in the demo's layout, so nothing
+ * outside src/release.c has to know a program filename. */
+int  release_prog_slot(const Release *r, const char *base);
 
 int  release_detect(const char *dir, RelResult *out);
 int  release_scan(RelResult *out, int max);   /* GAME first, then any install */

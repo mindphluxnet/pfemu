@@ -1442,3 +1442,78 @@ histogram entirely gap-1.
 
 The remaining `guest wait` outlier (20109 ticks, 16.9 ms) is the guest masking
 interrupts across a table load, which is its own business and not pfemu's.
+
+
+## 31. `REP MOVS` handed overlapping copies to `memmove` (`src/cpu.c`)
+
+Found by the 1993 demo, which is the first collected release to ship
+compressed programs. Its sound drivers are PKLITE-packed, and the resident
+`SBLASTER.SDR` wedged forever on bytes the CPU could not decode:
+
+```text
+[cpu] unhandled 0F 0F at 3AD3:1985 lin=3C6B5: 0F 0F 82 02 AC 01 75 FB 02 AC 01 74 FB 43 75 F0
+```
+
+`3AD3` is the driver's own code segment, and the address is inside its PLL
+calibration routine - the one that seeds `DI` with `1CE8h` and counts 3DAh
+bit-0 edges per PIT one-shot (§ the `.SDR` notes in `src/fantasies.c`). Lining
+the loaded image up against the full game's uncompressed driver, which does
+the same job and which pfemu has always run correctly, shows what happened:
+
+```text
+full game:  ... 33 db fb | ba da 03 | ec a8 01 75 fb | ec a8 01 74 fb ...
+demo:       ... 33 db fb | 0f 0f 82 | 02 ac 01 75 fb | 02 ac 01 74 fb | 43 75 f0
+```
+
+`EC A8 01` is `in al,dx / test al,1`. The driver was left with `02 AC 01`, so
+the loop counting edges on a port never read the port. The bytes are not
+random - they are other parts of the driver - and they resync immediately
+afterwards, which is the signature of one bad LZ back-reference rather than a
+different build or a broken load.
+
+The cause was in `strop()`'s bulk fast path, which has been there far longer
+than the demo:
+
+```c
+/* ... memmove covers (unlikely) overlap. */
+if(op == 0) memmove(&ram[d0], &ram[s0], len);
+```
+
+That comment is backwards. `REP MOVS` copies one element at a time in order,
+so when `DI` is fewer than `CX` elements ahead of `SI` the instruction reads
+back bytes it has just written and the source run propagates into the
+destination. `memmove` is specified to do the opposite: it behaves as if the
+source were taken through a temporary, so it sees the *old* contents. The two
+agree everywhere except the one case that matters - and that case is not
+exotic, it is `mov si,di / sub si,dist / rep movsb` with a length greater than
+the distance, which is how every LZ77 packer expands a run. PKLITE emits it;
+so the driver's image was quietly wrong before its first instruction ran.
+
+Nothing in the game's own files had ever noticed, because none of the three
+full releases ships a compressed file the loader executes. (The floppy
+`SETSOUND.EXE` is LZEXE-packed, but LZEXE's own match copy is a `movsb` inside
+a `loop`, not a `rep`, and its two bulk moves are non-overlapping - one of them
+backwards, which this path already excluded.)
+
+The fix is to keep the fast path off exactly that case and let the per-element
+loop below - which is the reference implementation, and correct - handle it:
+
+```c
+/* Destination inside the source run: propagating copy, slow path. */
+if(ok && op == 0 && d0 > s0 &&
+   (uint64_t)(d0 - s0) < (uint64_t)cnt * (uint64_t)el) ok = 0;
+```
+
+`tools/reptest.c` drives pfemu's own `cpu_step` through 15 cases and compares
+each against an element-at-a-time reference: 8 fail before the change and none
+after, while the non-overlapping cases and the just-clear-of-the-run case
+(`dst = src + cnt`) pass both ways, so a "fix" that merely disabled the fast
+path would not pass quietly either.
+
+Two things worth keeping in mind from this one. The diagnostic that found it
+had to print *bytes*: an opcode byte and a `CS:IP` cannot distinguish a real
+instruction pfemu lacks from a decoder that has drifted mid-instruction, and
+the sixteen bytes settled it immediately. And the program was compressed on
+disk, so there was no file to disassemble - `-undefdump` writes the offending
+code segment out of guest memory, which was the only copy of what was actually
+executing.

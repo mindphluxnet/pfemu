@@ -3,7 +3,7 @@
  * Everything that applies to Fantasies (and only Fantasies) lives in this
  * file, so dos.c/dev.c stay generic:
  *
- *  - the INTRO.PRG manual-lookup image patch (memory-only, signature-checked,
+ *  - the intro's manual-lookup image patch (memory-only, signature-checked,
  *    -nopatch disables);
  *  - the flipper fix session/exec gating (see below);
  *  - the trainer hotkeys ('1'/'2', see fantasies_key_event below);
@@ -19,7 +19,9 @@
  *
  * Session gating: the fix must only engage when the user actually booted
  * Pinball Fantasies.  Matching on the EXEC'd filename alone (TABLE1.PRG) is
- * not enough - a sibling game could ship a same-named file.  So main() arms
+ * not enough - a sibling game could ship a same-named file, and the 1993
+ * demo ships this game's own table under a different name (PLAND.PRG).
+ * The detected release's program layout resolves both.  So main() arms
  * this session from the launcher choice (or its CLI equivalent: -d/-p), and
  * fantasies_on_exec() then narrows it to the table programs.  Driver/data
  * children (.SDR/.BIN/.MOD) leave the state unchanged so a table keeps the
@@ -31,8 +33,8 @@ extern double emu_time;
 
 static int session_armed = 0;   /* a recognised Fantasies release is booting */
 static const Release *rel = NULL;  /* which one - see src/release.c */
-static int fix_on = 0;          /* a TABLE1-4.PRG is currently running */
-static uint32_t cfg_buf = 0;    /* intro options struct, DS offset; 0 = unknown */
+static int fix_on = 0;          /* one of the release's tables is running */
+static uint32_t cfg_buf = 0;    /* intro options struct, DS offset; 0 = none */
 static char session_dir[512];   /* game directory, for the options file below */
 static int table_num = 0;              /* 1-4 while a table is running, else 0 */
 static int trainer_enabled = 0;        /* launcher: arm the '1'/'2' hotkeys below */
@@ -51,9 +53,19 @@ static void base_up(const char *path, char *out, size_t n){
     out[i] = 0;
 }
 
+/* Which of the release's programs this is: 0 = the intro, 1..4 = that table,
+ * -1 = something else.  The names are not a constant - the 1993 demo ships
+ * DEMO.PRG and PLAND.PRG in place of INTRO.PRG and TABLE1.PRG - so the
+ * detected release's own layout answers it (src/release.c).  Every caller
+ * below has already checked session_armed, which is what guarantees `rel`;
+ * asking without one is answered "not a program of this release" rather than
+ * by falling back to a guess. */
+static int prog_slot(const char *base){
+    return release_prog_slot(rel, base);
+}
+
 static int is_table_prog(const char *base){
-    return strlen(base)==10 && memcmp(base,"TABLE",5)==0 &&
-           base[5]>='1' && base[5]<='4' && memcmp(base+6,".PRG",4)==0;
+    return prog_slot(base) >= 1;
 }
 
 /* Host-only launcher toggle file (src/launch.c writes it, the "Enable
@@ -121,7 +133,7 @@ void fantasies_on_exec(const char *dospath){
     if(is_table_prog(b)){
         if(!fix_on) trc("[fantasies] flipper fix on (%s)\n", b);
         fix_on = 1;
-        table_num = b[5] - '0';
+        table_num = prog_slot(b);
         spring_cheat_on = 0;
         osd_clear();
         return;
@@ -534,10 +546,23 @@ static void derive_cfg_buf(uint32_t base, uint32_t len){
         }
     }
     if(!n){
-        trc("[fantasies] intro options buffer not found; not poking\n");
+        /* Expected in a build that has no options menu at all - the demo's
+         * intro carries neither the F5 menu nor the PINBALL.CFG behind it. */
+        if(rel && !rel->cfg_buf)
+            trc("[fantasies] release '%s' has no intro options buffer, as "
+                "expected; nothing to poke\n", rel->id);
+        else
+            trc("[fantasies] intro options buffer not found; not poking\n");
         return;
     }
-    if(rel && rel->cfg_buf && rel->cfg_buf != buf){
+    /* A recorded 0 means "this build has none", so a match there is a
+     * contradiction just as much as a match at the wrong address is. */
+    if(rel && !rel->cfg_buf){
+        trc("[fantasies] intro options buffer DS:%04X found, but release '%s' "
+            "is recorded as having none; not poking\n", buf, rel->id);
+        return;
+    }
+    if(rel && rel->cfg_buf != buf){
         trc("[fantasies] intro options buffer DS:%04X contradicts release "
             "'%s' (expects DS:%04X); not poking\n", buf, rel->id, rel->cfg_buf);
         return;
@@ -555,7 +580,7 @@ void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t img
     int hits;
     if(!session_armed || dos_no_patch) return;
     base_up(dospath, b, sizeof(b));
-    if(strcmp(b, "INTRO.PRG")) return;
+    if(prog_slot(b) != 0) return;       /* the release's intro, whatever it is called */
     if(load_base + imglen > RAM_SIZE) return;
 
     derive_cfg_buf(load_base, imglen);
@@ -699,7 +724,7 @@ void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t img
     if(!session_armed || dos_no_patch) return;
     base_up(dospath, b, sizeof(b));
     if(!is_table_prog(b)) return;
-    tn = b[5] - '0';
+    tn = prog_slot(b);
     if(load_base + imglen > RAM_SIZE || imglen < sizeof(sigA)) return;
 
     for(i = 0; i + sizeof(sigA) <= imglen; i++){
@@ -852,7 +877,7 @@ void fantasies_patch_balls(const char *dospath, uint32_t load_base, uint32_t img
     if(!session_armed || dos_no_patch) return;
     base_up(dospath, b, sizeof(b));
     if(!is_table_prog(b)) return;
-    tn = b[5] - '0';
+    tn = prog_slot(b);
     if(load_base + imglen > RAM_SIZE || imglen < sizeof(sig)) return;
 
     for(i = 0; i + sizeof(sig) <= imglen; i++){
@@ -944,7 +969,7 @@ void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t im
     if(!session_armed || dos_no_patch) return;
     base_up(dospath, b, sizeof(b));
     if(!is_table_prog(b)) return;
-    tn = b[5] - '0';
+    tn = prog_slot(b);
     if(load_base + imglen > RAM_SIZE || imglen < sizeof(sig)) return;
 
     for(i = 0; i + 4 <= imglen; i++){
@@ -1618,35 +1643,10 @@ void fantasies_matrix_report(void){
     fprintf(stderr,
         "[mat] driver crisis flag set on %lu of %lu vblank callbacks (%.1f%%)\n",
         mat_crisis, mat_vbl, mat_vbl ? mat_crisis * 100.0 / mat_vbl : 0.0);
-    /* The driver asks for two timer events per frame (see pit_count() in
-     * dev.c).  Far fewer one-shots than that means events are being lost
-     * before the game ever sees them, which is pfemu's problem; the full two
-     * with the panel still dropping is the guest being out of CPU, which is
-     * not.  The latency line is what the driver's ISR compensates for when it
-     * reads the counter: small is healthy, large means its next delay is
-     * being computed from a big correction. */
-    { extern unsigned long pit0_m0_reads, pit0_m0_wrapped, pit0_irqs, pit0_lat_n;
-      extern double pit0_lat_sum, pit0_lat_max;
-      extern double pit0_over_sum, pit0_over_max;
-      extern double pit0_wait_sum, pit0_wait_max;
-      extern int pit_m0_exact;
-      fprintf(stderr,
-        "[mat] PIT ch0 one-shots %lu (%.1f/s; the driver schedules 2 per frame),"
-        " counter reads %lu, %lu past terminal count (%.1f%%)\n",
-        pit0_irqs, pit0_irqs/secs, pit0_m0_reads, pit0_m0_wrapped,
-        pit0_m0_reads ? pit0_m0_wrapped * 100.0 / pit0_m0_reads : 0.0);
-      fprintf(stderr,
-        "[mat] IRQ0 latency mean %.0f ticks (%.1f us) max %.0f (%.1f us) of %lu;"
-        " mode-0 reads %s\n",
-        pit0_lat_n ? pit0_lat_sum/pit0_lat_n : 0.0,
-        pit0_lat_n ? pit0_lat_sum/pit0_lat_n/1.193182 : 0.0,
-        pit0_lat_max, pit0_lat_max/1.193182, pit0_lat_n,
-        pit_m0_exact ? "exact one-shot (default)" : "rate-generator (-nopitm0)");
-      fprintf(stderr,
-        "[mat]   of which batch overshoot mean %.0f max %.0f ticks,"
-        " guest wait mean %.0f max %.0f ticks\n",
-        pit0_lat_n ? pit0_over_sum/pit0_lat_n : 0.0, pit0_over_max,
-        pit0_lat_n ? pit0_wait_sum/pit0_lat_n : 0.0, pit0_wait_max); }
+    /* The PIT/IRQ0 health lines that used to sit here now print from
+     * dev_state_dump(): they describe the timer, not the dot matrix, and
+     * being behind this function's `!mat_ticks` guard meant they were
+     * unavailable for exactly the releases that never load a table. */
     fprintf(stderr, "[mat] ticks between updates (1 = every tick, the smooth case):\n"
                     "      gap:");
     for(k = 1; k < MAT_GAPS; k++)

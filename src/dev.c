@@ -141,6 +141,11 @@ double pit0_lat_sum = 0.0, pit0_lat_max = 0.0;
  * masked or already in service).  They want different fixes. */
 double pit0_over_sum = 0.0, pit0_over_max = 0.0;
 double pit0_wait_sum = 0.0, pit0_wait_max = 0.0;
+/* Sampled at the moment the one-shot came due, and latched by main.c for
+ * whichever delivery ended up being the slowest. */
+uint16_t pit0_raise_cs = 0, pit0_raise_ip = 0; int pit0_raise_if = 0;
+uint16_t pit0_blk_cs = 0, pit0_blk_ip = 0; int pit0_blk_if = -1;
+uint16_t pit0_got_cs = 0, pit0_got_ip = 0;
 /* First few mode-0 reads, logged under -matdbg. */
 int pit0_m0_log = 0;
 
@@ -584,6 +589,15 @@ void dev_tick(void){
             pit0_irqs++;
             pit0_due = pit[0].next_irq;
             pit0_raise_t = emu_time;
+            /* Where the guest was, and whether it could have taken this, at
+             * the moment the one-shot came due.  "The guest was slow to
+             * accept it" is not a diagnosis - masked-and-spinning and
+             * mid-BIOS-call want opposite fixes - and the answer is one
+             * sample, taken here, of the thing that is about to be blamed. */
+            { extern uint32_t insn_ip;
+              pit0_raise_cs = cpu.sreg[S_CS];
+              pit0_raise_ip = (uint16_t)insn_ip;
+              pit0_raise_if = cpu.iflag ? 1 : 0; }
             pic_raise(0);
         }
     } else {
@@ -631,6 +645,43 @@ uint64_t dev_next_deadline(void){
 void dev_state_dump(void){
     printf("[pit] ch0 reload=%u mode=%u rw=%u next_irq=%.6f now=%.6f\n",
            pit[0].reload, pit[0].mode, pit[0].rw, pit[0].next_irq, emu_now());
+    /* How healthy the timer was, not just where it ended up.
+     *
+     * The sound driver re-locks its frame phase by spinning on vsync, and it
+     * runs deliberately fast so that spin is short - a fraction of a
+     * millisecond.  An IRQ0 that arrives later than that margin lands after
+     * the retrace pulse instead of before it, and the spin then costs a whole
+     * frame: a dropped frame in the full game, and in the 1993 demo a dropped
+     * frame-flag callback that can strand its title-screen wait forever.  So
+     * the interesting number is not the mean but the tail, and which half of
+     * the latency it came from: `overshoot` is how far the instruction batch
+     * ran past the deadline before dev_tick() looked, which is pfemu's to
+     * fix; `guest wait` is how much longer the guest took to accept the
+     * interrupt, which is the guest's own masking and is not.
+     *
+     * This used to print from the dot-matrix report in fantasies.c, which
+     * meant it was unavailable on any release that never loads a table. */
+    if(pit0_lat_n){
+        double secs = emu_now() > 0.0 ? emu_now() : 1.0;
+        printf("[pit] ch0 one-shots %lu (%.1f/s; the driver schedules 2 per frame),"
+               " counter reads %lu, %lu past terminal count (%.1f%%)\n",
+               pit0_irqs, pit0_irqs/secs, pit0_m0_reads, pit0_m0_wrapped,
+               pit0_m0_reads ? pit0_m0_wrapped * 100.0 / pit0_m0_reads : 0.0);
+        printf("[pit] IRQ0 latency mean %.0f ticks (%.1f us) max %.0f (%.1f us)"
+               " of %lu; mode-0 reads %s\n",
+               pit0_lat_sum/pit0_lat_n, pit0_lat_sum/pit0_lat_n/1.193182,
+               pit0_lat_max, pit0_lat_max/1.193182, pit0_lat_n,
+               pit_m0_exact ? "exact one-shot (default)" : "rate-generator (-nopitm0)");
+        printf("[pit]   of which batch overshoot mean %.0f max %.0f ticks,"
+               " guest wait mean %.0f max %.0f ticks\n",
+               pit0_over_sum/pit0_lat_n, pit0_over_max,
+               pit0_wait_sum/pit0_lat_n, pit0_wait_max);
+        if(pit0_blk_if >= 0)
+            printf("[pit]   worst wait: due at %04X:%04X with IF=%d,"
+                   " taken at %04X:%04X\n",
+                   pit0_blk_cs, pit0_blk_ip, pit0_blk_if,
+                   pit0_got_cs, pit0_got_ip);
+    }
     printf("[pic] m: imr=%02X irr=%02X isr=%02X base=%02X   s: imr=%02X irr=%02X isr=%02X\n",
            pic[0].imr, pic[0].irr, pic[0].isr, pic[0].base,
            pic[1].imr, pic[1].irr, pic[1].isr);
