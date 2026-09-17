@@ -29,8 +29,7 @@
  * would mean patching S_NOHIGH's slot the same way, which needs a per-table
  * signature scan (like fantasies_patch_sdr's) to locate - not done yet.
  *
- * This build supports Pinball Fantasies only; sibling-game (Dreams/
- * Illusions) launcher support has been removed.
+ * This build supports Pinball Fantasies only.
  *
  * main() skips the dialog for explicit/automated runs (see -nolauncher,
  * -p, -setup, -secs handling there).

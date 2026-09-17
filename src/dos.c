@@ -504,8 +504,8 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         fclose(f);
 
         /* Game-specific image patches (memory-only, signature-checked,
-         * -nopatch disables).  Implemented per game in src/fantasies.c and
-         * src/dreams.c; dos.c only dispatches.
+         * -nopatch disables).  Implemented in src/fantasies.c;
+         * dos.c only dispatches.
          *
          * Fantasies' manual-lookup check is no longer handled here: the old
          * CRACK.COM-style JNC->JMP edit only forced acceptance of whatever
@@ -514,7 +514,6 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
          * fantasies_filter_read() (called from the AH=3Fh handler below),
          * which makes INTRO.PRG believe the check already passed before it
          * ever draws the screen - see WRITEUP-PHASE2.md §5.13.1. */
-        dreams_patch_image((uint32_t)load*16, imglen);
         fantasies_patch_intro(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_pause(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_spring(dospath, (uint32_t)load*16, imglen);
@@ -768,9 +767,7 @@ void dos_int21(void){
          * separators, bits 1-3 fill drive/name/ext with defaults when that
          * part is absent.  Returns AL = 0 plain, 1 wildcards (?/* seen),
          * FF invalid drive; SI advances to the terminating character.
-         * BAT2EXEC (the DREAMS.COM launcher) parses every program name
-         * through here (AX=2903) before EXEC, so the old "unimplemented"
-         * return (AX=1, CF=1) broke it. */
+         * Implemented per RBIL (separator set, drive/name/ext handling). */
         uint32_t s = cpu.sbase[S_DS] + SI;
         uint32_t f = cpu.sbase[S_ES] + DI;
         int wild = 0, i, had;

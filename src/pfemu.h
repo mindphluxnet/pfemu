@@ -223,7 +223,7 @@ const Release *release_at(int i);
 int  release_count(void);
 
 /* -------------------------------------------------------- game fixes ----- */
-/* Per-game behaviour lives in its own TU (src/fantasies.c, src/dreams.c);
+/* Per-game behaviour lives in src/fantasies.c;
  * dos.c/dev.c call in, never implement game logic themselves. */
 /* rel is the detected release (src/release.c); NULL means no recognised
  * Pinball Fantasies installation, and nothing Fantasies-specific arms. */
@@ -255,7 +255,6 @@ FILE *fantasies_open_cdmarker(const char *fname);
 int  fantasies_fix_active(void);
 int  fantasies_session_armed(void);
 void fantasies_key_event(int scancode, int down);
-void dreams_patch_image(uint32_t load_base, uint32_t imglen);
 
 /* ------------------------------------------------------------ platform --- */
 void plat_init(const char *title);
@@ -283,7 +282,7 @@ extern int audio_volume;
 extern int audio_volume_dirty;   /* the -/+ keys moved it; save it on exit */
 
 /* ------------------------------------------------------------ launcher --- */
-/* Win32 game picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
+/* Win32 installation picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
  * into the game's PFEMU-STATE/ overlay so installed files stay pristine. */
 typedef struct { char dir[512], prog[16]; int fullscreen; } LaunchChoice;
 int  show_launcher(LaunchChoice *out);   /* 1 = launch, 0 = quit */

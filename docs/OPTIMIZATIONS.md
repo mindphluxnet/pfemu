@@ -155,12 +155,9 @@ instead of guessing at its output format.
 `pfemu.exe` used to boot straight into Pinball Fantasies. It now shows a
 small Win32 picker first (same C/MSVC toolchain, no new dependencies):
 
-- Radio buttons: Pinball Fantasies (`FANTASY/PINBALL.EXE`), Pinball Dreams
-  (`DREAMS/PD.EXE` — booted directly; `DREAMS.COM` is only a BAT2EXEC memory
-  gate via `CHKMEM`, meaningless under emulation), Pinball Illusions
-  (listed but disabled — boot support is not there yet, see §10).
-- Sound checkbox (Fantasies only; greyed out for Dreams, whose sound is
-  chosen in its in-game F1/F2 menu). On Launch it calls `write_sound_cfg()`:
+- Installation picker: Pinball Fantasies (detected by content hash, see
+  docs/VERSIONS.md — never by directory name or boot filename).
+- Sound checkbox. On Launch it calls `write_sound_cfg()`:
   on = 25-byte `SBLASTER.SDR` config (name + port index 1 → 220h, IRQ index
   3 → IRQ 7, quality 0; gap bytes zero, unread by the driver), off = the
   known-good 16-byte `NOSOUND.SDR` config. The file goes to
@@ -173,26 +170,10 @@ small Win32 picker first (same C/MSVC toolchain, no new dependencies):
 Skip rules (`src/main.c`): the dialog is bypassed by `-nolauncher` (new),
 by an explicit `-p`/`-setup`, and by `-secs` (headless/benchmark runs stay
 scriptable). In picker mode `-d` is ignored — the directory comes from the
-selected game. Closing the window quits instead of booting (behavior change
+selected installation. Closing the window quits instead of booting (behavior change
 vs. the old double-click boots).
 
-## 10. Multi-game status (exploration, no core changes yet)
-
-- Pinball Dreams (`DREAMS/`): 16-bit real-mode (`PD.EXE` + BAT2EXEC launcher),
-  VGA/PIT/speaker hardware already covered by the core; built-in Zero Hour /
-  Miles sound (no `.SDR` model), `.RMC` MIDI + `.MOD` music, manual-lookup
-  protection. Bring-up recipe is the Fantasies one (boot under `-dosdbg` /
-  `-xring`, fix, patch protection in memory).
-- Pinball Illusions (`ILLUSION/illusion.exe` + `start.bat`): the 3.7 MB file
-  is a real-mode loader (ANSI intro, XMS/VCPI/DPMI detection) around an
-  embedded NLZW resource archive holding the 32-bit protected-mode game
-  (`illusion.000` + pMAX `illusion.386` driver, CauseWay-style `INT 90h`
-  services). Sound reuses the `.SDR`/`SOUND.CFG` family, so the §9 toggle
-  carries over. Still needed: full pmode CPU + DPMI-server surface in the
-  core; first step is a stub-observability run of the real-mode part under
-  the current core to confirm the archive resolves internally.
-
-## 11. Launcher follow-ups: no console window; INT 21h AH=29h (Dreams)
+## 11. Launcher follow-ups: no console window; INT 21h AH=29h
 
 - Double-clicking opened a console ("shell") window next to the UI because
   the link defaulted to `/SUBSYSTEM:CONSOLE`. `build.bat` now links
@@ -200,99 +181,10 @@ vs. the old double-click boots).
   `main()` reattaches to the invoker's console via
   `AttachConsole(ATTACH_PARENT_PROCESS)` so CLI output (`-secs` stats,
   traces) still works when run from a terminal.
-- `INT 21h AH=29h` (parse filename into FCB) implemented in `src/dos.c`:
-  `DREAMS.COM` is a BAT2EXEC-compiled batch that parses every program name
-  through `AX=2903` right before `EXEC` (`src` offsets `0x314`/`0x31C` → EXEC
-  `0x336` → exit-code `0x351`), and the old "unimplemented" return
-  (`AX=1`, `CF=1`) broke that path. Implemented per RBIL (separator set,
-  drive/name/ext handling, `*`→`?` fill, lowercase→uppercase, `AL` =
-  0 plain / 1 wildcards / FF bad drive, `SI` to terminator).
-  (Kept: harmless and correct, but no longer on the boot path since the
-  launcher now starts `PD.EXE` directly.)
-- Dreams boot itself is still unverified — pending a user test run. `PD.EXE`'s
-  own DOS usage was statically scanned and is fully covered (`02h 09h 0Ah`
-  console, `25h/35h` vectors, `3Ch-42h` file I/O, `4Ch` exit; no EXEC/FCB/
-  exotic calls), and its entry (`cs:ip=0:0` = image start) is sane init code.
-
-## 12. Dreams: missing `\install.sys` caused the silent exit
-
-Symptom: black window closing by itself; exit stats pristine (text mode 03h,
-untouched VRAM/PIT/vectors). A `-t -dosdbg` trace showed the real story —
-not a hang at all: `PD.EXE` hooks `INT 9`, probes the keyboard, opens
-`\install.sys`, gets "open FAILED", restores the vector and takes
-`INT 21h 4C00`. (The vsync-wait loop seen in an earlier `-xring` was normal
-frame pacing sampled at timeout, a red herring.)
-
-`\install.sys` is installer-written personalization: the literals
-`Serial No:` / `User Name:` sit next to the filename in the binary, the
-game loads the whole file first thing (loader at image `0x15C7`: open →
-size check <256 KB → chunked read → close) and bails through a silent
-cleanup+exit (`0x1B13`: mode 3, `4C00`) when the load fails. Downloads
-typically lack the file.
-
-Fix (`src/launch.c:ensure_install_sys()`): on Dreams launch, the GUI's User
-name / Serial fields (enabled for Dreams only, capped at 20/8 chars like
-the installer) are written as the exact 29-byte layout into the overlay:
-byte 0 = install count (1), bytes 1-20 = username NUL-padded, bytes 21-28
-= serial — then every byte `xor 0FFh`, matching `INSTALL.COM`'s write path
-(`xor al,0FFh` loop at `0x20A5`, decoded on read at `0x20B3`). A real
-installer file always wins; anything else (missing, or a stale plaintext
-guess, detected by decoding byte 0 and expecting install count 1-3) is
-rewritten. (The file stays obfuscated on disk — hand-editing means
-NOT-encoding; use the GUI fields.)
-The GUI fields initialise from the existing file (`read_install_sys()`:
-decode, printable-only, widths enforced), so relaunching keeps the user's
-name/serial instead of resetting them.
-
-## 13. Dreams post-intro stall (in diagnosis)
-
-Symptom: intro screens (`company`→`spider`→`presents`→`digital`→`pinball.vga`,
-all loading fine per `-dosdbg`) play, then black screen; the game never opens
-the next file. Exit state: mode 13h, dark palette, spinning in the CX-counted
-vsync wait (`0071:2A66`, helper `0x2A5E`), page flips 0. Ruled out: sound
-choice (No Sound hangs identically — the fancy driver-flag wait at
-`0x2A76` runs regardless), DOS buffered input (both `B4 0Ah` hits are `mul
-ah` arithmetic; the manual-word entry uses the game's own keyboard hook),
-missing files up to `pinball.vga`. The wait protocol itself is understood
-(simple direct-`3DAh` waits + driver-flag `0xB`/`0xA` pair around a cached
-byte filled by the sound ISR's `in al,3DAh` / `or [0x1C26],al`, with `INT
-90h`/CauseWay-style far calls into segment `0x2146`). Next: identify the
-stuck call site — the exit dump now prints `ss:sp` plus 16 stack words, so a
-hang inside a helper still names its near-call return address.
-(`-trap` exists but disarms on first hit, i.e. early init, so it can't catch
-a late stall; the stack dump fills that gap.)
-
-## 14. Dreams post-intro exit: manual protection (fixed)
-
-The post-intro black screen ended in the silent cleanup+exit (`mov ax,3;
-INT 10h; 4C00` at image `0x1B13`), reached from the entry init's failure
-branch. The xring named it: PD's manual-lookup protection (routine at image
-`0x6FB3`: prints page/line/word prompts, reads the word via `INT 21h
-AH=0Ah`, uppercases and checksums it, `JE` to pass at image+`0x7020`,
-retries then silent exit on failure). Two fixes, same pattern as the
-original Fantasies §5.13 protection (since superseded by a DOS-layer flag
-forge - WRITEUP-PHASE2.md §5.13.1 - once it turned out Fantasies' own check
-could be defeated without touching the loaded image at all):
-
-- `INT 21h AH=0Ah` (buffered line input) is now properly implemented in
-  `src/dos.c` (was an instant-empty stub, which guaranteed failure): reads
-  the BIOS type-ahead queue with DOS echo, Backspace erase, extended-key
-  `0x00`+scancode pairs; blocks exactly like `INT 16h AH=00` when empty
-  (stub rewind, idle, resume on IRQ) with partial input kept in the guest
-  buffer (`oa_active`, reset on `EXEC`). Needs the exported
-  `bios_kbuf_get/peek` (`src/bios.c`, `src/pfemu.h`).
-- The check itself is patched in the loaded image (30-byte signature at
-  image+`0x7004`, two one-byte fixes: length-`JNE` retargeted fail→pass,
-  checksum-`JE`→`JMP`), memory-only, `-nopatch` restores the original
-  prompt-and-answer behavior (which now works, thanks to the `0Ah`
-  implementation, for anyone holding the manual). The two-gate form
-  matters: checksumming alone still retries on a wrong-length word, which
-  is exactly the observed three-prompts-then-quit.
-- Verified by playing: with both gates bypassed the game proceeds through
-  the manual check into the menu and the tables are playable. Remaining
-  known gaps for Dreams: no audio (PD uses MPU-401 MIDI/speaker paths, never
-  touches the SB ports — silent until that audio work lands) and the
-  in-game sound selection, which is cosmetic until then.
+- `INT 21h AH=29h` (parse filename into FCB) implemented in `src/dos.c`
+  per RBIL (separator set, drive/name/ext handling, `*`→`?` fill,
+  lowercase→uppercase, `AL` = 0 plain / 1 wildcards / FF bad drive,
+  `SI` to terminator).
 
 ## 15. Fantasies "slower" report: measured, not regressed
 
@@ -318,9 +210,8 @@ variation (~58 Hz both).
 
 Two real costs that are *not* regressions, but explain the feel: enabling
 sound spends ~23% of cycles in the driver's in-guest MOD mixer plus its
-DMA/3DA sync polling (NOSOUND runs never paid it), and Fantasies is simply
-heavier per frame than Dreams (mode-X planar blits + split screen +
-mixer — all guest work). Audio stays perfect because it is SB-clocked while
+DMA/3DA sync polling (NOSOUND runs never paid it), and the game's mode-X
+planar blits + split screen + mixer are all guest work. Audio stays perfect because it is SB-clocked while
 graphics are game-logic-paced. If graphics still feel slow on a given
 machine, the remaining suspect is the host present path (`StretchDIBits`
 each 1/60 s, identical code both builds): test whether sluggishness scales
