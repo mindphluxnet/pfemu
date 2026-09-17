@@ -303,6 +303,12 @@ void kbd_key(int scancode, int down){
     uint8_t sc = (uint8_t)(scancode & 0x7F);
     int ext = (scancode & 0xE000) ? 1 : 0;
     unsigned idx = (unsigned)sc | (ext ? 0x80u : 0u);
+    /* Session recording (docs/REPLAY.md section 3.2): every entry is logged
+     * with emu_now(), at the top so autorepeat-coalesced makes are logged
+     * too - replay runs this same function, so a logged no-op replays as
+     * the same no-op.  Overlap-repair re-asserts below are NOT logged: they
+     * are deterministic derived state, reproduced from the primary events. */
+    replay_log_key(scancode, down);
     trc("[kbd] host %s%02X %s (held=%d fix=%d free=%d)\n", ext?"E0 ":"", sc,
         down?"down":"up", kbd_held[idx], fantasies_fix_active(), kbd_free());
     if(down){
@@ -357,6 +363,10 @@ void kbd_release_all(void){
     for(i=0;i<256;i++) if(kbd_held[i]){
         uint8_t sc = (uint8_t)(i & 0x7F);
         kbd_held[i] = 0; n++;
+        /* Recorded like any other break so a replay injects what the guest
+         * actually saw (docs/REPLAY.md section 3.2).  On replay the caller
+         * (main.c) never invokes this at all - host leakage stays out. */
+        replay_log_key((int)sc | (i & 0x80 ? 0xE000 : 0), 0);
         if(i & 0x80){
             if(!kbd_ensure(2)) break;
             kbd_push(0xE0); kbd_push((uint8_t)(sc|0x80));

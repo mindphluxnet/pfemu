@@ -37,6 +37,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <stdio.h>
 #include "pfemu.h"
 
@@ -70,6 +71,11 @@
 #define ID_QUALITY      112
 #define ID_VOLUME       113
 #define ID_VOLLABEL     114
+#define ID_MODE_PLAY    115
+#define ID_MODE_RECORD  116
+#define ID_MODE_REPLAY  117
+#define ID_REPLAY_PATH  118
+#define ID_BROWSE       119
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
@@ -408,7 +414,20 @@ typedef struct {
     HWND hSound, hOpt[6], hCheatEnable, hFullscreen;
     HWND hInstall, hDetected, hDetails;
     HWND hQuality, hVolume, hVolLabel;
+    HWND hModePlay, hModeRecord, hModeReplay, hPathLabel, hPath, hBrowse;
     HFONT hFont;
+    /* Session record / replay (docs/REPLAY.md section 4).  mode is the
+     * Play/Record/Replay radio group below fullscreen; replay_path is the
+     * .pfr target (record) or source (replay).  rhdr is the parsed replay
+     * header used by auto-restore; replay_err explains why a file was
+     * rejected, shown in the detection line. */
+    LaunchMode mode;
+    char replay_path[512];
+    int path_custom;        /* the user typed/picked a path; keep it */
+    int updating_path;      /* SetWindowText in progress; ignore EN_CHANGE */
+    ReplayHeader rhdr;
+    int rhdr_ok;
+    char replay_err[256];
 } LaunchState;
 
 static void set_vol_label(LaunchState *st){
@@ -427,6 +446,191 @@ static const char *cur_game_dir(const LaunchState *st){
     return r ? r->dir : "";
 }
 
+/* Forward: replay_autorestore()/apply_mode_ui() below call these, which are
+ * defined further down next to the controls they update. */
+static void show_detection(HWND h, LaunchState *st);
+static void reload_for_dir(HWND h, LaunchState *st);
+
+/* Default record target: sessions/<install>_<date>.pfr (REPLAY.md section
+ * 4), next to pfemu.exe.  The install dir is sanitised: it is only ever a
+ * plain directory name, but never trust a filename you did not build. */
+static void default_record_path(LaunchState *st){
+    SYSTEMTIME t;
+    char safe[64];
+    size_t i;
+    const char *dir = cur_game_dir(st);
+    GetLocalTime(&t);
+    for(i=0;i<sizeof(safe)-1 && dir[i];i++){
+        char c = dir[i];
+        safe[i] = (c=='\\'||c=='/'||c==':'||c==' ') ? '_' : c;
+    }
+    safe[i] = 0;
+    if(!safe[0]) snprintf(safe, sizeof(safe), "GAME");
+    snprintf(st->replay_path, sizeof(st->replay_path),
+             "sessions\\%s_%04d%02d%02d_%02d%02d%02d.pfr",
+             safe, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+}
+
+/* Identity compare for auto-restore (REPLAY.md 4.1): same release id AND
+ * same code hash vector.  Summaries, directory names and timestamps are
+ * never identity. */
+static int same_vector(const ReplayHeader *h, const RelResult *r){
+    int k;
+    if(!r->rel || _stricmp(h->release_id, r->rel->id)) return 0;
+    if(h->ncode != r->ncode) return 0;
+    for(k=0;k<h->ncode;k++){
+        if(_stricmp(h->names[k], r->code_names[k])) return 0;
+        if(h->have[k] != r->code_have[k]) return 0;
+        if(h->have[k] && (h->size[k] != r->code_size[k] ||
+                           memcmp(h->sha[k], r->code_sha[k], 32))) return 0;
+    }
+    return 1;
+}
+
+/* Is the currently selected install a valid replay target for the loaded
+ * file?  Fills why (when non-NULL) for the detection line. */
+static int replay_selection_ok(LaunchState *st, char *why, size_t n){
+    const RelResult *r = cur_inst(st);
+    if(!st->rhdr_ok){
+        if(why) snprintf(why, n, "%s", st->replay_err);
+        return 0;
+    }
+    if(!st->rhdr.trainer_off){
+        if(why) snprintf(why, n, "Replay was recorded with the trainer on - refused.");
+        return 0;
+    }
+    if(!r){
+        if(why) snprintf(why, n, "No game found for this replay.");
+        return 0;
+    }
+    if(!release_runnable(r)){
+        if(why) snprintf(why, n, "%s: %s", release_state_name(r->state), r->summary);
+        return 0;
+    }
+    if(!same_vector(&st->rhdr, r)){
+        if(r->rel && !_stricmp(st->rhdr.release_id, r->rel->id)){
+            if(why) snprintf(why, n, "Same release (%s) but a different copy - replay needs"
+                             " the recorded programs.", r->rel->id);
+        } else {
+            if(why) snprintf(why, n, "Replay is '%s', selected install is '%s' - refused.",
+                             st->rhdr.release_id, r->rel ? r->rel->id : "?");
+        }
+        return 0;
+    }
+    if(_stricmp(st->rhdr.program, r->boot)){
+        if(why) snprintf(why, n, "File starts at '%s', not this install's boot program"
+                         " (direct-table replay is v2).", st->rhdr.program);
+        return 0;
+    }
+    {
+        int balls, spring;
+        read_cheats_cfg(r->dir, &balls, &spring);
+        if(balls || spring){
+            if(why) snprintf(why, n, "Trainer is enabled for '%s' - replay needs it off.", r->dir);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Auto-restore on replay-file load (REPLAY.md 4.1): scan the installs and
+ * pick one that IS the recording - exact vector match first (preferring the
+ * recorded dir if it still matches), else the first runnable install of the
+ * same release, else no auto-launch.  Never applies one release's layout to
+ * another: that falls out of same_vector() refusing. */
+static void replay_autorestore(HWND h, LaunchState *st){
+    int k, same = -1;
+    if(!st->rhdr_ok || !st->rhdr.trainer_off) return;
+    /* Exact pass over the dialog's install list. */
+    for(k=0;k<st->ninst;k++){
+        const RelResult *r = &st->inst[k];
+        if(!release_runnable(r) || !same_vector(&st->rhdr, r)) continue;
+        if(same < 0) same = k;
+        /* Prefer the recorded dir when it still matches. */
+        if(!_stricmp(r->dir, st->rhdr.dir_hint)){ same = k; break; }
+    }
+    if(same >= 0){
+        st->sel = same;
+        if(st->hInstall) SendMessageA(st->hInstall, CB_SETCURSEL, st->sel, 0);
+        reload_for_dir(h, st);
+        return;
+    }
+    /* Same release, different copy: first runnable install with the id. */
+    for(k=0;k<st->ninst;k++){
+        const RelResult *r = &st->inst[k];
+        if(release_runnable(r) && r->rel && !_stricmp(st->rhdr.release_id, r->rel->id)){
+            st->sel = k;
+            if(st->hInstall) SendMessageA(st->hInstall, CB_SETCURSEL, st->sel, 0);
+            reload_for_dir(h, st);
+            return;
+        }
+    }
+    /* No match: no auto-launch.  show_detection() (via the caller) leaves
+     * Launch disabled and Details carries the recorded-vs-found report. */
+    (void)h;
+}
+
+/* Push one replay file through parse + restore + detection-line update.
+ * Silent (no popups): typing a half-finished path must not nag. */
+static void replay_load_file(HWND h, LaunchState *st){
+    if(!st->replay_path[0]){
+        st->rhdr_ok = 0;
+        snprintf(st->replay_err, sizeof(st->replay_err), "Pick a .pfr replay file.");
+    } else if(replay_read_header(st->replay_path, &st->rhdr) != 0){
+        st->rhdr_ok = 0;
+        snprintf(st->replay_err, sizeof(st->replay_err),
+                 "Not a readable replay file: %s", st->replay_path);
+    } else {
+        st->rhdr_ok = 1;
+        st->replay_err[0] = 0;
+        replay_autorestore(h, st);
+    }
+    show_detection(h, st);
+}
+
+/* Mode switching: the trainer checkbox is greyed out in record and replay
+ * modes (REPLAY.md 4), and entering those modes unchecks it - the trainer
+ * is incompatible with both, and main() refuses to start either mode with
+ * it on as a backstop (covers the CLI and hand-edited configs).  The volume
+ * slider stays enabled in all modes: volume is host gain, never recorded. */
+static void apply_mode_ui(HWND h, LaunchState *st){
+    int rec = (st->mode != LAUNCH_PLAY);
+    if(st->hModePlay) CheckDlgButton(h, ID_MODE_PLAY, st->mode==LAUNCH_PLAY?BST_CHECKED:BST_UNCHECKED);
+    if(st->hModeRecord) CheckDlgButton(h, ID_MODE_RECORD, st->mode==LAUNCH_RECORD?BST_CHECKED:BST_UNCHECKED);
+    if(st->hModeReplay) CheckDlgButton(h, ID_MODE_REPLAY, st->mode==LAUNCH_REPLAY?BST_CHECKED:BST_UNCHECKED);
+    if(st->hPath) EnableWindow(st->hPath, rec);
+    if(st->hBrowse) EnableWindow(st->hBrowse, rec);
+    if(st->hPathLabel) EnableWindow(st->hPathLabel, rec);
+    if(rec){
+        int balls, spring;
+        st->cheat_enable = 0;
+        CheckDlgButton(h, ID_CHEAT_ENABLE, BST_UNCHECKED);
+        if(st->hCheatEnable) EnableWindow(st->hCheatEnable, FALSE);
+        /* A saved trainer-on must not survive into the session either: the
+         * mode owns it, so it goes off on commit (see ID_LAUNCH). */
+        read_cheats_cfg(cur_game_dir(st), &balls, &spring);
+        (void)balls; (void)spring;
+        if(st->mode == LAUNCH_RECORD && !st->path_custom){
+            default_record_path(st);
+            if(st->hPath){
+                st->updating_path = 1;
+                SetWindowTextA(st->hPath, st->replay_path);
+                st->updating_path = 0;
+            }
+        }
+        if(st->mode == LAUNCH_REPLAY) replay_load_file(h, st);
+    } else {
+        int balls, spring;
+        if(st->hCheatEnable) EnableWindow(st->hCheatEnable, TRUE);
+        /* Leaving record/replay restores the saved trainer state into the
+         * checkbox; play mode neither forces nor forbids it. */
+        read_cheats_cfg(cur_game_dir(st), &balls, &spring);
+        st->cheat_enable = balls || spring;
+        CheckDlgButton(h, ID_CHEAT_ENABLE, st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
+    }
+    show_detection(h, st);
+}
+
 /* The one read-only line that replaced the version radio buttons: whatever
  * the detector concluded about the selected directory.  Launch is enabled
  * only for a release that was actually recognised - an unknown or mixed
@@ -436,12 +640,39 @@ static void show_detection(HWND h, LaunchState *st){
     const RelResult *r = cur_inst(st);
     char line[300];
     HWND btn = GetDlgItem(h, ID_LAUNCH);
-    if(!r) snprintf(line, sizeof(line), "No game found. Put one release's files in GAME\\.");
-    else if(release_runnable(r)) snprintf(line, sizeof(line), "Detected: %s", r->summary);
-    else snprintf(line, sizeof(line), "%s: %s", release_state_name(r->state), r->summary);
-    if(st->hDetected) SetWindowTextA(st->hDetected, line);
-    if(btn) EnableWindow(btn, r && release_runnable(r));
-    if(st->hDetails) EnableWindow(st->hDetails, r != NULL);
+    if(st->mode == LAUNCH_REPLAY){
+        /* Replay: Launch needs a valid file AND a matching install
+         * (REPLAY.md 4.1).  Details stays enabled so a refusal explains
+         * itself through the recorded-vs-found report. */
+        char why[256];
+        if(replay_selection_ok(st, why, sizeof(why))){
+            snprintf(line, sizeof(line), "Replay ready: %s", st->rhdr.summary);
+            if(st->hDetected) SetWindowTextA(st->hDetected, line);
+            if(btn) EnableWindow(btn, TRUE);
+        } else {
+            snprintf(line, sizeof(line), "Replay: %s", why);
+            if(st->hDetected) SetWindowTextA(st->hDetected, line);
+            if(btn) EnableWindow(btn, FALSE);
+        }
+        if(st->hDetails) EnableWindow(st->hDetails, TRUE);
+    } else if(st->mode == LAUNCH_RECORD){
+        if(!r) snprintf(line, sizeof(line), "No game found. Put one release's files in GAME\\.");
+        else if(release_runnable(r) && st->replay_path[0])
+            snprintf(line, sizeof(line), "Record %.120s -> %.120s", r->summary, st->replay_path);
+        else if(release_runnable(r))
+            snprintf(line, sizeof(line), "Record %s (pick a target file)", r->summary);
+        else snprintf(line, sizeof(line), "%s: %s", release_state_name(r->state), r->summary);
+        if(st->hDetected) SetWindowTextA(st->hDetected, line);
+        if(btn) EnableWindow(btn, r && release_runnable(r) && st->replay_path[0]);
+        if(st->hDetails) EnableWindow(st->hDetails, r != NULL);
+    } else {
+        if(!r) snprintf(line, sizeof(line), "No game found. Put one release's files in GAME\\.");
+        else if(release_runnable(r)) snprintf(line, sizeof(line), "Detected: %s", r->summary);
+        else snprintf(line, sizeof(line), "%s: %s", release_state_name(r->state), r->summary);
+        if(st->hDetected) SetWindowTextA(st->hDetected, line);
+        if(btn) EnableWindow(btn, r && release_runnable(r));
+        if(st->hDetails) EnableWindow(st->hDetails, r != NULL);
+    }
     /* The six game options are the intro's own PINBALL.CFG structure, and the
      * 1993 demo's intro simply has none - no F5 menu, no config file, nothing
      * for fantasies.c to poke (see its cfg_buf).  Offering combo boxes that
@@ -476,6 +707,44 @@ static void reload_for_dir(HWND h, LaunchState *st){
         for(i=0;i<6;i++) SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
         CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
+    }
+    if(st->mode != LAUNCH_PLAY){
+        /* The install switch must not resurrect the trainer behind the
+         * mode's back: it stays unchecked and greyed until Play returns. */
+        st->cheat_enable = 0;
+        CheckDlgButton(h,ID_CHEAT_ENABLE,BST_UNCHECKED);
+        if(st->hCheatEnable) EnableWindow(st->hCheatEnable, FALSE);
+        if(st->mode == LAUNCH_RECORD && !st->path_custom){
+            default_record_path(st);
+            if(st->hPath){
+                st->updating_path = 1;
+                SetWindowTextA(st->hPath, st->replay_path);
+                st->updating_path = 0;
+            }
+        }
+        /* Replay shows the FILE's session, not the install's current
+         * settings: sound, quality, the six options and fullscreen are
+         * what the run will use (quality/options/sound are verified and
+         * enforced at runtime; fullscreen is host-only).  Display only -
+         * replay mode writes no configs on Launch. */
+        if(st->mode == LAUNCH_REPLAY && st->rhdr_ok && st->hSound){
+            int i;
+            st->sound = st->rhdr.sound ? 1 : 0;
+            CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
+            st->quality = st->rhdr.quality;
+            if(st->quality < 0) st->quality = 0;
+            if(st->quality > 4) st->quality = 4;
+            SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
+            for(i=0;i<6;i++){
+                int v = st->rhdr.options[i];
+                if(v < 0) v = 0;
+                if(v >= opts[i].n) v = opts[i].n - 1;
+                st->cfg[i] = (uint8_t)v;
+                SendMessageA(st->hOpt[i],CB_SETCURSEL,v,0);
+            }
+            st->fullscreen = st->rhdr.fullscreen ? 1 : 0;
+            CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
+        }
     }
     show_detection(h, st);
 }
@@ -606,6 +875,42 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         SendMessageA(st->hFullscreen,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
         y += 30;
+        /* Session record / replay (docs/REPLAY.md section 4): same dialog,
+         * below fullscreen.  CLI -record/-replay and these radios are thin
+         * frontends to the same emu-time injector; the header auto-captures
+         * release, ips, quality and options on record. */
+        c = CreateWindowExA(0,"STATIC","Session:",WS_CHILD|WS_VISIBLE,
+                            24,y+3,56,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hModePlay = CreateWindowExA(0,"BUTTON","Play",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_GROUP|BS_AUTORADIOBUTTON,
+                            84,y,56,20,h,(HMENU)ID_MODE_PLAY,cs->hInstance,0);
+        SendMessageA(st->hModePlay,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hModeRecord = CreateWindowExA(0,"BUTTON","Record",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
+                            144,y,70,20,h,(HMENU)ID_MODE_RECORD,cs->hInstance,0);
+        SendMessageA(st->hModeRecord,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hModeReplay = CreateWindowExA(0,"BUTTON","Replay",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
+                            218,y,70,20,h,(HMENU)ID_MODE_REPLAY,cs->hInstance,0);
+        SendMessageA(st->hModeReplay,WM_SETFONT,(WPARAM)st->hFont,0);
+        CheckDlgButton(h,ID_MODE_PLAY,st->mode==LAUNCH_PLAY?BST_CHECKED:BST_UNCHECKED);
+        CheckDlgButton(h,ID_MODE_RECORD,st->mode==LAUNCH_RECORD?BST_CHECKED:BST_UNCHECKED);
+        CheckDlgButton(h,ID_MODE_REPLAY,st->mode==LAUNCH_REPLAY?BST_CHECKED:BST_UNCHECKED);
+        y += 24;
+        st->hPathLabel = CreateWindowExA(0,"STATIC","File:",WS_CHILD|WS_VISIBLE,
+                            24,y+3,36,16,h,0,cs->hInstance,0);
+        SendMessageA(st->hPathLabel,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hPath = CreateWindowExA(0,"EDIT","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,
+                            64,y,216,22,h,(HMENU)ID_REPLAY_PATH,cs->hInstance,0);
+        SendMessageA(st->hPath,WM_SETFONT,(WPARAM)st->hFont,0);
+        if(st->replay_path[0]) SetWindowTextA(st->hPath, st->replay_path);
+        st->hBrowse = CreateWindowExA(0,"BUTTON","Browse...",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                            286,y,62,22,h,(HMENU)ID_BROWSE,cs->hInstance,0);
+        SendMessageA(st->hBrowse,WM_SETFONT,(WPARAM)st->hFont,0);
+        y += 30;
         c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
                             184,y+8,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
@@ -614,7 +919,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
                             272,y+8,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
-        show_detection(h, st);   /* needs the Launch button to exist */
+        apply_mode_ui(h, st);   /* needs the Launch button to exist */
         return 0; }
     /* The trackbar reports through WM_HSCROLL, not WM_COMMAND. */
     case WM_HSCROLL:
@@ -641,14 +946,92 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             /* The full report, verbatim and selectable (Ctrl+C copies a
              * message box whole).  For a release we do not know this is also
              * the intake format: five sizes and hashes the user can send on
-             * without having run anything. */
+             * without having run anything.  In replay mode the recorded
+             * header leads, so a refused file explains itself against what
+             * was actually found. */
             const RelResult *r = cur_inst(st);
-            if(r) MessageBoxA(h, r->detail, "pfemu - detection details", MB_OK);
+            if(st->mode == LAUNCH_REPLAY && st->rhdr_ok){
+                static char both[4096];
+                char head[2048];
+                replay_header_detail(&st->rhdr, head, sizeof(head));
+                snprintf(both, sizeof(both), "%s\n[current install]\n%s",
+                         head, r ? r->detail : "(none)");
+                MessageBoxA(h, both, "pfemu - replay details", MB_OK);
+            }
+            else if(r) MessageBoxA(h, r->detail, "pfemu - detection details", MB_OK);
+        } else if(id==ID_MODE_PLAY || id==ID_MODE_RECORD || id==ID_MODE_REPLAY){
+            st->mode = (id==ID_MODE_RECORD) ? LAUNCH_RECORD :
+                       (id==ID_MODE_REPLAY) ? LAUNCH_REPLAY : LAUNCH_PLAY;
+            apply_mode_ui(h, st);
+        } else if(id==ID_BROWSE){
+            OPENFILENAMEA ofn;
+            char file[512];
+            memset(&ofn, 0, sizeof(ofn));
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = h;
+            ofn.lpstrFilter = "Pinball replays (*.pfr)\0*.pfr\0All files (*.*)\0*.*\0";
+            ofn.nFilterIndex = 1;
+            snprintf(file, sizeof(file), "%s", st->replay_path);
+            ofn.lpstrFile = file;
+            ofn.nMaxFile = (DWORD)sizeof(file);
+            ofn.lpstrDefExt = "pfr";
+            /* OFN_NOCHANGEDIR is load-bearing: without it the dialog leaves
+             * the process CWD in the picked file's directory, and every
+             * install dir (stored relative: "FANTASY", ...) stops resolving
+             * the moment main() runs detection - a replay picked from
+             * anywhere but here then "quits on Launch" with only a stderr
+             * message nobody can see. */
+            if(st->mode == LAUNCH_REPLAY){
+                ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+                if(!GetOpenFileNameA(&ofn)) return 0;
+            } else {
+                ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+                if(!GetSaveFileNameA(&ofn)) return 0;
+            }
+            snprintf(st->replay_path, sizeof(st->replay_path), "%s", file);
+            st->path_custom = 1;
+            if(st->hPath){
+                st->updating_path = 1;
+                SetWindowTextA(st->hPath, st->replay_path);
+                st->updating_path = 0;
+            }
+            if(st->mode == LAUNCH_REPLAY) replay_load_file(h, st);
+            else show_detection(h, st);
+        } else if(id==ID_REPLAY_PATH && HIWORD(w)==EN_CHANGE){
+            if(st->updating_path) return 0;
+            if(st->hPath){
+                GetWindowTextA(st->hPath, st->replay_path, (int)sizeof(st->replay_path));
+                st->path_custom = 1;
+            }
+            if(st->mode == LAUNCH_REPLAY) replay_load_file(h, st);
+            else show_detection(h, st);
         } else if(id==ID_LAUNCH){
             int i;
             const RelResult *r = cur_inst(st);
             const char *dir;
+            if(st->mode == LAUNCH_REPLAY){
+                /* No config writes in replay mode: the install's files are
+                 * the session's inputs, and replay promises never to write
+                 * the real overlay (REPLAY.md 3.3 - DOS writes instead go
+                 * to the temp copy).  The volume slider is exempt: host
+                 * gain only, never recorded - but even it is not persisted
+                 * here; main() skips the exit save on replay too. */
+                char why[256];
+                if(!replay_selection_ok(st, why, sizeof(why))){
+                    MessageBoxA(h, why, "pfemu - cannot replay",
+                                MB_OK|MB_ICONEXCLAMATION);
+                    return 0;
+                }
+                st->ok = 1; st->done = 1;
+                DestroyWindow(h);
+                return 0;
+            }
             if(!release_runnable(r)) return 0;
+            if(st->mode == LAUNCH_RECORD && !st->replay_path[0]){
+                MessageBoxA(h, "Pick a target .pfr file first.",
+                            "pfemu - cannot record", MB_OK|MB_ICONEXCLAMATION);
+                return 0;
+            }
             dir = r->dir;
             { LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
               if(sel != CB_ERR) st->quality = (int)sel; }
@@ -659,7 +1042,13 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                 st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_pinball_defaults[i] : sel);
             }
             write_pinball_cfg(dir, st->cfg);
-            write_cheats_cfg(dir, st->cheat_enable, st->cheat_enable);
+            if(st->mode == LAUNCH_RECORD)
+                /* The trainer is incompatible with recording: the checkbox
+                 * was unchecked and greyed on mode entry, and main()
+                 * refuses as a backstop.  The session runs with it off. */
+                write_cheats_cfg(dir, 0, 0);
+            else
+                write_cheats_cfg(dir, st->cheat_enable, st->cheat_enable);
             write_fullscreen_cfg(dir, st->fullscreen);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
@@ -686,7 +1075,7 @@ int show_launcher(LaunchChoice *out){
      * report text to put on the stack for a dialog that runs once. */
     static LaunchState st;
     int sw, sh;
-    int winw = 372, winh = 528;
+    int winw = 372, winh = 584;
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     memset(&st,0,sizeof(st));
@@ -746,5 +1135,7 @@ int show_launcher(LaunchChoice *out){
                  r->boot[0] ? r->boot : r->rel->boot);
     }
     out->fullscreen = st.fullscreen;
+    out->mode = st.mode;
+    snprintf(out->replay_path, sizeof(out->replay_path), "%s", st.replay_path);
     return 1;
 }

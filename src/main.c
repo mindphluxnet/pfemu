@@ -1,6 +1,7 @@
 /* Win32 host: window, framebuffer presentation, keyboard, main emulation loop */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <stdarg.h>
 #include "pfemu.h"
 
 extern void  emu_advance(void);
@@ -43,6 +44,21 @@ static int screenshot_pending = 0;
 static int vol_premute = -1, vol_muted = 0;
 static LONG windowed_style;
 static RECT windowed_rect;
+
+/* 1 once the launcher dialog returned Launch: refusals after that point get
+ * a MessageBox as well as stderr.  A windowed process has no console, so a
+ * stderr-only message looks exactly like "Launch does nothing, the emulator
+ * just quits".  CLI runs (from_launcher == 0) never pop up. */
+static int from_launcher = 0;
+static void fail_msg(const char *fmt, ...){
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "%s\n", buf);
+    if(from_launcher) MessageBoxA(NULL, buf, "pfemu", MB_OK|MB_ICONEXCLAMATION);
+}
 
 /* ----------------------------------------------------------------- OSD --
  * Host-only on-screen notification, drawn straight into the presented
@@ -136,8 +152,10 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
     switch(m){
     case WM_DESTROY: case WM_CLOSE: running = 0; PostQuitMessage(0); return 0;
     case WM_SIZE: win_w = LOWORD(l); win_h = HIWORD(l); return 0;
-    case WM_KILLFOCUS: kbd_release_all(); break;
-    case WM_ACTIVATE: if(LOWORD(w) == WA_INACTIVE) kbd_release_all(); break;
+    /* Focus-loss releases are host leakage (docs/REPLAY.md section 2.4):
+     * suppressed on replay, where no live keyboard reaches the guest. */
+    case WM_KILLFOCUS: if(!replay_is_replaying()) kbd_release_all(); break;
+    case WM_ACTIVATE: if(LOWORD(w) == WA_INACTIVE && !replay_is_replaying()) kbd_release_all(); break;
     case WM_ERASEBKGND: return 1;
     case WM_SYSKEYDOWN: case WM_KEYDOWN: {
         int sc = (l >> 16) & 0xFF;
@@ -147,9 +165,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
          * arrows and space. */
         if(w == VK_SCROLL){ running = 0; return 0; }
         /* Alt+Enter toggles fullscreen; bit 30 filters key-repeat so holding
-         * it doesn't flap the window every auto-repeat interval. */
+         * it doesn't flap the window every auto-repeat interval.  Suppressed
+         * on replay: a host-only key with no guest effect and no log entry
+         * (docs/REPLAY.md section 3.3); volume keys below stay live. */
         if(m == WM_SYSKEYDOWN && w == VK_RETURN && !(l & (1<<30))){
-            set_fullscreen(!fullscreen);
+            if(!replay_is_replaying()) set_fullscreen(!fullscreen);
             return 0;
         }
         /* F11 saves a screenshot; bit 30 filters key-repeat like Alt+Enter
@@ -157,7 +177,9 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
          * launches Snipping Tool before this window ever sees it.  F11 isn't
          * one of the keys the game reads (see the scan-code list above). */
         if(m == WM_KEYDOWN && w == VK_F11 && !(l & (1<<30))){
-            screenshot_pending = 1;
+            /* Suppressed on replay like Alt+Enter above (a file write the
+             * recording never made); validation uses -shotevery instead. */
+            if(!replay_is_replaying()) screenshot_pending = 1;
             return 0;
         }
         /* Volume: - and + (main row or keypad) in 5% steps, keypad * mutes
@@ -201,12 +223,15 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
             fprintf(stderr, "[snd] volume %d%%\n", audio_volume);
             return 0;
         }
-        if(sc) kbd_key(sc | (ext?0xE000:0), 1);
+        /* No live-keyboard merge on replay in v1 (docs/REPLAY.md section
+         * 3.3): the guest sees the recorded event list and nothing else.
+         * Volume keys above stay live; they never reach kbd_key(). */
+        if(sc && !replay_is_replaying()) kbd_key(sc | (ext?0xE000:0), 1);
         return 0; }
     case WM_SYSKEYUP: case WM_KEYUP: {
         int sc = (l >> 16) & 0xFF;
         int ext = (l >> 24) & 1;
-        if(sc) kbd_key(sc | (ext?0xE000:0), 0);
+        if(sc && !replay_is_replaying()) kbd_key(sc | (ext?0xE000:0), 0);
         return 0; }
     }
     return DefWindowProc(h,m,w,l);
@@ -450,7 +475,12 @@ int main(int argc, char **argv){
     LaunchChoice lc;
     int no_launcher = 0;      /* -nolauncher: skip the picker dialog */
     int explicit_prog = 0;    /* -p / -setup names the program directly */
+    int prog_opt = 0;         /* -p alone (not -setup) */
+    int setup_opt = 0;        /* -setup */
     int start_fullscreen = 0; /* -fullscreen, or the launcher's checkbox */
+    const char *record_path = NULL; /* -record FILE / launcher record mode */
+    const char *replay_path = NULL; /* -replay FILE / launcher replay mode */
+    int ips_given = 0, speed_given = 0;
     /* Windows-subsystem binary: no console of its own, so double-clicking
      * shows only the UI.  When started from a console, reattach to it so
      * CLI output (-secs stats, traces) still works — but never steal a
@@ -476,15 +506,17 @@ int main(int argc, char **argv){
 
     for(i=1;i<argc;i++){
         if(!strcmp(argv[i],"-d") && i+1<argc) dir = argv[++i];
-        else if(!strcmp(argv[i],"-p") && i+1<argc){ prog = argv[++i]; explicit_prog = 1; }
+        else if(!strcmp(argv[i],"-p") && i+1<argc){ prog = argv[++i]; explicit_prog = 1; prog_opt = 1; }
         /* -setup: boot the sound-configuration utility instead of the game.
          * Equivalent to -p SETSOUND.EXE, but discoverable.  Pick SoundBlaster
          * (base 220h, IRQ 7), answer its questions, and it writes SOUND.CFG;
          * the write goes to PFEMU-STATE/ via the DOS overlay, so the
          * installed files stay pristine.  The game then uses it on next boot. */
-        else if(!strcmp(argv[i],"-setup")){ prog = "SETSOUND.EXE"; explicit_prog = 1; }
+        else if(!strcmp(argv[i],"-setup")){ prog = "SETSOUND.EXE"; explicit_prog = 1; setup_opt = 1; }
         else if(!strcmp(argv[i],"-t")){ trace_level = 1; trace_fp = fopen("pfemu.log","w"); }
-        else if(!strcmp(argv[i],"-ips") && i+1<argc) emu_ips = atof(argv[++i]);
+        else if(!strcmp(argv[i],"-record") && i+1<argc) record_path = argv[++i];
+        else if(!strcmp(argv[i],"-replay") && i+1<argc) replay_path = argv[++i];
+        else if(!strcmp(argv[i],"-ips") && i+1<argc){ emu_ips = atof(argv[++i]); ips_given = 1; }
         else if(!strcmp(argv[i],"-secs") && i+1<argc) max_secs = atof(argv[++i]);
         else if(!strcmp(argv[i],"-shot") && i+1<argc) shotfile = argv[++i];
         else if(!strcmp(argv[i],"-keys") && i+1<argc) keyscript = argv[++i];
@@ -533,7 +565,7 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-memwatch") && i+1<argc){ memwatch_addr = (uint32_t)strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-trap") && i+2<argc){ extern uint32_t x_trap_lo, x_trap_hi; extern int x_on;
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
-        else if(!strcmp(argv[i],"-speed") && i+1<argc) speed = atof(argv[++i]);
+        else if(!strcmp(argv[i],"-speed") && i+1<argc){ speed = atof(argv[++i]); speed_given = 1; }
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
         else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
@@ -554,6 +586,53 @@ int main(int argc, char **argv){
          * get release metadata applied to code that was not recognised, so
          * it is a switch the user has to type, never a fallback. */
         else if(!strcmp(argv[i],"-release") && i+1<argc) force_release = argv[++i];
+    }
+    /* Session record / replay (docs/REPLAY.md): refuse nonsense combos
+     * first, then let the replay header override the clock. */
+    if(record_path && replay_path){
+        fail_msg("cannot -record and -replay in one run");
+        return 1;
+    }
+    if(setup_opt && (record_path || replay_path)){
+        fail_msg("cannot combine -setup with -record/-replay");
+        return 1;
+    }
+    if(prog_opt && replay_path){
+        fail_msg("cannot combine -p with -replay: replay boots the recorded program");
+        return 1;
+    }
+    if(replay_path && replay_begin_replay(replay_path) != 0){
+        const char *e = replay_parse_error();
+        if(e) fail_msg("%s", e);
+        else fail_msg("cannot replay '%s'", replay_path);
+        return 1;
+    }
+    if(replay_path){
+        int h;
+        double f = replay_forced_ips(&h);
+        if(h){
+            if(ips_given) fprintf(stderr, "[replay] ignoring -ips %.0f, using recorded %.0f\n",
+                                  emu_ips, f);
+            emu_ips = f;
+        }
+        f = replay_forced_speed(&h);
+        if(h){
+            if(speed_given) fprintf(stderr, "[replay] ignoring -speed %g, using recorded %g\n",
+                                    speed, f);
+            speed = f;
+        }
+        /* The wall-clock keyscript path is replaced by the emu-time
+         * injector; a script beside a replay would double-drive the guest. */
+        if(keyscript){
+            fprintf(stderr, "[replay] ignoring -keys during replay\n");
+            keyscript = NULL;
+        }
+    }
+    /* Recording forces real-time speed: the event timestamps only mean what
+     * they say when one wall second is one emulated second. */
+    if(record_path && speed != 1.0){
+        fprintf(stderr, "[record] forcing speed=1 (was %g)\n", speed);
+        speed = 1.0;
     }
     if(emu_ips <= 0.0) emu_ips = 6000000.0;
     emu_inv_ips = 1.0 / emu_ips;
@@ -581,10 +660,33 @@ int main(int argc, char **argv){
      * the program, -secs means a headless benchmark, -nolauncher forces the
      * old behaviour (boot dir/prog straight away).  In picker mode -d is
      * ignored: the directory comes from the selected installation. */
-    if(!no_launcher && !explicit_prog && max_secs <= 0.0){
+    if(!no_launcher && !explicit_prog && max_secs <= 0.0 && !record_path && !replay_path){
         if(!show_launcher(&lc)) return 0;
+        from_launcher = 1;
         dir = lc.dir; prog = lc.prog;
         if(lc.fullscreen) start_fullscreen = 1;
+        /* The launcher's record/replay mode is the same frontend as the
+         * CLI flags above (docs/REPLAY.md section 4). */
+        if(lc.mode == LAUNCH_RECORD) record_path = lc.replay_path;
+        else if(lc.mode == LAUNCH_REPLAY) replay_path = lc.replay_path;
+        if(replay_path && replay_begin_replay(replay_path) != 0){
+            const char *e = replay_parse_error();
+            if(e) fail_msg("%s", e);
+            else fail_msg("cannot replay '%s'", replay_path);
+            return 1;
+        }
+        if(replay_path){
+            int h;
+            double f = replay_forced_ips(&h);
+            if(h){ emu_ips = f; emu_inv_ips = 1.0 / emu_ips; }
+            f = replay_forced_speed(&h);
+            if(h) speed = f;
+            if(keyscript){
+                fprintf(stderr, "[replay] ignoring -keys during replay\n");
+                keyscript = NULL;
+            }
+        }
+        if(record_path) speed = 1.0;
     }
     /* No -d and no launcher: take the first installation the detector finds
      * (GAME, then the rest alphabetically), so a headless run needs no more
@@ -594,6 +696,14 @@ int main(int argc, char **argv){
         int n = release_scan(found, 8), k;
         for(k=0;k<n;k++) if(release_runnable(&found[k])){ dir = found[k].dir; break; }
         if(!dir) dir = n ? found[0].dir : "GAME";
+    }
+    {   /* Install dirs are stored relative ("FANTASY", ...): resolve once
+         * against the launch-time CWD so nothing that moves it afterwards
+         * (a file dialog, a shortcut's "Start in" dir) changes which
+         * install boots or where its state lives. */
+        static char absdir[1024];
+        if(dir && GetFullPathNameA(dir, (DWORD)sizeof(absdir), absdir, NULL) && absdir[0])
+            dir = absdir;
     }
 
     /* Identify the release by content.  The launcher already did this for its
@@ -645,6 +755,45 @@ int main(int argc, char **argv){
      * can be poked into a different intro's code. */
     fantasies_begin_session(dir, prog, release_runnable(&rel) ? rel.rel : NULL);
 
+    /* Replay preconditions (docs/REPLAY.md sections 3.2/3.3): the trainer is
+     * incompatible with both modes, recording needs a recognised install to
+     * have any identity to store, and replay boots the recorded program in
+     * the recorded environment - verified before anything runs. */
+    if((record_path || replay_path) && fantasies_trainer_enabled()){
+        fail_msg("[replay] refused: the trainer is enabled for '%s'."
+                 " Recording and replay need it off.", dir);
+        return 1;
+    }
+    if(record_path && !release_runnable(&rel)){
+        fail_msg("[record] refused: '%s' is not a recognised release"
+                 " (%s: %s).",
+                 dir, release_state_name(rel.state), rel.summary);
+        return 1;
+    }
+    if(replay_path){
+        char why[512];
+        if(replay_verify_install(&rel, prog, why, sizeof(why)) != 0){
+            fail_msg("%s", why);
+            return 1;
+        }
+        replay_apply_recorded_env();
+        /* The session runs the recorded view, not the install's current
+         * one: fullscreen is host-only, but it is part of the session. */
+        start_fullscreen = replay_recorded_fullscreen();
+    }
+    if(record_path){
+        int sound = read_sound_is_sb(dir);
+        int quality = read_sound_quality(dir);
+        uint8_t opts[6];
+        replay_read_options(dir, opts);
+        if(replay_begin_record(record_path, &rel, prog, emu_ips,
+                               dos_no_patch, dos_no_lzexe, sound, quality, opts,
+                               start_fullscreen) != 0){
+            fail_msg("[record] cannot write '%s'", record_path);
+            return 1;
+        }
+    }
+
     ram = (uint8_t*)calloc(RAM_SIZE,1);
     if(!ram){ fprintf(stderr,"out of memory\n"); return 1; }
 
@@ -653,6 +802,15 @@ int main(int argc, char **argv){
     dev_init();
     bios_init();
     dos_init(dir);
+    /* After dos_init (which points the overlay at the install) and before
+     * dos_exec (which first touches it): replay works on a temp copy, so
+     * the user's real PFEMU-STATE/ is never written (REPLAY.md 3.3). */
+    if(replay_path){
+        replay_isolate_overlay(dir);
+        /* ...and the recorded sound notch into the temp copy, so the
+         * driver mixes as recorded even when the install moved on. */
+        replay_apply_config_to_overlay();
+    }
     plat_init("Pinball Fantasies - pfemu");
     if(start_fullscreen) plat_set_fullscreen(1);
 
@@ -672,7 +830,7 @@ int main(int argc, char **argv){
         mem_w16(sp+4, 0x0202);
     }
     if(dos_exec(prog, 0, 0, 0, 0) != 0){
-        fprintf(stderr,"could not load %s from %s\n", prog, dir);
+        fail_msg("could not load %s from %s", prog, dir);
         return 1;
     }
 
@@ -682,14 +840,27 @@ int main(int argc, char **argv){
         double wall = plat_time() - t0;
         double real = wall * speed;
         if(max_secs > 0 && wall > max_secs) break;
-        kbd_reconcile_physical();
+        /* Reconcile reads live host key state: a leak on replay, where the
+         * guest must see only the recorded list (REPLAY.md 2.4/3.3). */
+        if(!replay_is_replaying()) kbd_reconcile_physical();
         if(keyscript) run_keyscript(keyscript, real);
         int guard = 0;
         while(emu_time < real && !cpu.shutdown && guard < 10000){
             int n;
+            /* Emu-time injection (REPLAY.md 2.1): due events fire on the
+             * emulated clock before the next batch runs. */
+            if(replay_is_replaying()) replay_inject_due();
             if(cpu.halted){
                 /* idle: jump the clock forward to the next scheduled event */
-                cpu.cycles += (uint64_t)(emu_ips / 10000.0);
+                uint64_t step = (uint64_t)(emu_ips / 10000.0);
+                if(replay_is_replaying()){
+                    /* Never jump past a recorded keypress: an HLT wait for
+                     * input would otherwise land the event a jump late. */
+                    uint64_t rdl = replay_next_deadline();
+                    if(rdl != ~(uint64_t)0 && rdl < cpu.cycles + step)
+                        step = (rdl > cpu.cycles) ? (rdl - cpu.cycles) : 0;
+                }
+                cpu.cycles += step;
                 dev_tick();
             } else {
                 /* Run up to 256 instructions, but never past the next timer
@@ -701,6 +872,13 @@ int main(int argc, char **argv){
                  * far below anything the game can observe (PIT tick 55 ms). */
                 uint64_t dl = dev_next_deadline();
                 int lim = 256;
+                /* Clamp the batch to the next recorded event, the same way
+                 * the IRQ0 deadline keeps timer precision: injection stays
+                 * within a few instructions of the recorded time. */
+                if(replay_is_replaying()){
+                    uint64_t rdl = replay_next_deadline();
+                    if(rdl < dl) dl = rdl;
+                }
                 /* A deadline that is already here (dl == cpu.cycles, because
                  * dev_next_deadline() truncates the remaining instruction
                  * count down) used to fail the `dl > cpu.cycles` test and fall
@@ -792,9 +970,19 @@ int main(int argc, char **argv){
                     }
                 }
             }
+            /* Batch-precision replay stop: the outer check below only runs
+             * once per (frame-paced) outer iteration, which lands the
+             * footer up to a frame late.  Catch it here instead, on the
+             * batch that crosses it - the footer deadline above already
+             * clamped this batch to end right on it. */
+            if(replay_is_replaying() && replay_should_stop()) break;
             guard++;
         }
         if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; }  /* fell behind */
+        /* Replay end condition (REPLAY.md 3.3): the footer's emu_time, with
+         * the event list exhausted.  ScrollLock / window close still end it
+         * early through plat_pump(), exactly as in normal play. */
+        if(replay_is_replaying() && replay_should_stop()) break;
 
         /* No duplicate presents: the game renders at 59.71 Hz but the wall
          * timer runs at 60 Hz, so every ~3.4 s a frame went out twice
@@ -871,8 +1059,12 @@ int main(int argc, char **argv){
      * for no visible reason.  Riding - all the way down to 0 does save 0:
      * that one is explicit, and the launcher shows it as 0%.
      *
-     * -vol on its own never writes; only an in-window change does. */
-    if(audio_volume_dirty)
+     * -vol on its own never writes; only an in-window change does.
+     *
+     * Never on replay: the volume keys stay live (host gain only), but
+     * persisting them would write the user's real overlay, which replay
+     * promises never to touch (REPLAY.md 3.3). */
+    if(audio_volume_dirty && !replay_is_replaying())
         write_volume_cfg(dir, vol_muted && vol_premute > 0 ? vol_premute : audio_volume);
 
     vga_render(fb,&fbw,&fbh);
@@ -883,6 +1075,10 @@ int main(int argc, char **argv){
       printf("[pfemu] 3DA reads=%lu  bit0(blank)=%lu  bit3(vsync)=%lu\n",
              st1_calls, st1_bit0, st1_bit3); }
     { extern void st1_report(void); st1_report(); }
+    /* Close the recording with its footer before the exit reports below,
+     * so the file is complete even though the session is over. */
+    if(replay_is_recording()) replay_end_record();
+    replay_report();
     fantasies_ballgap_report();
     fantasies_matrix_report();
     { extern unsigned long vsync_edges;
@@ -946,6 +1142,8 @@ int main(int argc, char **argv){
       } }
     { extern void wav_close(void); extern void plat_audio_close(void);
       wav_close(); plat_audio_close(); }
+    dos_close_all_handles();
+    replay_cleanup_overlay();
     if(trace_fp) fclose(trace_fp);
     return 0;
 }

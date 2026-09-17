@@ -267,6 +267,19 @@ static void mcb_dump(const char *why){
 /* -------------------------------------------------------------- handles */
 typedef struct { FILE *f; int used; char name[260]; } DFile;
 static DFile fh[64];
+/* Exit-time close of every guest handle.  Only used so the replay overlay
+ * cleanup can delete the temp copy: on Windows an open FILE* pins its path,
+ * and the game commonly still holds its state files open when the session
+ * ends.  Nothing emulated runs after this. */
+static void find_state_reset(void);
+void dos_close_all_handles(void){
+    int h;
+    find_state_reset();
+    for(h=5;h<64;h++) if(fh[h].used){
+        fclose(fh[h].f);
+        fh[h].used = 0;
+    }
+}
 static uint16_t cur_psp;
 static uint16_t dta_seg, dta_off;
 static uint8_t  cur_drive = 2;             /* C: */
@@ -289,6 +302,21 @@ static int oa_active = 0;             /* INT 21h AH=0Ah line in progress */
  * across runs.  Sol's runtime does the same thing, and it is the right call.
  */
 static char writedir[600];
+/* Replay time freeze (docs/REPLAY.md section 2.3): guest-visible host time is
+ * virtualized on replay, so INT 21h AH=2Ah/2Ch and FindFirst/Next timestamps
+ * come from replay.c's fixed epoch instead of the host clock. */
+static int time_frozen = 0;
+void dos_set_time_frozen(int on){ time_frozen = on ? 1 : 0; }
+/* Replay overlay isolation (REPLAY.md section 3.3): point the write overlay
+ * at a temp copy so the user's real PFEMU-STATE/ is never written.  Called
+ * after dos_init(), which is the only other writer of this buffer. */
+void dos_remap_writedir(const char *dir){
+    size_t i, l;
+    snprintf(writedir, sizeof(writedir), "%s", dir);
+    for(i=0;writedir[i];i++) if(writedir[i]=='\\') writedir[i]='/';
+    l = strlen(writedir);
+    if(l && writedir[l-1]=='/') writedir[l-1]=0;
+}
 
 static int file_exists(const char *p){
     FILE *f = fopen(p, "rb");
@@ -669,7 +697,9 @@ static void fill_dta(const WIN32_FIND_DATAA *fd){
     if(fd->dwFileAttributes & FILE_ATTRIBUTE_READONLY)  attr |= 0x01;
     if(fd->dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)    attr |= 0x02;
     if(fd->dwFileAttributes & FILE_ATTRIBUTE_SYSTEM)    attr |= 0x04;
-    if(FileTimeToLocalFileTime(&fd->ftLastWriteTime,&lf) && FileTimeToSystemTime(&lf,&st)){
+    if(time_frozen){
+        replay_frozen_dos_dt(&dt, &tm);
+    } else if(FileTimeToLocalFileTime(&fd->ftLastWriteTime,&lf) && FileTimeToSystemTime(&lf,&st)){
         dt = (uint16_t)(((st.wYear-1980)<<9) | (st.wMonth<<5) | st.wDay);
         tm = (uint16_t)((st.wHour<<11) | (st.wMinute<<5) | (st.wSecond/2));
     }
@@ -827,12 +857,30 @@ void dos_int21(void){
         SI = (uint16_t)(s - cpu.sbase[S_DS]);
         AL = wild ? 1 : 0;
         break; }
-    case 0x2A: { time_t t = time(NULL); struct tm *lt = localtime(&t);
-        CX = (uint16_t)(lt->tm_year+1900); DH=(uint8_t)(lt->tm_mon+1); DL=(uint8_t)lt->tm_mday;
-        AL=(uint8_t)lt->tm_wday; break; }
-    case 0x2C: { time_t t = time(NULL); struct tm *lt = localtime(&t);
-        CH=(uint8_t)lt->tm_hour; CL=(uint8_t)lt->tm_min; DH=(uint8_t)lt->tm_sec;
-        DL=(uint8_t)((int)(emu_time*100)%100); break; }
+    case 0x2A: {
+        if(time_frozen){
+            int y, mo, d, w;
+            replay_frozen_datetime(&y, &mo, &d, &w, NULL, NULL, NULL);
+            CX = (uint16_t)y; DH = (uint8_t)mo; DL = (uint8_t)d; AL = (uint8_t)w;
+        } else {
+            time_t t = time(NULL); struct tm *lt = localtime(&t);
+            CX = (uint16_t)(lt->tm_year+1900); DH=(uint8_t)(lt->tm_mon+1); DL=(uint8_t)lt->tm_mday;
+            AL=(uint8_t)lt->tm_wday;
+        }
+        break; }
+    case 0x2C: {
+        /* DL (hundredths) is already deterministic - derived from emu_time,
+         * not the host - so it stays live even when frozen. */
+        DL=(uint8_t)((int)(emu_time*100)%100);
+        if(time_frozen){
+            int h, mi, s;
+            replay_frozen_datetime(NULL, NULL, NULL, NULL, &h, &mi, &s);
+            CH=(uint8_t)h; CL=(uint8_t)mi; DH=(uint8_t)s;
+        } else {
+            time_t t = time(NULL); struct tm *lt = localtime(&t);
+            CH=(uint8_t)lt->tm_hour; CL=(uint8_t)lt->tm_min; DH=(uint8_t)lt->tm_sec;
+        }
+        break; }
     case 0x2F: set_sreg(S_ES, dta_seg); BX = dta_off; break;
     case 0x30: AL = 5; AH = 0; BH = 0xFF; BL = 0; CX = 0; break;
     case 0x33: if(AL==0) DL=0; break;

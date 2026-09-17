@@ -366,6 +366,15 @@ static void load_options_cache(void){
     char path[600];
     FILE *f;
     options_loaded = 1;
+    /* On replay the session runs the recorded blob, not the install's
+     * current file (docs/REPLAY.md section 3.1): the six bytes are game
+     * behavior, so a launcher change after recording must not leak in. */
+    if(replay_is_replaying() && replay_recorded_options(options_cache)){
+        trc("[fantasies] replay options: %02X %02X %02X %02X %02X %02X\n",
+            options_cache[0],options_cache[1],options_cache[2],
+            options_cache[3],options_cache[4],options_cache[5]);
+        return;
+    }
     snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", session_dir);
     f = fopen(path, "rb");
     if(!f) return;
@@ -1067,8 +1076,15 @@ void fantasies_spring_tick(void){
  * load_cheat_cfg above): unchecked, both hotkeys are completely inert - not
  * just "cheats start off", but no keypress here ever touches memory at
  * all - same as before this feature existed. */
+/* The trainer invariant (docs/REPLAY.md sections 3.2/3.3): recording and
+ * replay require the trainer off, and the '1'/'2' hotkeys are dead in both
+ * modes even if a config says otherwise.  main() refuses to start either
+ * mode with it enabled; this is the backstop for the hotkeys themselves. */
+int fantasies_trainer_enabled(void){ return trainer_enabled; }
+
 void fantasies_key_event(int scancode, int down){
     int r;
+    if(replay_is_recording() || replay_is_replaying()) return;
     if(!down || !trainer_enabled || !fantasies_fix_active() || !table_num || dos_no_patch)
         return;
     if(scancode == 0x02){

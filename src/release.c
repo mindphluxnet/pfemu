@@ -417,6 +417,19 @@ int release_detect(const char *dir, RelResult *out){
     for(i=0;i<ncode;i++){
         code_have[i] = hash_in_dir(out->dir, &dl, lay->names[i], 0,
                                    code_sha[i], &code_size[i]) == 0;
+        /* The identity vector replay records (docs/REPLAY.md section 3.1):
+         * layout names in order with what is actually on disk, whatever the
+         * verdict below turns out to be. */
+        out->code_have[i] = code_have[i];
+        snprintf(out->code_names[i], sizeof(out->code_names[i]), "%s", lay->names[i]);
+        if(code_have[i]){
+            memcpy(out->code_sha[i], code_sha[i], 32);
+            out->code_size[i] = code_size[i];
+        } else {
+            memset(out->code_sha[i], 0, 32);
+            out->code_size[i] = 0;
+        }
+        out->ncode = ncode;
         origin[i] = NULL;
         if(!code_have[i]) continue;
         for(j=0;j<NRELEASES;j++){

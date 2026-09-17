@@ -207,6 +207,18 @@ typedef struct {
     int  odd;             /* required data files present but not this release's */
     char summary[160];    /* one line, for the launcher */
     char detail[8192];    /* the copyable report */
+    /* The code identity vector behind the verdict above: the layout's
+     * programs in layout order, with the SHA-256/size release.c matched on.
+     * Filled for every recognised-or-better verdict (and for unknown/mixed
+     * as far as the files present allow); the replay header records this
+     * vector verbatim so replay can refuse a different copy (docs/REPLAY.md
+     * section 3.1 - identity is release_id + hash vector, never the
+     * directory name). */
+    int  ncode;
+    char code_names[5][16];
+    uint8_t code_sha[5][32];
+    uint32_t code_size[5];
+    int  code_have[5];
 } RelResult;
 
 /* Where a release keeps its program: 0 = the intro, 1..4 = that table,
@@ -284,13 +296,106 @@ extern int audio_volume_dirty;   /* the -/+ keys moved it; save it on exit */
 /* ------------------------------------------------------------ launcher --- */
 /* Win32 installation picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
  * into the game's PFEMU-STATE/ overlay so installed files stay pristine. */
-typedef struct { char dir[512], prog[16]; int fullscreen; } LaunchChoice;
+typedef enum { LAUNCH_PLAY = 0, LAUNCH_RECORD, LAUNCH_REPLAY } LaunchMode;
+typedef struct {
+    char dir[512], prog[16];
+    int fullscreen;
+    LaunchMode mode;            /* play | record | replay (docs/REPLAY.md section 4) */
+    char replay_path[512];      /* -record target / -replay source, "" when play */
+} LaunchChoice;
 int  show_launcher(LaunchChoice *out);   /* 1 = launch, 0 = quit */
 void write_sound_cfg(const char *dir, int on, int quality);
 int  read_sound_is_sb(const char *dir);
 int  read_sound_quality(const char *dir);      /* SOUND.CFG byte 14h, 0-4 */
 int  read_volume_cfg(const char *dir);         /* host-only file, 0-100 */
 void write_volume_cfg(const char *dir, int vol); /* keeps the stored quality */
+
+/* ------------------------------------------------- session record/replay */
+/* Deterministic input recording (docs/REPLAY.md).  v1 records from the boot
+ * program including table-select, replays on emulated time, and never merges
+ * live keys; direct-into-table replay is refused until the section 3.4
+ * validation passes.  CLI (-record/-replay) and the launcher are thin
+ * frontends over the same emu-time injector (src/replay.c). */
+int  replay_is_recording(void);
+int  replay_is_replaying(void);
+/* Parsed .pfr header, for the launcher's auto-restore (section 4.1) and for
+ * main()'s install verification.  Identity fields mirror RelResult's code
+ * vector above; summary/dir_hint are display/hint only, never matched on. */
+typedef struct {
+    char release_id[32];
+    char summary[160];
+    char boot[16];
+    char program[16];
+    char layout[16];
+    int  ncode;
+    char names[5][16];
+    uint8_t sha[5][32];
+    uint32_t size[5];
+    int  have[5];
+    double ips;
+    double speed;
+    int  nopatch, nolzexe;
+    int  sound;
+    int  quality;
+    uint8_t options[6];
+    int  fullscreen;
+    int  trainer_off;
+    char overlay[32];
+    char dir_hint[512];
+    int  nevents;
+} ReplayHeader;
+int  replay_read_header(const char *path, ReplayHeader *out);
+const char *replay_parse_error(void);   /* last parse failure, for fail_msg */
+void replay_header_detail(const ReplayHeader *h, char *dst, size_t n);
+/* Record side: open with the full session context, log every kbd_key entry
+ * with emu_now() (dev.c calls in), close with the footer at exit. */
+int  replay_begin_record(const char *path, const RelResult *rel, const char *prog,
+                         double ips, int nopatch, int nolzexe,
+                         int sound, int quality, const uint8_t options[6],
+                         int fullscreen);
+void replay_log_key(int scancode, int down);
+void replay_end_record(void);
+/* Replay side: parse (header + sorted event list), verify against the
+ * detected install, then force the recorded environment and inject. */
+int  replay_begin_replay(const char *path);
+/* 0 = the install IS the recording; else -1 with the reason in why (the
+ * caller shows it - main() has no console in launcher flows). */
+int  replay_verify_install(const RelResult *rel, const char *prog,
+                           char *why, size_t nwhy);
+void replay_apply_recorded_env(void);   /* ips/nopatch/nolzexe/time-freeze */
+/* The recorded session settings (valid once a replay header parsed).
+ * Quality/options change guest execution, so replay runs these, not the
+ * install's current values; fullscreen is host-only but travels too. */
+int  replay_recorded_fullscreen(void);
+int  replay_recorded_quality(int *have);
+int  replay_recorded_options(uint8_t out[6]);
+/* After overlay isolation: patch the recorded quality notch into the temp
+ * copy's SOUND.CFG, so the guest driver mixes exactly as recorded. */
+void replay_apply_config_to_overlay(void);
+double replay_forced_ips(int *have);    /* recorded ips, when replaying */
+double replay_forced_speed(int *have);  /* recorded speed, when replaying */
+void replay_inject_due(void);           /* kbd_key() everything <= emu_now() */
+uint64_t replay_next_deadline(void);    /* cpu.cycles of next event, or ~0 */
+int  replay_events_pending(void);
+int  replay_should_stop(void);          /* footer emu_time reached, events out */
+void replay_report(void);               /* exit mismatch stats */
+/* PFEMU-STATE handling (section 3.2/3.3): hash the effective overlay for the
+ * header; on replay, copy it aside and remap the DOS writedir so the user's
+ * real overlay is never written. */
+void replay_read_options(const char *dir, uint8_t out[6]);
+void replay_overlay_hash(const char *dir, char out[32]);
+void replay_isolate_overlay(const char *dir);
+void replay_cleanup_overlay(void);
+void replay_frozen_datetime(int *year, int *mon, int *day, int *wday,
+                            int *hour, int *min, int *sec);
+void replay_frozen_dos_dt(uint16_t *dosdate, uint16_t *dostime);
+/* Trainer invariant (sections 3.2/3.3): recording/replay require it off. */
+int  fantasies_trainer_enabled(void);
+/* DOS time virtualization (section 2.3): freeze INT 21h AH=2Ah/2Ch and file
+ * timestamps to the recorded epoch on replay. */
+void dos_set_time_frozen(int on);
+void dos_remap_writedir(const char *dir);
+void dos_close_all_handles(void);
 
 /* ------------------------------------------------------------- imaging --- */
 int save_png(const char *path, const uint32_t *pix, int w, int h); /* src/png.c */

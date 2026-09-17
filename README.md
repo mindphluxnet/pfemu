@@ -232,6 +232,25 @@ their targets by signature scan, so they work across all four releases alike,
 even though each ships differently laid-out table programs - and even though
 the demo's are compressed.
 
+### Session record / replay
+
+The launcher's **Session** row (or `-record` / `-replay` on the command line)
+records a session's keypresses with emulated-time stamps into a `.pfr` file
+and replays them later on that same clock, so host stutter cannot shift what
+the game sees. Recording starts at the boot program and includes the
+table-select keys; replay refuses a file whose release or program hashes
+differ, restores the recorded install automatically in the launcher, freezes
+the guest clock and file timestamps, and runs the game writes into a throwaway
+copy so your real `PFEMU-STATE/` is never touched.
+
+Two rules keep replays honest: the trainer is incompatible with both modes
+(recording or replaying with it enabled is refused, and its hotkeys stay
+dead), and volume is never recorded - the slider, `-vol`, and the in-window
+`-` / `+` / `*` keys stay live throughout, since they only scale what pfemu
+hands to Windows. See `docs/REPLAY.md` for the full plan, including how
+accuracy is validated (replay twice, compare `-wav` audio, `-shotevery`
+frames, and the exit cycle counts).
+
 ## Keeping the original files clean
 
 pfemu never writes to the installed game files. High scores, configuration,
@@ -269,6 +288,8 @@ custom installations and development.
 | `-speed X` | Run at `X` times normal speed |
 | `-ips N` | Set the emulated instruction rate; default: 6,000,000 |
 | `-vol N` | Output volume, 0â€“100, for this run only; overrides the saved level |
+| `-record FILE` | Record keypresses + timing to FILE (`.pfr`), from the boot program |
+| `-replay FILE` | Replay a recorded session on the emulated clock; no live keys |
 
 `-d` only affects direct runs; pass `-d FANTASYDX` to boot a particular
 installation this way. Without it, pfemu uses the first one it finds (`GAME\`

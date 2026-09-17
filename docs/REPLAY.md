@@ -1,8 +1,12 @@
-# Session record / replay — plan (proposal only, no implementation)
+# Session record / replay — plan
 
 Goal: let a user record a Pinball Fantasies session (keypresses + timing)
-and replay it later accurately. No code changes have been made; this doc
-is the agreed plan.
+and replay it later accurately. Phases 1 (deterministic replay core) and 2
+(launcher) are implemented in `src/replay.c` with hooks in `src/main.c`,
+`src/dev.c`, `src/dos.c`, `src/fantasies.c`, `src/launch.c` and
+`src/release.c`; only the optional polish phase is still open
+(direct-to-table was decided against, §3.4).
+This doc is the agreed plan and the reference for what "accurate" means.
 
 ## 1. Background: what already exists
 
@@ -68,15 +72,19 @@ header:
   summary               # display only, never matched on
   boot prog + start prog (TABLEn for direct-table replays)
   ips, speed (=1 on record), nopatch/nolzexe flags
-  sound-quality notch, 6-byte options blob
+  sound on/off, sound-quality notch, 6-byte options blob, fullscreen
   trainer_assert_off    # header records the invariant, not a setting
   overlay hash / snapshot ref
   source install dir    # hint only, never identity
   # volume is deliberately absent: host-sink-only, always live
 events (sorted):
-  emu_time, scancode, down/up
+  cycles, emu_time, scancode, down/up (cycles are the injection clock -
+  integer-exact, so a guest RNG sampled from a fast counter reads what it
+  read on record; pre-cycle three-field files still replay on emu_time)
 footer:
   final emu_time + cpu.cycles, optional -wav hash
+  file_hash: FNV-1a over all preceding bytes (refused on mismatch,
+  so edits and truncation fail loudly; files predating it warn once)
 ```
 
 `summary` and `dir` are hints/display only. Identity is `release_id` +
@@ -117,15 +125,15 @@ timestamps are explicitly not identity).
 - End condition: footer `emu_time`/`cycles`, or `ScrollLock`/window close
   as today; report mismatch stats at exit.
 
-### 3.4 Direct-into-table (deferred to v2)
+### 3.4 Direct-into-table (decided against)
 
-- Technically `dos_exec(TABLEn)` already works; the question is fidelity
+- Technically `dos_exec(TABLEn)` already works; the question was fidelity
   (options blob, `.SDR` per-table load, `.hi` handling, attract music
   slot behaviour noted in `src/launch.c`).
-- Gate on a validation pass (see §5) proving table-standalone ≡
-  full-boot for the recorded path before offering it as a replay mode.
-- Implementation then is small: header `start=TABLEn`, boot it directly,
-  replay its event slice.
+- Dropped: the people who'd use replays know how to reach gameplay fast
+  (Space skips the intro), so a boot-to-table shortcut isn't worth a
+  second fidelity question. v1 records from the boot program, full stop,
+  and files naming anything else stay refused.
 
 ## 4. Launcher integration
 
@@ -178,9 +186,10 @@ On replay-file load, `release_scan()` the current installs and:
 1. **Deterministic replay core:** emu-time injector, `-record/-replay`,
    time freeze, overlay isolation, input-leak suppression.
 2. **Launcher:** mode + picker + auto-restore (§4–4.1).
-3. **Direct-to-table replay:** validation-gated (§3.4).
-4. **Polish (optional):** mid-table savestates (RAM+PIC/PIT/VGA/DOS),
+3. **Polish (optional):** mid-table savestates (RAM+PIC/PIT/VGA/DOS),
    in-window record indicator, replay scrubber.
+
+(Direct-to-table replay was phase 3; dropped per §3.4.)
 
 ## 7. Non-goals / decided
 
