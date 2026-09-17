@@ -143,7 +143,7 @@ extern int dos_no_lzexe;        /* -nolzexe : never unpack, let the stub run */
 /* ------------------------------------------------------------ releases --- */
 /* Checksum-based release identity (src/release.c).  An installation is
  * identified by the SHA-256 of its program files, never by its directory name
- * or its boot filename - see docs/VERSIONS.md for why neither works. */
+ * or its boot filename - see docs/RELEASES.md for why neither works. */
 enum {
     RF_CODE    = 1,   /* part of the five-file identity vector */
     RF_BOOT    = 2,   /* the program pfemu executes to start this release */

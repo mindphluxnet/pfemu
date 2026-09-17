@@ -47,7 +47,7 @@
  * hashes each candidate directory's five program files and identifies the
  * build from that; the dialog just shows the answer and, when more than one
  * installation is sitting side by side, lets the user pick which directory
- * to boot.  See docs/VERSIONS.md for why the old two-hardcoded-directories,
+ * to boot.  See docs/RELEASES.md for why the old two-hardcoded-directories,
  * one-hardcoded-PINBALL.EXE arrangement could not survive a third release:
  * Power Pack renamed the launcher to PF.EXE and shares its bytes with the
  * floppy one, so neither name identifies anything.
@@ -254,7 +254,7 @@ int read_sound_quality(const char *dir){
  *
  * These six option bytes mirror the layout of the 6-byte blob INTRO.PRG's
  * own F5 menu edits in place and writes to PINBALL.CFG at the intro-to-
- * table handoff (WRITEUP-PHASE2.md Sec 2.2, 5.13.1) - but this launcher
+ * table handoff (docs/EMULATOR.md: launch chain, copy protection) - but this launcher
  * does NOT write PINBALL.CFG itself.  Whenever INTRO.PRG's boot-time read of
  * an *existing* PINBALL.CFG succeeds, the extra DOS calls that costs versus
  * a fresh install (where the open just fails) are frequently enough to keep

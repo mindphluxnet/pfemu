@@ -4,7 +4,7 @@
 Identity for a release is the SHA-256 of its program files; this script
 records the complete top-level manifest of each collected directory so the
 detector in src/release.c can also report completeness and list the files it
-is deliberately ignoring.  See docs/VERSIONS.md for what each release is and
+is deliberately ignoring.  See docs/RELEASES.md for what each release is and
 why the directory name is never used as identity.
 
 Which programs a distribution ships is itself part of its shape: the full
@@ -66,7 +66,7 @@ PREFIX = {"INTRO.MOD": 252868}
 HEADER = """\
 /* Generated from the collected installations by tools/mkreltable.py -
  * do not edit by hand.  Every hash here was cross-checked against the
- * manifests published in docs/VERSIONS.md.
+ * manifests published in docs/RELEASES.md.
  *
  * flags: RF_CODE    part of the identity vector (this release's programs)
  *        RF_BOOT    the program pfemu executes to start this release

@@ -1,6 +1,6 @@
 /* Generated from the collected installations by tools/mkreltable.py -
  * do not edit by hand.  Every hash here was cross-checked against the
- * manifests published in docs/VERSIONS.md.
+ * manifests published in docs/RELEASES.md.
  *
  * flags: RF_CODE    part of the identity vector (this release's programs)
  *        RF_BOOT    the program pfemu executes to start this release

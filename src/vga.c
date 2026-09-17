@@ -330,7 +330,7 @@ double vga_last_start_line = -1.0;
 
 /* ---- displayed start address ------------------------------------------
  * Two corrections live here, both render-path only; neither touches guest
- * state.  See docs/OPTIMIZATIONS.md #27.
+ * state.  See docs/EMULATOR.md (ball/camera pairing).
  *
  * 1. Latch at vertical retrace (accuracy).  Real VGA copies CRTC 0x0C/0x0D
  *    into the display address counter at the start of vertical retrace, so a

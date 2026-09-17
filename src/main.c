@@ -276,7 +276,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
          * point.  Nothing emulated moves - audio_volume is host sink gain.
          *
          * The table's own INT 9 handler reads only the flippers, the plunger,
-         * space and F11/F12 (WRITEUP-PHASE2.md 5.11), so none of these
+         * space and F11/F12 (docs/EMULATOR.md: launch chain), so none of these
          * collide there; unhandled keys do still reach the game through the
          * BIOS buffer, so high-score name entry loses - and + (it keeps
          * every letter, and Backspace, which is why Backspace is not the

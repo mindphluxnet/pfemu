@@ -1,406 +1,202 @@
 # pfemu
 
 pfemu is a small, purpose-built PC emulator that runs the original DOS release
-of **Pinball Fantasies** on 64-bit Windows. It does not use DOSBox, NTVDM, or
-code from another emulator.
+of **Pinball Fantasies** on 64-bit Windows. No DOSBox, no NTVDM, no borrowed
+emulator core.
 
-Four releases of the game are supported, and pfemu works out which one it is
-looking at by hashing the installation rather than by asking:
+Four releases are supported. pfemu identifies them by hashing the game files,
+not by asking you:
 
 | Release | Boot program | Programs |
 |---|---|---|
-| Pinball Fantasies, the original floppy release | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
-| Pinball Fantasies Deluxe CD-ROM (1995) | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
-| Pinball Power Pack (1996) | `PF.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
-| Pinball Fantasies 5 Min Demo (1993)* | `PFDEMO.EXE` | `DEMO.PRG`, `PLAND.PRG` |
+| Original floppy release | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
+| Deluxe CD-ROM (1995) | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
+| Power Pack (1996) | `PF.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
+| 5 Min Demo (1993) | `PFDEMO.EXE` | `DEMO.PRG`, `PLAND.PRG` |
 
-It currently supports the complete launch sequence, intro, table selector, all
-four tables, keyboard controls, and Sound Blaster music. (*The 1993 demo boots
-and runs but stops at its title screen - see below.) A native launcher lets
-you choose the game's options before it starts, pick between installations when
-several are present, and borderless fullscreen is available from the launcher,
-the command line, or at any time with `Alt+Enter`. pfemu also includes targeted
-fixes for several bugs in the original game.
+Everything else — intro, table selector, all four tables, keyboard, Sound
+Blaster music — works. The demo boots and plays music but stops at its title
+screen; see [Releases](docs/RELEASES.md) for why. A native launcher handles
+game options, multiple installations, and fullscreen.
+
+pfemu also fixes a few bugs in the original game in memory, without touching
+your game files. See [Emulator](docs/EMULATOR.md).
 
 ## Quick start
 
-You will need:
-
-- 64-bit Windows
-- the original `FANTASY.ONE` and `FANTASY.TWO` archives
-- Python 3, if you need to extract those archives
-- Visual Studio 2019 Build Tools with the C++ toolchain, if you want to build
-  pfemu yourself
-
-From the repository root:
+You need 64-bit Windows, the original game files, Python 3 (only to extract
+the floppy archives), and Visual Studio 2019 Build Tools with C++ (only to
+build).
 
 ```powershell
-# Extract the original game files into GAME\
+# Extract the floppy archives into GAME\
 py tools\pfx.py C:\path\to\the\archives GAME
 
-# Build pfemu
+# Build
 .\build.bat
 
-# Start it
+# Run
 .\pfemu.exe
 ```
 
-The extractor checks all 25 files against the CRCs in the original archives.
-Game files and compiled binaries are deliberately not included in this
-repository.
+The extractor checks all 25 files against the CRCs in the archives. Game files
+and compiled binaries are not in this repository.
 
-> `build.bat` expects the default Visual Studio 2019 Build Tools location. If
-> Visual Studio is installed elsewhere, update the `vcvars64.bat` path in that
-> file.
+> `build.bat` expects the default Build Tools location. If yours is elsewhere,
+> update the `vcvars64.bat` path in that file.
 
-### Where to put the game files
+## Where to put the game files
 
-Put one installation's files **directly** in a directory named `GAME\` - not in
-the enclosing `FANTASY\` or `PFD\` folder the archive unpacks into. Any other
-top-level directory holding an `INTRO.PRG` (or a `DEMO.PRG`, for the demo) is
-offered as well, so several releases can sit side by side (`FANTASY\`,
-`FANTASYDX\`, ...) and the launcher will list them. The directory name is only
-a place to look; which release it holds is decided by the files inside it.
+Put one installation's files **directly** in a folder — `GAME\` is the
+convention, but any top-level folder works. Don't nest them one level down
+(`GAME\FANTASY\INTRO.PRG` won't be found).
 
-`pfemu.exe -releases` prints what was found in each installation, including the
-sizes and hashes of anything it did not recognise.
+Any folder holding an `INTRO.PRG` (or `DEMO.PRG`, for the demo) is listed in
+the launcher, so several releases can sit side by side. The folder name is
+just a place to look; the release is decided by the files inside.
+`pfemu.exe -releases` prints the detection report for each one.
 
-### Pinball Fantasies Deluxe (CD-ROM)
+- **Deluxe CD-ROM:** there is no extractor — copy the files yourself. The 1995
+  install is split in two: `PINBALL.EXE`, `SETSOUND.EXE`, and the `.SDR`
+  drivers went to the hard drive, while `INTRO.PRG`, `TABLE1-4.PRG`, and the
+  `.MOD` music stayed on the CD. pfemu doesn't emulate a CD drive, so combine
+  both halves into one flat folder.
+- **Power Pack:** copy the directory as-is. pfemu runs its `PF.EXE` directly;
+  the bundled `PINBALL.BAT` wrapper is ignored.
+- **Demo:** run its `INSTALL.BAT` or copy the directory as-is. Its two
+  programs are LZEXE-compressed; pfemu unpacks them while loading so the usual
+  fixes apply. `-nolzexe` disables that for comparison.
 
-There's no extraction tool for the Deluxe release; copy its files in yourself.
-The 1995 CD-ROM release installs as two halves - `INSTALL.COM` only copies
-`PINBALL.EXE` and the sound drivers to the hard drive, and expects
-`INTRO.PRG`/`TABLE1-4.PRG`/the `.MOD` music to keep loading off the CD-ROM.
-pfemu doesn't emulate a CD-ROM drive, so combine both halves into one flat
-folder: `PINBALL.EXE`, `SETSOUND.EXE`, and the `.SDR` drivers from the
-hard-drive install, alongside `INTRO.PRG`, `TABLE1.PRG`-`TABLE4.PRG`,
-`INTRO.MOD`, `TABLE1.MOD`-`TABLE4.MOD`, and `MOD2.MOD` from the CD-ROM's
-`PFD\FANTASY\` directory.
+See [Releases](docs/RELEASES.md) for the full per-release file lists and
+hashes.
 
-### Pinball Power Pack (1996)
+## Playing
 
-A later repackaging of the floppy-family release, with its own intro and its
-own Table 1 and Table 2 programs. Its launcher is called `PF.EXE`; pfemu runs
-that directly, so the `PINBALL.BAT` wrapper it ships with is not needed and is
-ignored. Copy the directory in as it is.
+Running `pfemu.exe` with no arguments opens the launcher: sound on/off and
+quality, balls, table angle, scrolling, in-game music, resolution, color mode,
+trainer, fullscreen, and — if several installations are present — which one to
+run. **Details** shows the detection report; send that along if you find a
+release pfemu doesn't recognise.
 
-### The 5 Min Demo (1993)
+If an installation isn't recognised, **Launch** stays disabled. Each release
+keeps its options at a different address in memory, so writing one release's
+layout into another would corrupt it. pfemu refuses to guess.
 
-The demo is a different shape from the other three, and pfemu handles it
-without any extra steps from you - run its `INSTALL.BAT` or just copy the
-directory in.
-
-It ships one intro and one table, both renamed and both LZEXE-compressed:
-`DEMO.PRG` and `PLAND.PRG`, which is Party Land. pfemu unpacks those two in
-its loader rather than letting them unpack themselves, because otherwise the
-fixes below - all of which find their target by scanning the loaded program -
-would have nothing to match. Unpacked, Party Land carries every one of the
-same code signatures Table 1 does, so it gets every one of the same fixes.
-`-nolzexe` turns that off, which is a way to see the difference.
-
-**The demo does not currently get past its title screen.** It is detected,
-both programs unpack, the driver calibrates, the music plays and the publisher
-and developer screens draw; the screen after them stays black and the program
-sits in the loop waiting for it. Scroll Lock still exits.
-
-That is a race in the demo's own code rather than an emulation error: it
-clears 64 KB of video memory with interrupts disabled, then switches the sound
-driver off, and then waits for a frame flag that only that driver's callback
-can set. Whether it survives depends on where in the clear the timer interrupt
-happens to fall, and no emulated CPU speed lands reliably inside the window -
-6, 14.4 and 24 MIPS each miss it for a different reason. The mechanism, the
-measurements, and the four things that were ruled out along the way are
-written up in `docs/VERSIONS.md`, under "Where the demo stops". Nothing about
-it affects the other three releases.
-
-Two further things are genuinely missing rather than disabled. The demo's
-intro has no options menu, so the launcher greys out the six game options for
-it - that build has nowhere to put them. And it plays one table, for five
-minutes.
-
-Its four `.PCX` screens are artwork from the distribution disk. Its own
-installer does not copy them and none of its programs reads one, so pfemu
-records them and ignores them.
-
-## Playing the game
-
-Running `pfemu.exe` without arguments opens the launcher. It lets you configure
-sound, volume, sound quality, balls, table angle, scrolling, in-game music,
-resolution, color mode, trainer support, and whether the game starts in
-fullscreen. At the top it shows which release it detected; if it finds more
-than one installation, it also shows a list to pick between them. **Details**
-prints the full detection report - which is also what to send along when a
-release pfemu doesn't know about turns up.
-
-If an installation isn't recognised, **Launch** stays disabled rather than
-guessing. Each release keeps its options in a different place in memory, and
-writing one release's layout into another release's intro corrupts it.
-
-The launcher remembers these choices in `PFEMU-STATE/` under whichever
-install's directory is selected.
-
-### Fixes for the original game
-
-pfemu does more than emulate the hardware. It applies narrowly scoped fixes to
-the loaded game while it runs, including:
-
-- clearing an interrupt-handshake race after unpausing that could leave the
-  ball stuck—a bug noted in the original developers' own source comments
-- correcting the game's shared flipper state when multiple flipper keys
-  overlap, and recovering when Windows loses a modifier-key release
-- making the original, otherwise ignored **Ingame Music** setting work through
-  the launcher
-
-These fixes are applied in memory and do not modify the game files. The
-game-specific patches can be disabled with `-nopatch`.
+Choices are remembered in `PFEMU-STATE/` inside the selected install's folder.
+Deleting that folder resets saved settings and high scores without touching
+the original files. pfemu never writes to the installed game files.
 
 ### Controls
 
-Most keys are passed directly to Pinball Fantasies, so these are the original
-game controls rather than emulator-specific bindings.
+Keys are passed through to the game, so these are the original controls:
 
 | Key | Action |
-| --- | --- |
-| `F1`–`F4` | Choose a table from the table selector |
-| `F1` | Add a player while a table is running |
+|---|---|
+| `F1`–`F4` | Choose a table from the selector |
+| `F1` | Add a player at a table |
 | `Down Arrow` | Pull and release the plunger |
-| `Shift`, `Alt`, or `Ctrl` | Operate the flippers; either side works |
-| `Space` | Nudge the table |
-| `F5` | Open the game's options menu |
-| `Alt+Enter` | Toggle borderless fullscreen |
-| `F11` | Save a PNG screenshot |
-| `-` / `+` | Turn the volume down / up in 5% steps; shown on screen |
-| `Keypad *` | Mute, and restore the previous level; shown on screen |
-| `Scroll Lock` | Quit pfemu |
+| `Shift`, `Alt`, or `Ctrl` | Flippers (either side) |
+| `Space` | Nudge |
+| `F5` | Game options menu |
+| `Alt+Enter` | Borderless fullscreen (also `-fullscreen` or launcher option) |
+| `F11` | Save a PNG screenshot to `screenshots/` |
+| `-` / `+` | Volume down / up in 5% steps |
+| `Keypad *` | Mute / restore |
+| `Scroll Lock` | Quit |
 
-Fullscreen can also be enabled with the launcher's **Start in fullscreen**
-option or the `-fullscreen` command-line flag. `Alt+Enter` returns to the
-previous window size and position.
-
-`F11` saves the current frame as a timestamped PNG under a `screenshots/`
-subdirectory (created next to `pfemu.exe` if it doesn't already exist), e.g.
-`screenshots/pfemu_20260916_143005.png`. Not Print Screen: Windows 11
-intercepts that key itself and pops up Snipping Tool instead of reaching
-pfemu.
+Print Screen won't work: Windows 11 intercepts it for Snipping Tool before it
+reaches pfemu.
 
 ### Sound
 
-The 1992 original expected a volume wheel on the sound card and another on the
-speakers. Since neither exists here, the launcher has a **Volume** slider and
-the game window takes `-` / `+` and keypad `*`, all of which only scale what
-pfemu hands to Windows â€” nothing emulated changes, and `-wav` captures are
-written at the card's own level regardless. 100% is the level pfemu played at
-before the slider existed, and the default is 70%.
+The launcher has a **Volume** slider, and `-` / `+` / `*` work in the game
+window. These only scale what pfemu hands to Windows — the emulated card is
+untouched, and `-wav` captures are always written at full level. Default is
+70%; the level is remembered per install. `-vol N` overrides it for one run.
 
-The level is remembered per install, whether it was set with the slider or
-with `-` / `+` in the game window â€” quit and the next session starts where you
-left it. Muting is the exception: it is a momentary thing, so quitting while
-muted saves the level the mute is hiding rather than silence. Riding `-` all
-the way down to 0 does save 0. `-vol N` overrides the saved level for one run
-without replacing it.
+**Quality** is the game's own setting (the five notches `SETSOUND.EXE`
+offered). It sets the rate the Sound Blaster driver mixes at (12–21 kHz), so a
+higher notch costs more emulated CPU per second of audio — the same tradeoff
+it was in 1992. If a high notch starves the game loop, `-ips` models a faster
+CPU. Notch 1 is the old default.
 
-**Quality** is the game's own setting, the five notches `SETSOUND.EXE` offered
-between Low and High. It picks the rate at which `SBLASTER.SDR` mixes the
-music, which is also the rate the emulated card plays at:
+### Trainer (optional)
 
-| Notch | Mixing rate |
-| --- | --- |
-| 1 | 12000 Hz |
-| 2 | 16000 Hz |
-| 3 | 20000 Hz |
-| 4 | 21000 Hz |
-| 5 | 21000 Hz, plus a longer per-voice mixing routine |
-
-The mixer is guest code, so a higher notch spends more of the emulated 386's
-budget per second of audio â€” exactly the trade the setting existed to offer in
-1992. If a high notch starves the game loop, `-ips` models a faster CPU.
-Notch 1 is what pfemu used before this setting was exposed.
-
-### Optional trainer
-
-The launcher can enable hotkeys recovered from two 1994 trainers - RAZOR
-DoX (`PINTRN.COM`: infinite balls, ball control) and MAT's megatrainer
-(`TRAINER.EXE`: those plus infinite tilts and ball jump):
+Recovered from two 1994 trainers. Enable **Enable trainer** in the launcher,
+then:
 
 | Key | Action |
-| --- | --- |
-| `1` | Toggle infinite balls |
-| `2` | Toggle ball control mode |
-| `3` | Toggle infinite tilts |
+|---|---|
+| `1` | Infinite balls |
+| `2` | Ball control mode (`Down Arrow` launches from anywhere, `Z` kicks upward) |
+| `3` | Infinite tilts |
 
-In ball control mode, `Down Arrow` launches the ball from anywhere on the
-table, and `Z` kicks it upward mid-play. All features are disabled
-unless **Enable trainer** is selected in the launcher, and an on-screen
-message confirms each toggle. The hotkeys locate their targets by signature
-scan, so they work across all four releases alike,
-even though each ships differently laid-out table programs - and even though
-the demo's are compressed.
+Each toggle shows an on-screen message. Targets are found by signature scan,
+so they work across all releases.
 
-### Session record / replay
+### Sessions
 
-The launcher's **Session** row (or `-record` / `-replay` on the command line)
-records a session's keypresses with emulated-time stamps into a `.pfr` file
-and replays them later on that same clock, so host stutter cannot shift what
-the game sees. Recording starts at the boot program and includes the
-table-select keys; replay refuses a file whose release or program hashes
-differ, restores the recorded install automatically in the launcher, freezes
-the guest clock and file timestamps, and runs the game writes into a throwaway
-copy so your real `PFEMU-STATE/` is never touched.
+The launcher's **Session** row (or `-record FILE` / `-replay FILE`) records
+keypresses with emulated-time stamps into a `.pfr` file and replays them on
+the same clock, so host stutter can't shift what the game sees. Replay checks
+that the release and program hashes match, restores the recorded install,
+freezes guest-visible clocks, and redirects writes to a throwaway copy.
 
-Two rules keep replays honest: the trainer is incompatible with both modes
-(recording or replaying with it enabled is refused, and its hotkeys stay
-dead), and volume is never recorded - the slider, `-vol`, and the in-window
-`-` / `+` / `*` keys stay live throughout, since they only scale what pfemu
-hands to Windows. While recording, a tiny red `REC` badge sits in the corner of
-the game window (a green `PLAY` twin shows while replaying) - host-only:
-neither ever reaches the game, the `.pfr`, or any
-screenshot/`-shotevery` capture. See `docs/REPLAY.md` for the full plan,
-including how accuracy is validated (replay twice, compare `-wav` audio,
-`-shotevery` frames, and the exit cycle counts).
+Two rules: the trainer can't be on while recording or replaying, and volume is
+never recorded (it stays live throughout). A small red `REC` / green `PLAY`
+badge shows in the window corner; it's host-only and never reaches captures.
+See [Replay](docs/REPLAY.md).
 
-## Keeping the original files clean
+## Command line
 
-pfemu never writes to the installed game files. High scores, configuration,
-and the intro's persistent flag are redirected to `PFEMU-STATE/` inside
-whichever game directory you're running (`GAME/PFEMU-STATE/`, and the same
-under any other installation directory). Deleting it resets pfemu's saved
-settings and game state without touching the original installation.
+The launcher covers normal play; flags are for alternate installs and
+development.
 
-This overlay also avoids a timing issue that can occur when the game reads an
-existing `PINBALL.CFG` during Sound Blaster calibration. Launcher options are
-stored separately and applied in memory when the game starts.
-
-## Command-line options
-
-The launcher is the easiest way to play, but direct startup is useful for
-custom installations and development.
-
-| Option | Description |
-| --- | --- |
+| Option | What it does |
+|---|---|
 | `-fullscreen` | Start in borderless fullscreen |
-| `-nolauncher` | Start the detected release's boot program without the launcher |
-| `-d DIR` | Use a specific game directory; default: the first one found |
-| `-releases` | Print the detection report for every installation, then exit |
-| `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`, `demo`) whatever the hashes say |
-| `-p PROGRAM` | Run a specific DOS program and skip the launcher |
-| `-setup` | Run `SETSOUND.EXE` and skip the launcher |
-| `-nopatch` | Disable the Pinball Fantasies compatibility patches |
-| `-nolzexe` | Load LZEXE-compressed programs packed and let them unpack themselves |
-| `-undefdump` | On the first instruction the CPU can't decode, dump that code segment to `pfemu_cs_<SEG>.bin` |
-| `-vgastate` | At exit, print the video mode, the registers that select the picture, the DAC, and what's in the memory the CRTC points at |
-| `-dumpseg SEG` | At exit, write that 64K guest segment to `pfemu_seg_<SEG>.bin` (hex segment) |
-| `-prof` | Sample `CS:IP` every 4096 instructions; print the hottest sites at exit, and the same samples bucketed by 1K of address so a flat profile still says which code is running |
-| `-memwatch LIN` | Name the instruction that writes a linear address: the first 32 writes as they happen, the last 32 at exit, and a total |
-| `-intstat NN` | Count `INT NN` by function and keep the last 128 calls whose function differs from the previous one, so a polled vector stays readable |
-| `-speed X` | Run at `X` times normal speed |
-| `-ips N` | Set the emulated instruction rate; default: 6,000,000 |
-| `-vol N` | Output volume, 0â€“100, for this run only; overrides the saved level |
-| `-record FILE` | Record keypresses + timing to FILE (`.pfr`), from the boot program |
-| `-replay FILE` | Replay a recorded session on the emulated clock; no live keys |
+| `-nolauncher` | Skip the launcher, boot the detected release |
+| `-d DIR` | Use a specific game directory (default: first found) |
+| `-releases` | Print the detection report, then exit |
+| `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`, `demo`) |
+| `-p PROGRAM` | Run a specific DOS program instead of the boot program |
+| `-setup` | Run `SETSOUND.EXE` |
+| `-nopatch` | Disable the game-specific fixes |
+| `-nolzexe` | Don't unpack LZEXE programs at load |
+| `-speed X` | Run at X times normal speed |
+| `-ips N` | Emulated instructions per second (default 6,000,000) |
+| `-vol N` | Volume 0–100 for this run only |
+| `-record FILE` / `-replay FILE` | Record / replay a session |
+| `-secs N` | Run headless for N wall-clock seconds |
+| `-shot FILE` / `-shotevery N` | Save PPM screenshot(s) |
+| `-keys "t:sc:state,..."` | Feed timed keyboard events to the guest |
+| `-wav FILE` | Capture audio to WAV |
 
-`-d` only affects direct runs; pass `-d FANTASYDX` to boot a particular
-installation this way. Without it, pfemu uses the first one it finds (`GAME\`
-first, then the rest alphabetically). The boot program comes from whichever
-release that directory turns out to hold, so `-p` is only needed to run
-something other than the game itself.
+There are further tracing flags (`-t`, `-xring`, `-trap`, `-dosdbg`,
+`-iotrace`, `-pll`, `-snddbg`, `-flipdbg`, `-vscan`, `-dmd`, `-balldbg`,
+`-matdbg`, `-mem`, `-intwatch`, `-undefdump`, `-dumpseg`, `-prof`,
+`-vgastate`, and several `-no*` rendering/timing overrides). They are
+documented in [Emulator](docs/EMULATOR.md#debugging-and-tracing).
 
-`-release` is a development escape hatch. Detection deliberately refuses to
-apply a known release's memory layout to code it does not recognise, and this
-overrides that refusal - so use it on a build you know is a lightly modified
-copy of the release you name, not to make an unknown one start.
+`-release` is an escape hatch for lightly modified copies of a known release.
+Don't use it to force an unknown build to start.
 
-### Diagnostics
+## Limits
 
-These options were used to reverse-engineer and verify the emulator:
+- Sound Blaster only. AdLib, GUS, PAS16, Sound Master II, internal speaker,
+  and ThING drivers are not emulated.
+- Party Land has had the most play-testing; the other tables load and run but
+  have had less.
+- Verification is manual (gameplay, screenshots, traces, captured audio).
+  There is no automated test suite.
+- pfemu targets Pinball Fantasies, not DOS software in general.
 
-| Option | Description |
-| --- | --- |
-| `-secs N` | Run for `N` wall-clock seconds and skip the launcher |
-| `-shot FILE` | Save the final frame as a PPM screenshot |
-| `-shotevery N` | Save a numbered PPM screenshot every `N` emulated seconds |
-| `-keys "t:scancode:state,..."` | Feed timed keyboard events to the guest |
-| `-wav FILE` | Capture audio to a WAV file |
-| `-t` | Write the general trace to `pfemu.log` |
-| `-xring` | Print the last 8,192 executed addresses at exit |
-| `-trap LOW HIGH` | Stop when execution enters a linear address range |
-| `-trapexit` | Stop when a child process exits |
-| `-mem ADDRESS` | Dump 256 bytes of guest memory at exit |
-| `-intwatch NN` | Trace calls to interrupt `NN` |
-| `-dosdbg` | Trace DOS `INT 21h` calls |
-| `-iotrace N` | Trace the first `N` DMA, Sound Blaster, and OPL I/O accesses |
-| `-pll N` | Trace `N` timer reloads during audio calibration |
-| `-snddbg` | Log each DSP transfer with its DMA buffer and the gap since the last one |
-| `-flipdbg`, `-vscan N`, `-dmd` | Trace display timing and page changes |
-| `-balldbg` | Time the ball erase/redraw gap and how often a frame lands in it |
-| `-matdbg` | Count dot-matrix updates, and how many the sound driver's "no time left" flag dropped |
-| `-nopitm0` | Read PIT channel 0 in mode 0 as a free-running rate generator, as builds before the one-shot fix did |
-| `-nophaselock` | Present on the old wall timer instead of a fixed frame phase |
-| `-dmairq` | Interrupt on each DMA buffer wrap instead of when the DSP's transfer length runs out |
-| `-noballsync` | Stop pairing the displayed camera with the ball; show the raw camera |
-| `-nolatch` | Read the CRTC start address live instead of latching it at retrace |
-| `-force256`, `-nodbl`, `-oldtiming` | Disable rendering behaviors to isolate display problems |
+## Further reading
 
-Numeric addresses and interrupt numbers are hexadecimal unless stated
-otherwise. Keyboard scripts use comma-separated `time:scancode:state` entries,
-where `state` is `1` for key down and `0` for key up.
-
-## What pfemu emulates
-
-The emulator is intentionally narrow: it implements the parts of a 386-era PC
-that Pinball Fantasies actually uses.
-
-| Source file | Responsibility |
-| --- | --- |
-| `src/cpu.c` | 386 real-mode CPU interpreter |
-| `src/vga.c` | Text, planar VGA, chain-4, Mode X, DAC, and display timing |
-| `src/dev.c` | PIC, PIT, keyboard controller, and I/O ports |
-| `src/bios.c` | BIOS interrupts and interrupt-vector setup |
-| `src/dos.c` | DOS processes, memory, files, program loading, and the write overlay |
-| `src/sound.c` | DMA, Sound Blaster DSP, Windows audio, and WAV capture |
-| `src/fantasies.c` | Game-specific compatibility fixes and trainer support |
-| `src/launch.c` | Native Windows launcher and saved options |
-| `src/release.c` | Release identification, by SHA-256 of the game's programs |
-| `src/main.c` | Window, input, presentation, fullscreen, and the main loop |
-
-The project builds as a single native Win32 executable and has no runtime
-dependencies beyond Windows and the original game data.
-
-## Compatibility and known limits
-
-Working:
-
-- the complete launch chain, including the intro and table selector, for all
-  four supported releases
-- Party Land, Speed Devils, Billion Dollar Gameshow, and Stones 'N Bones
-- Sound Blaster music in the intro, menus, and all four tables
-- the 1993 demo, unpacked in the loader so it gets the same fixes as the full
-  game (`-nolzexe` to compare)
-- the manual-lookup protection bypass, without modifying `INTRO.PRG` or
-  `INTRO.MOD`
-- sustained operation above the original game's real-time speed
-
-Known limits:
-
-- only the Sound Blaster driver is emulated; the AdLib, GUS, PAS16, Sound
-  Master II, internal-speaker, and ThING drivers are not supported
-- Party Land has received the most play-testing; the other tables load and run
-  but have had less extensive play-through testing
-- verification is currently manual, using gameplay, screenshots, traces, and
-  captured audio rather than an automated test suite
-- pfemu targets Pinball Fantasies, not general
-  DOS software
-
-## Technical write-ups
-
-- [Installing Pinball Fantasies without the DOS installer](docs/WRITEUP.md)
-  explains the archive format, decompressor, CRC layer, and extraction tool.
-- [Running Pinball Fantasies without DOSBox](docs/WRITEUP-PHASE2.md) covers the
-  emulator, hardware behavior, launch chain, copy protection, and debugging
-  process.
-- [Performance optimizations and later fixes](docs/OPTIMIZATIONS.md) records
-  timing, rendering, launcher, and performance work completed after the main
-  implementation.
-
-No external reference material about the game's file formats or copy
-protection was used during the original reverse-engineering work; those details
-were derived from the shipped binaries and their behavior.
+- [Emulator](docs/EMULATOR.md) — how pfemu works, the game-specific fixes,
+  and the debug flags.
+- [Releases](docs/RELEASES.md) — supported versions, detection, and the demo's
+  title-screen stop.
+- [Archive format](docs/ARCHIVE.md) — the floppy installer format and the
+  extractor.
+- [Replay](docs/REPLAY.md) — session recording, accuracy, and validation.

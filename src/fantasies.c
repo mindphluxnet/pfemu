@@ -282,7 +282,7 @@ void fantasies_patch_sdr(uint32_t load_base, uint32_t imglen){
 /* INTRO.PRG's own "have I already passed the manual check" flag, read once
  * at boot: it opens Intro.Mod, seeks to file offset 252868 (the last two
  * bytes of a 252,870-byte file - two bytes of the last music sample, per
- * WRITEUP-PHASE2.md) and reads them (traced live: open/seek(0x3DBC4)/read(2)
+ * EMULATOR.md) and reads them (traced live: open/seek(0x3DBC4)/read(2)
  * back to back, image offset 0x36643, nowhere near the sound driver's own
  * bulk reads of the same file).  If they read back as the "passed" sentinel
  * the screen never appears; if it correctly plays through and is answered,
@@ -290,7 +290,7 @@ void fantasies_patch_sdr(uint32_t load_base, uint32_t imglen){
  * it.  Confirmed by direct experiment: the shipped file's real tail is
  * 2B 3F; after passing the check once (back when a CRACK.COM-style JNC->JMP
  * edit in the loaded image forced acceptance of whatever was typed - see
- * WRITEUP-PHASE2.md §5.13/§5.13.1) the write-overlay copy's tail reads
+ * docs/EMULATOR.md (copy protection)) the write-overlay copy's tail reads
  * 20 01; deleting that copy so INTRO.PRG sees the original 2B 3F again
  * reproduces the screen, and passing it once more rewrites the identical
  * 20 01 - so it is a fixed sentinel, not a checksum of what was typed.
@@ -314,7 +314,7 @@ void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len){
  *
  * Why: INTRO.PRG reads PINBALL.CFG once at boot (6 bytes into the same
  * buffer the F5 options menu edits and the intro-to-table handoff writes
- * back, WRITEUP-PHASE2.md Sec 2.2/5.13.1).  Confirmed by direct A/B testing
+ * back, docs/EMULATOR.md (launch chain, copy protection)).  Confirmed by direct A/B testing
  * (many repeated table loads, unmodified emulator, nothing else changed):
  * whenever that boot-time read finds a file and succeeds, the extra DOS
  * calls it costs (open+read+close vs. the single failed open of a fresh
@@ -1337,7 +1337,7 @@ void fantasies_key_event(int scancode, int down){
  * vga_render() has no beam: it snapshots all of VRAM at one instant, so a
  * present landing inside the gap drops the ball from the *whole* frame.
  * That is what this logger quantifies, and what a present-phase fix has to
- * avoid - docs/OPTIMIZATIONS.md §16 locked presents to vsync, which is
+ * avoid - docs/EMULATOR.md notes that locking presents to vsync is
  * exactly when a lower-half ball is being redrawn, and flickered constantly
  * as a result.  Numbers wanted before choosing a phase: how wide the gap
  * actually is, and where in the frame it sits for each of the two cases.

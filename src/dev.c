@@ -177,7 +177,7 @@ static uint16_t pit_count(int c){
      * before it could fire, so half the timer interrupts never happened:
      * -matdbg measured 58.4 IRQ0/s against the ~119/s the two reloads (13636
      * and ~6347 ticks, one frame together) ask for.  That is what paced the
-     * dot matrix at 30 Hz - see docs/OPTIMIZATIONS.md 30.
+     * dot matrix at 30 Hz - see docs/EMULATOR.md (dot-matrix and game tick).
      *
      * Only channel 0 tracks a deadline (next_irq), and only channel 0 is ever
      * run in mode 0 here; anything else keeps the periodic approximation. */

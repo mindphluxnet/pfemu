@@ -541,7 +541,7 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
          * fresh INTRO.MOD and still rewrote it on "success".  Replaced by
          * fantasies_filter_read() (called from the AH=3Fh handler below),
          * which makes INTRO.PRG believe the check already passed before it
-         * ever draws the screen - see WRITEUP-PHASE2.md §5.13.1. */
+         * ever draws the screen - see docs/EMULATOR.md (copy protection). */
         fantasies_patch_intro(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_pause(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_spring(dospath, (uint32_t)load*16, imglen);

@@ -6,7 +6,7 @@
  * time in order, so a destination inside the source run reads back what it
  * just wrote and the run propagates.  That is the LZ77 run-expansion idiom
  * every self-extracting executable emits, and it silently corrupted the 1993
- * demo's PKLITE sound drivers (docs/VERSIONS.md).
+ * demo's PKLITE sound drivers (docs/RELEASES.md).
  *
  * Build and run from the repo root:
  *   cl /nologo /W3 /wd4996 /I src /Fe:reptest.exe tools/reptest.c src/cpu.c

@@ -1,6 +1,6 @@
 /* Release identity for Pinball Fantasies installations.
  *
- * Three materially different releases of the game are known (docs/VERSIONS.md
+ * Four releases of the game are known (docs/RELEASES.md
  * has the full inventory and the reasoning behind this design), and they do
  * not agree on the things pfemu has to know before it boots anything:
  *
@@ -156,7 +156,7 @@ static void hex32(const uint8_t d[32], char out[65]){
 
 /* ------------------------------------------------------- release database */
 /* Generated from the three collected installations and cross-checked against
- * every hash printed in docs/VERSIONS.md.  Sizes are decimal bytes; prefix is
+ * every hash printed in docs/RELEASES.md.  Sizes are decimal bytes; prefix is
  * nonzero only where the hash deliberately covers less than the whole file. */
 #include "reltable.h"
 
@@ -450,7 +450,7 @@ int release_detect(const char *dir, RelResult *out){
                  "Unrecognised build - %s is not a known release.", lay->names[0]);
         addf(out, "state: unknown\n"
                   "%s does not match any release in this build's database.\n"
-                  "Code vector, for adding this release (see docs/VERSIONS.md):\n",
+                  "Code vector, for adding this release (see docs/RELEASES.md):\n",
              lay->names[0]);
         for(i=0;i<ncode;i++){
             if(!code_have[i]){ addf(out, "  %-11s MISSING\n", lay->names[i]); continue; }
@@ -510,7 +510,7 @@ int release_detect(const char *dir, RelResult *out){
 
     /* The code vector is coherent.  Everything from here is about whether the
      * installation is complete, not about which release it is - so it is
-     * reported separately, exactly as docs/VERSIONS.md asks. */
+     * reported separately, exactly as docs/RELEASES.md asks. */
     {
         int npresent = 0;
         for(i=0;i<ncode;i++) npresent += code_have[i];
@@ -616,7 +616,7 @@ int release_detect(const char *dir, RelResult *out){
 }
 
 /* --------------------------------------------------------- install search */
-/* GAME is the documented place to put one installation (docs/VERSIONS.md).
+/* GAME is the documented place to put one installation (docs/RELEASES.md).
  * Any other top-level directory holding the anchor program of a known layout
  * is offered as well, so a collection of releases sitting side by side keeps
  * working - the directory is then only a location to look in, never the
