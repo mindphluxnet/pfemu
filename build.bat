@@ -1,5 +1,22 @@
 @echo off
-call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+rem If cl.exe is already on PATH (e.g. CI set up the compiler environment),
+rem there is nothing to do. Otherwise locate vcvars64.bat: first the default
+rem VS2019 Build Tools location, then whatever vswhere finds.
+where cl >nul 2>&1
+if %errorlevel% neq 0 (
+  if exist "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+  ) else (
+    for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
+      if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" call "%%i\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+    )
+  )
+)
+where cl >nul 2>&1
+if %errorlevel% neq 0 (
+  echo No MSVC compiler found. Install Visual Studio 2019 Build Tools with the C++ toolchain.
+  exit /b 1
+)
 rc /nologo /fo pfemu.res res\pfemu.rc
 if errorlevel 1 exit /b 1
 cl /nologo /O2 /GL /W3 /wd4996 /Fe:pfemu.exe src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c src/main.c src/launch.c src/fantasies.c src/release.c src/lzexe.c src/png.c src/replay.c pfemu.res user32.lib gdi32.lib winmm.lib comctl32.lib comdlg32.lib /link /LTCG /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
