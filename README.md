@@ -92,6 +92,11 @@ If an installation is not recognised, **Launch** stays disabled. Each release
 stores its options at a different address in memory, so applying one release's
 layout to another would corrupt it. pfemu refuses to guess.
 
+Use unmodified game files. pfemu checks the programs against known-good hashes,
+so a cracked copy will not be recognised and will not launch. No crack is
+needed: pfemu answers the manual lookup itself, as described under
+game-specific fixes.
+
 Your choices are saved in `PFEMU-STATE/` inside the selected install's folder,
 along with high scores and game state. Deleting that folder resets everything
 pfemu saved, while the original files stay untouched. pfemu never writes to

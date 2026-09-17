@@ -81,6 +81,3 @@ the 25 files into one directory *is* the install, and it is path-independent:
 2 executables (`PINBALL.EXE`, `SETSOUND.EXE`), `INTRO.PRG`, `TABLE1-4.PRG`,
 6 `.MOD` music files, 11 `.SDR` sound drivers, `TIMER.BIN`. Per the original
 script, `SETSOUND.EXE` picks the sound card, then `PINBALL` starts the game.
-
-`CRACK.COM` on the disks patches the manual-lookup check. pfemu doesn't need
-it (see [Emulator](EMULATOR.md#copy-protection)); it is left unapplied.

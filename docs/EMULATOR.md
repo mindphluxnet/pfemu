@@ -238,6 +238,10 @@ Covered in [Game-specific fixes](#game-specific-fixes-src-nopatch-disables-all-o
 the `INTRO.MOD`-sentinel forge. Neither `INTRO.PRG` nor `INTRO.MOD` on disk
 is ever modified; `-nopatch` restores the original prompt.
 
+Keep `INTRO.PRG` pristine. A cracked copy has a different hash
+and fails release detection, so it will not launch. The crack is also
+pointless: the forge answers the check before the screen ever draws.
+
 ## Debugging and tracing
 
 Most effort went into locating faults, so the instrument panel is generous.

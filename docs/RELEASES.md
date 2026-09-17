@@ -50,6 +50,18 @@ releases), `unknown` (anchor not in the database - the report lists sizes
 and hashes for collection), `ambiguous` (two layouts, or names differing
 only by case). Only `recognized` enables Launch.
 
+## Unmodified files required
+
+The game programs must be pristine originals. Patching even one byte
+changes the hash, so a cracked copy reports as `unknown` or `modified` and
+cannot launch. There is nothing to gain by cracking: pfemu answers the
+manual lookup itself (see [Emulator](EMULATOR.md#copy-protection)), and it
+never writes to the installed files, so verified originals stay verified.
+The `-release` flag overrides detection for a lightly modified copy of a
+known release, but that is an expert escape hatch, not a way to run cracks:
+the fixes are signature-checked and stay inert when their targets do not
+match. `-nopatch` only disables the fixes; it does not bypass detection.
+
 Extra files (`PINBALL.BAT`, `21STINFO.DAT`, readmes, logs, a populated
 `PFEMU-STATE/`) never break detection. A common mistake - files one folder
 too deep (`GAME/FANTASY/INTRO.PRG`) - is reported as such, not silently
