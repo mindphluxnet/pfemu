@@ -247,9 +247,12 @@ Two rules keep replays honest: the trainer is incompatible with both modes
 (recording or replaying with it enabled is refused, and its hotkeys stay
 dead), and volume is never recorded - the slider, `-vol`, and the in-window
 `-` / `+` / `*` keys stay live throughout, since they only scale what pfemu
-hands to Windows. See `docs/REPLAY.md` for the full plan, including how
-accuracy is validated (replay twice, compare `-wav` audio, `-shotevery`
-frames, and the exit cycle counts).
+hands to Windows. While recording, a tiny red `REC` badge sits in the corner of
+the game window (a green `PLAY` twin shows while replaying) - host-only:
+neither ever reaches the game, the `.pfr`, or any
+screenshot/`-shotevery` capture. See `docs/REPLAY.md` for the full plan,
+including how accuracy is validated (replay twice, compare `-wav` audio,
+`-shotevery` frames, and the exit cycle counts).
 
 ## Keeping the original files clean
 

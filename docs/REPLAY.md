@@ -187,7 +187,9 @@ On replay-file load, `release_scan()` the current installs and:
    time freeze, overlay isolation, input-leak suppression.
 2. **Launcher:** mode + picker + auto-restore (§4–4.1).
 3. **Polish (optional):** mid-table savestates (RAM+PIC/PIT/VGA/DOS),
-   in-window record indicator, replay scrubber.
+   replay scrubber. (Session badges are done: tiny static REC / green PLAY
+   twins, host-only, composed tear-free in a back buffer; captures read the
+   framebuffer, so validation artifacts stay pixel-clean.)
 
 (Direct-to-table replay was phase 3; dropped per §3.4.)
 

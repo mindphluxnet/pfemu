@@ -44,6 +44,31 @@ static int screenshot_pending = 0;
 static int vol_premute = -1, vol_muted = 0;
 static LONG windowed_style;
 static RECT windowed_rect;
+/* Presentation back buffer: the game frame, bars and badges are composed
+ * here and reach the screen in a single BitBlt, so the compositor can never
+ * catch the window half-drawn (which is what made the first screen-space
+ * REC badge flicker: bar-erase and badge were separate ops on the visible
+ * surface).  Rebuilt on resize. */
+static HDC back_dc = NULL;
+static HBITMAP back_bmp = NULL;
+static int back_w = 0, back_h = 0;
+static void back_drop(void){
+    if(back_bmp){ DeleteObject(back_bmp); back_bmp = NULL; }
+    if(back_dc){ DeleteDC(back_dc); back_dc = NULL; }
+    back_w = back_h = 0;
+}
+static int back_ensure(void){
+    if(back_dc && back_w == win_w && back_h == win_h) return 1;
+    if(win_w <= 0 || win_h <= 0) return 0;
+    back_drop();
+    back_dc = CreateCompatibleDC(hdc);
+    if(!back_dc) return 0;
+    back_bmp = CreateCompatibleBitmap(hdc, win_w, win_h);
+    if(!back_bmp){ back_drop(); return 0; }
+    SelectObject(back_dc, back_bmp);
+    back_w = win_w; back_h = win_h;
+    return 1;
+}
 
 /* 1 once the launcher dialog returned Launch: refusals after that point get
  * a MessageBox as well as stderr.  A windowed process has no console, so a
@@ -79,6 +104,78 @@ void osd_show(const char *text){
 void osd_clear(void){
     osd_text[0] = 0;
     osd_until = 0;
+}
+
+/* Persistent session badges (docs/REPLAY.md polish): a tiny REC badge while
+ * -record / launcher Record mode is running, a green PLAY twin while
+ * replaying.  Host-only - never into guest state, never logged, zero effect
+ * on the session - and drawn in SCREEN space into the back buffer (see
+ * plat_present below), so they sit in the true window/monitor corner rather
+ * than the stretched game image's corner, stay crisp (no stretch blur),
+ * compose tear-free in one blit, and can never leak into
+ * -shotevery/-shot/screenshot captures (those read the framebuffer, which
+ * badges never touch).  Deliberately minimal and static (no blink,
+ * 1x glyphs, one corner): they must never cover playfield or distract.
+ * (The transient OSD text stays image-space on purpose: it is centered
+ * content that should scale with the picture.) */
+/* Badge typeface and swatches, created once (process-lifetime objects, like
+ * the back buffer itself).  Segoe UI is the system font on every supported
+ * Windows; the stock GUI font is the fallback, never a failure. */
+static HFONT badge_font = NULL;
+static HBRUSH badge_box = NULL, badge_red = NULL, badge_green = NULL;
+static void badge_gdi_init(void){
+    if(badge_font) return;
+    badge_font = CreateFontA(-15, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH|FF_DONTCARE,
+                             "Segoe UI");
+    if(!badge_font) badge_font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    badge_box = CreateSolidBrush(RGB(0x14,0x14,0x14));
+    badge_red = CreateSolidBrush(RGB(0xE0,0x40,0x40));
+    badge_green = CreateSolidBrush(RGB(0x40,0xC0,0x60));
+}
+static void rec_draw_dc(HDC dc){
+    /* REC while recording (red), PLAY while replaying (green): same corner,
+     * same rules, readable at a glance.  Real GDI text (anti-aliased, measured
+     * for its box), not hand-plotted pixels - this runs in screen space, so
+     * there is no resolution to match and no reason to look retro. */
+    const char *t;
+    COLORREF ink;
+    HBRUSH dot;
+    int boxw, boxh, x0, y0, tlen;
+    SIZE sz;
+    RECT r;
+    HFONT oldf;
+    int oldbk;
+    COLORREF oldtx;
+    if(replay_is_recording()){ t = "REC"; dot = badge_red; ink = RGB(0xFF,0xE0,0x40); }
+    else if(replay_is_replaying()){ t = "PLAY"; dot = badge_green; ink = RGB(0x70,0xFF,0x90); }
+    else return;
+    badge_gdi_init();
+    if(!badge_font || !badge_box || !dot) return;
+    tlen = (int)strlen(t);
+    oldf = (HFONT)SelectObject(dc, badge_font);
+    GetTextExtentPoint32A(dc, t, tlen, &sz);
+    boxw = 6+10+6+sz.cx+8;
+    boxh = sz.cy+12;
+    if(win_w < boxw+8 || win_h < boxh+8){ SelectObject(dc, oldf); return; }
+    x0 = win_w - boxw - 6;
+    y0 = 6;
+    r.left = x0; r.top = y0; r.right = x0+boxw; r.bottom = y0+boxh;
+    FillRect(dc, &r, badge_box);
+    {   HBRUSH oldb = (HBRUSH)SelectObject(dc, dot);
+        HPEN oldp = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+        int cy = y0 + boxh/2;
+        Ellipse(dc, x0+6, cy-5, x0+16, cy+5);
+        SelectObject(dc, oldp);
+        SelectObject(dc, oldb);
+    }
+    oldbk = SetBkMode(dc, TRANSPARENT);
+    oldtx = SetTextColor(dc, ink);
+    TextOutA(dc, x0+6+10+6, y0+(boxh-sz.cy)/2, t, tlen);
+    SetTextColor(dc, oldtx);
+    SetBkMode(dc, oldbk);
+    SelectObject(dc, oldf);
 }
 
 void osd_draw(uint32_t *fb_, int w, int h){
@@ -387,17 +484,34 @@ int present_phaselock = 1;       /* -nophaselock reverts to the wall timer */
 void plat_present(const uint32_t *pix, int w, int h){
     int dw = win_w, dh = win_h, dx = 0, dy = 0;
     double ar = (double)w / (double)h * (w==320 && h==200 ? 1.2 : 1.0);
+    HDC dst;
     bmi.bmiHeader.biWidth = w;
     bmi.bmiHeader.biHeight = -h;
     if((double)dw/dh > ar){ dw = (int)(dh*ar); dx = (win_w-dw)/2; }
     else { dh = (int)(dw/ar); dy = (win_h-dh)/2; }
     if(integer_scale){ }
-    if(dx>0){ RECT r={0,0,dx,win_h}; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));
-              r.left=dx+dw; r.right=win_w; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH)); }
-    if(dy>0){ RECT r={0,0,win_w,dy}; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));
-              r.top=dy+dh; r.bottom=win_h; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH)); }
-    SetStretchBltMode(hdc, COLORONCOLOR);
-    StretchDIBits(hdc, dx,dy,dw,dh, 0,0,w,h, pix, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    /* Compose off-screen: bars, picture and badges land in the back buffer
+     * and reach the window in one BitBlt, so the compositor never catches
+     * a half-drawn frame (the flicker).  Captures never see this buffer -
+     * they read the emulated framebuffer before badges (see the caller). */
+    dst = back_ensure() ? back_dc : hdc;
+    if(dst == back_dc){
+        RECT full = {0,0,win_w,win_h};
+        FillRect(dst, &full, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    } else {
+        if(dx>0){ RECT r={0,0,dx,win_h}; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));
+                  r.left=dx+dw; r.right=win_w; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH)); }
+        if(dy>0){ RECT r={0,0,win_w,dy}; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));
+                  r.top=dy+dh; r.bottom=win_h; FillRect(hdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH)); }
+    }
+    SetStretchBltMode(dst, COLORONCOLOR);
+    StretchDIBits(dst, dx,dy,dw,dh, 0,0,w,h, pix, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    /* Screen-space badges go last, in window pixels: the REC indicator in
+     * particular must sit in the true window corner (see rec_draw_dc),
+     * not inside the stretched picture. */
+    rec_draw_dc(dst);
+    if(dst == back_dc)
+        BitBlt(hdc, 0,0,win_w,win_h, dst, 0,0, SRCCOPY);
 }
 
 double plat_time(void){
@@ -1032,8 +1146,10 @@ int main(int argc, char **argv){
             last_present = plat_time();
             fantasies_ballgap_present(fell_behind);
             vga_render(fb, &fbw, &fbh);
-            osd_draw(fb, fbw, fbh);
-            plat_present(fb, fbw, fbh);
+            /* Captures first, badges after: -shotevery/-shot frames and
+             * F11 screenshots are validation artifacts and stay pixel-clean
+             * (this also lifts the old OSD text out of them).  The window
+             * still shows everything below. */
             if(shot_every > 0 && real >= next_shot){
                 char nm[64];
                 next_shot = real + shot_every;
@@ -1044,6 +1160,8 @@ int main(int argc, char **argv){
                 screenshot_pending = 0;
                 take_screenshot(fb, fbw, fbh);
             }
+            osd_draw(fb, fbw, fbh);
+            plat_present(fb, fbw, fbh);
           } }
         plat_sleep_ms(1);
     }
