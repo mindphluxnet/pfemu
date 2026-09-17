@@ -95,7 +95,7 @@ timestamps are explicitly not identity).
 
 - Refuse to start when the trainer is enabled (`pfemu_cheats.cfg` on, or
   equivalent CLI state); the launcher also greys the trainer checkbox in
-  record mode. Trainer `1`/`2` hotkeys are dead while recording.
+   record mode. Trainer hotkeys (`1`-`3`, `Z`) are dead while recording.
 - Log every `kbd_key()` entry with `emu_now()` at record time.
 - Record `down` and `up` (flipper overlap repair depends on both).
 - Force `speed=1` during record; record effective `-ips`.
@@ -107,7 +107,7 @@ timestamps are explicitly not identity).
 ### 3.3 Replay (`-replay FILE`)
 
 - Refuse to start when the header or the current install has the trainer
-  enabled; trainer `1`/`2` hotkeys stay dead for the whole replay.
+   enabled; trainer hotkeys (`1`-`3`, `Z`) stay dead for the whole replay.
 - Volume stays live and unrecorded: the slider, `-vol`, and the in-window
   `-`/`+`/`*` keys keep working (host gain only, `-wav` is captured
   upstream per `src/sound.c`), and are never written into the `.pfr`.
@@ -201,7 +201,7 @@ On replay-file load, `release_scan()` the current installs and:
   during record and replay, are never stored in the `.pfr`, and never
   affect the `-wav` capture (upstream of gain).
 - Trainer is incompatible with replay: recording requires it off and
-  cannot enable it; replay requires both header and install off; `1`/`2`
+  cannot enable it; replay requires both header and install off; trainer
   hotkeys are dead in both modes.
 - Open: exact `.pfr` encoding (text for v1 readability?); session
   naming/retention UX in the launcher.

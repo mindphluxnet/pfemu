@@ -230,7 +230,7 @@ No implementation was made, but the required changes are small and localized:
    layout, not an error. Its own validation/default logic supersedes that old
    patch.
 5. Re-run an end-to-end launch through `PF.EXE`, choose each table, exercise
-   pause/resume and both trainer toggles, and verify launcher options after the
+   pause/resume and all trainer toggles, and verify launcher options after the
    startup/session fixes are implemented.
 
 Until items 1-3 are addressed, the accurate support status is: **the CPU/DOS/

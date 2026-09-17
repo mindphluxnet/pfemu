@@ -6,7 +6,8 @@
  *  - the intro's manual-lookup image patch (memory-only, signature-checked,
  *    -nopatch disables);
  *  - the flipper fix session/exec gating (see below);
- *  - the trainer hotkeys ('1'/'2', see fantasies_key_event below);
+ *  - the trainer hotkeys ('1'-'3', Z and '/' - see fantasies_key_event
+ *    below);
  *  - Pinball Fantasies Deluxe's (1995 CD-ROM release) boot-time CD-present
  *    check, faked so a from-disk-only install reads as "CD found" (see
  *    fantasies_open_cdmarker below).
@@ -37,7 +38,7 @@ static int fix_on = 0;          /* one of the release's tables is running */
 static uint32_t cfg_buf = 0;    /* intro options struct, DS offset; 0 = none */
 static char session_dir[512];   /* game directory, for the options file below */
 static int table_num = 0;              /* 1-4 while a table is running, else 0 */
-static int trainer_enabled = 0;        /* launcher: arm the '1'/'2' hotkeys below */
+static int trainer_enabled = 0;        /* launcher: arm the '1'-'3'/'Z' hotkeys below */
 static int spring_cheat_on = 0;        /* our own state for the '2' toggle - see below */
 
 /* Upper-cased basename of a guest/host path (drives, slashes handled). */
@@ -75,8 +76,8 @@ static int is_table_prog(const char *base){
  * hotkeys in fantasies_key_event() below; it does not itself turn either
  * cheat on.  Every fresh table load is the game's own unpatched image (see
  * fantasies_on_exec below - it no longer pre-applies anything), so with the
- * trainer enabled, both cheats still start OFF and stay off until the
- * player actually presses '1' or '2'.  Kept out of the 6-byte
+ * trainer enabled, the cheats still start OFF and stay off until the
+ * player actually presses one of the hotkeys.  Kept out of the 6-byte
  * pfemu_options.cfg blob since that one specifically mirrors PINBALL.CFG's
  * own layout. */
 static void load_cheat_cfg(const char *dir){
@@ -806,7 +807,14 @@ void fantasies_pause_tick(void){
     pause_prev_flag[table_num] = cur;
 }
 
-/* Trainer hotkeys, ported from trainer/PINTRN.COM (RAZOR DoX, 1994).
+/* Trainer hotkeys: '1'/'2' ported from trainer/PINTRN.COM (RAZOR DoX,
+ * 1994); '3'/'Z' from trainer/TRAINER.EXE (MAT's "Tripper-Trainer",
+ * Jan 1994 - PKLite-packed, unpacked and traced under pfemu itself).
+ * Only the cheat mechanisms travelled across - both trainers' TSR
+ * machinery (INT 33h / INT 10h hooks, option menus) stays behind; pfemu
+ * locates every target by signature scan instead of their fixed offsets,
+ * so the cheats work across releases, not just the floppy build the two
+ * trainers were written against.
  *
  * That trainer is a packed real-mode TSR: it decompresses itself, waits for
  * a keypress on its own banner, then hooks INT 33h (mouse) so that the very
@@ -903,6 +911,66 @@ void fantasies_patch_balls(const char *dospath, uint32_t load_base, uint32_t img
     }
     balls_addr[tn] = 0;
     trc("[fantasies] infinite-balls fix: signature not found (table %d), leaving unpatched\n", tn);
+}
+
+/* tilt_addr[table_num] is the linear address of the nudge-accumulator
+ * update's own opcode byte (83 06 lo hi 3C = add word ptr [tilt_meter],3Ch),
+ * located by fantasies_patch_tilt() below; 0 = not found for that table
+ * (the '3' hotkey becomes a no-op). tilt_orig[table_num] is that
+ * instruction's five genuine bytes, restored verbatim on toggle-off. */
+static uint32_t tilt_addr[5] = {0,0,0,0,0};
+static uint8_t tilt_orig[5][5] = {
+    {0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0},{0,0,0,0,0} };
+
+/* Locates the tilt-meter increment.  Nudging (Space) runs a guarded
+ * sequence: two "already tilting/latched, skip" checks (each a
+ * CMP-then-JE padded with the assembler's usual three NOPs), then
+ * ADD 3Ch onto a word tilt meter, a CS-relative latch set, and a
+ * CMP/JA against 78h - the third nudge in quick succession trips TILT.
+ * NOPing just the 5-byte ADD leaves the meter permanently at rest, which
+ * is exactly the megatrainer's (trainer/TRAINER.EXE, MAT Jan 1994)
+ * "INFINITE TILTS": its per-table patch writes five 90s at this same site
+ * (verified against the unpacked image - same DI in all four tables).
+ * The full 37-byte shape is confirmed unique by static byte-scan against
+ * every shipped TABLE1-4.PRG of the floppy, Deluxe and Power Pack
+ * releases alike (one match each); the meter/latch addresses read from
+ * the immediates differ per table and build, so nothing is hardcoded. */
+void fantasies_patch_tilt(const char *dospath, uint32_t load_base, uint32_t imglen){
+    static const uint8_t sig[37] = {
+        0x80,0x3E,0,0,0xFF, 0x74,0x3E, 0x90,0x90,0x90,
+        0x2E,0x80,0x3E,0,0,0xFF, 0x74,0x33, 0x90,0x90,0x90,
+        0x83,0x06,0,0,0x3C, 0x2E,0xC6,0x06,0,0,0xFF,
+        0x83,0x3E,0,0,0x78 };
+    static const uint8_t mask[37] = {
+        1,1,0,0,1, 1,1, 1,1,1,
+        1,1,1,0,0,1, 1,1, 1,1,1,
+        1,1,0,0,1, 1,1,1,0,0,1,
+        1,1,0,0,1 };
+    char b[64];
+    uint32_t i;
+    int tn;
+
+    if(!session_armed || dos_no_patch) return;
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)) return;
+    tn = prog_slot(b);
+    if(load_base + imglen > RAM_SIZE || imglen < sizeof(sig)) return;
+
+    for(i = 0; i + sizeof(sig) <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        for(k = 0; k < sizeof(sig); k++)
+            if(mask[k] && ram[at+k] != sig[k]) break;
+        if(k == sizeof(sig)){
+            int j;
+            tilt_addr[tn] = load_base + i + 21;
+            for(j = 0; j < 5; j++) tilt_orig[tn][j] = ram[tilt_addr[tn]+(uint32_t)j];
+            trc("[fantasies] infinite-tilts site located (table %d): %05X\n",
+                tn, tilt_addr[tn]);
+            return;
+        }
+    }
+    tilt_addr[tn] = 0;
+    trc("[fantasies] infinite-tilts fix: signature not found (table %d), leaving unpatched\n", tn);
 }
 
 /* SPRING_VALID's linear address per table, located by fantasies_patch_spring()
@@ -1012,6 +1080,109 @@ void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t im
     trc("[fantasies] spring-valid fix: signature not found (table %d), leaving unpatched\n", tn);
 }
 
+/* jump_vel_addr[table_num] is the linear address of the ball-velocity
+ * word the Z//' kick subtracts from, located by fantasies_patch_jump()
+ * below; 0 = not found for that table (kicks become a no-op). */
+static uint32_t jump_vel_addr[5] = {0,0,0,0,0};
+
+/* Locates the ball-velocity word the Z//' kick subtracts from, inside
+ * the vertical ball-motion integrator (trainer/TRAINER.EXE, MAT Jan 1994
+ * - its "BALL JUMP KEY").
+ *
+ * Per physics tick the engine folds a velocity word into a 32-bit
+ * fixed-point accumulator and scales it down with a fixed divisor:
+ *
+ *   MOV AX,[vel] / CWD / ADD [acc_lo],AX / ADC [acc_hi],DX /
+ *   MOV AX,[acc_lo] / MOV DX,[acc_hi] / MOV BX,0400h / IDIV BX
+ *
+ * The megatrainer's jump handler subtracts 0400h from [vel] on a Z (2Ch)
+ * or '/' (35h) keystroke - an instant upward kick wherever the ball is -
+ * which is what fantasies_jump_kick() below replays.
+ *
+ * The sequence occurs twice per table (the X and Y integrators share the
+ * shape); the trainer's own fixed patch offsets hook the first of the
+ * two, which is the vertical channel the kick needs, so the first match
+ * is taken here too.  Confirmed by static byte-scan (both matches, same
+ * spacing) against every shipped TABLE1-4.PRG of the floppy, Deluxe and
+ * Power Pack releases, plus the unpacked demo's PLAND.PRG.
+ * DATA's runtime segment is recovered the same majority-vote way
+ * fantasies_patch_spring() recovers it; the velocity offset comes
+ * straight out of the first matched immediate.
+ *
+ * Deliberately not ported: the trainer's companion cheat at this same
+ * site, clamping the accumulator high word 9->7 every tick
+ * ("CONTINUOUS BALL").  Implemented that way here and then removed again:
+ * side-drain ball loss does not go through the clamped state, so balls
+ * kept draining exactly as without it. */
+void fantasies_patch_jump(const char *dospath, uint32_t load_base, uint32_t imglen){
+    static const uint8_t sig[24] = {
+        0xA1,0,0,                       /* mov ax,[vel]  <- velocity offset wanted */
+        0x99,                           /* cwd */
+        0x01,0x06,0,0,                  /* add [acc_lo],ax */
+        0x11,0x16,0,0,                  /* adc [acc_hi],dx  <- accumulator offset wanted */
+        0xA1,0,0,                       /* mov ax,[acc_lo] */
+        0x8B,0x16,0,0,                  /* mov dx,[acc_hi] */
+        0xBB,0x00,0x04,                 /* mov bx,0400h */
+        0xF7,0xFB };                    /* idiv bx */
+    static const uint8_t mask[24] = {
+        1,0,0,
+        1,
+        1,1,0,0,
+        1,1,0,0,
+        1,0,0,
+        1,1,0,0,
+        1,1,1,
+        1,1 };
+    char b[64];
+    uint32_t i;
+    uint16_t cand_val[64]; uint32_t cand_cnt[64]; int ncand = 0;
+    uint32_t data_seg = 0, best = 0;
+    uint16_t vel_off = 0;
+    int tn;
+
+    if(!session_armed || dos_no_patch) return;
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)) return;
+    tn = prog_slot(b);
+    if(load_base + imglen > RAM_SIZE || imglen < sizeof(sig)) return;
+
+    for(i = 0; i + sizeof(sig) <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        for(k = 0; k < sizeof(sig); k++)
+            if(mask[k] && ram[at+k] != sig[k]) break;
+        if(k == sizeof(sig)){
+            vel_off = img_u16(load_base, i + 1);
+            break;
+        }
+    }
+    if(!vel_off){
+        jump_vel_addr[tn] = 0;
+        trc("[fantasies] ball-jump fix: signature not found (table %d), leaving unpatched\n", tn);
+        return;
+    }
+
+    for(i = 0; i + 4 <= imglen; i++){
+        if(ram[load_base+i] == 0x68 && ram[load_base+i+3] == 0x1F){
+            uint16_t v = img_u16(load_base, i+1);
+            int j;
+            for(j = 0; j < ncand; j++) if(cand_val[j] == v) break;
+            if(j == ncand){ if(ncand < 64){ cand_val[ncand]=v; cand_cnt[ncand]=1; ncand++; } }
+            else cand_cnt[j]++;
+        }
+    }
+    for(i = 0; i < (uint32_t)ncand; i++)
+        if(cand_cnt[i] > best){ best = cand_cnt[i]; data_seg = cand_val[i]; }
+    if(!data_seg || best < 8){
+        jump_vel_addr[tn] = 0;
+        trc("[fantasies] ball-jump fix: DATA segment not confidently found (table %d), leaving unpatched\n", tn);
+        return;
+    }
+
+    jump_vel_addr[tn] = data_seg*16 + vel_off;
+    trc("[fantasies] ball-jump located (table %d): vel=%05X (data_seg=%04X)\n",
+        tn, jump_vel_addr[tn], data_seg);
+}
+
 /* Returns 1 if now ON, 0 if now OFF, -1 if the image didn't match either
  * known state (nothing touched) - callers use this to decide whether/what
  * to show on the OSD. */
@@ -1031,6 +1202,27 @@ static int fantasies_toggle_balls(void){
         return 0;
     }
     return -1;
+}
+
+/* Same contract as fantasies_toggle_balls() above, for the 5-byte tilt
+ * increment.  Unlike the megatrainer - whose in-game '2' toggle NOPs only
+ * four of the five bytes (leaving a dangling 3Ch that accidentally pairs
+ * with the next opcode byte into a benign CMP) - both directions here
+ * cover the whole instruction: five 90s on, the five saved bytes off. */
+static int fantasies_toggle_tilt(void){
+    uint32_t a = tilt_addr[table_num];
+    int i;
+    if(!a || a + 5 > RAM_SIZE) return -1;
+    if(ram[a]==0x83 && ram[a+1]==0x06){
+        for(i = 0; i < 5; i++) ram[a+(uint32_t)i]=0x90;
+        trc("[fantasies] infinite tilts ON (table %d)\n", table_num);
+        return 1;
+    }
+    for(i = 0; i < 5; i++)
+        if(ram[a+(uint32_t)i] != 0x90) return -1;
+    for(i = 0; i < 5; i++) ram[a+(uint32_t)i]=tilt_orig[table_num][i];
+    trc("[fantasies] infinite tilts OFF (table %d)\n", table_num);
+    return 0;
 }
 
 /* Own-state toggle, not a byte-value inference - see the comment above
@@ -1069,15 +1261,36 @@ void fantasies_spring_tick(void){
     }
 }
 
+/* One upward kick: subtracts 0400h from the ball-velocity word, the
+ * megatrainer's "BALL JUMP KEY" (Z / '/' in that trainer).  Fire-and-forget
+ * like a keystroke - no sticky state, so nothing to clear on table reload
+ * and nothing for the tick to hold. */
+static void fantasies_jump_kick(void){
+    uint32_t a = jump_vel_addr[table_num];
+    uint16_t v;
+    if(!a || a + 2 > RAM_SIZE) return;
+    v = (uint16_t)(ram[a] | (ram[a+1] << 8));
+    v = (uint16_t)(v - 0x400);
+    ram[a] = (uint8_t)(v & 0xFF); ram[a+1] = (uint8_t)(v >> 8);
+    trc("[fantasies] ball jump kick (table %d)\n", table_num);
+}
+
 /* Called from dev.c's kbd_key() on every fresh (non-autorepeat) key make,
- * host scancode already stripped of the E0 prefix bit. '1' and '2' are
- * plain, unextended scancodes, so no E0 check is needed here.  Gated on
+ * host scancode already stripped of the E0 prefix bit.  '1'-'3' and 'Z'
+ * are plain, unextended scancodes, so no E0 check is needed here.  Gated on
  * trainer_enabled (the launcher's "Enable trainer" checkbox, see
- * load_cheat_cfg above): unchecked, both hotkeys are completely inert - not
+ * load_cheat_cfg above): unchecked, the hotkeys are completely inert - not
  * just "cheats start off", but no keypress here ever touches memory at
- * all - same as before this feature existed. */
+ * all - same as before this feature existed.
+ *
+ * '1' and '3' NOP a counter update out of the image (restoring it on
+ * toggle-off); '2' flips holding state the tick re-asserts.  'Z' (2Ch)
+ * is an action, not a toggle: a one-shot upward kick, live only while
+ * ball-control mode ('2') is on - the megatrainer's jump key folded into
+ * pfemu's existing ball-control mode.  The game itself ignores all four
+ * scancodes, so every hotkey doubles as its own no-op downstream. */
 /* The trainer invariant (docs/REPLAY.md sections 3.2/3.3): recording and
- * replay require the trainer off, and the '1'/'2' hotkeys are dead in both
+ * replay require the trainer off, and the hotkeys are dead in both
  * modes even if a config says otherwise.  main() refuses to start either
  * mode with it enabled; this is the backstop for the hotkeys themselves. */
 int fantasies_trainer_enabled(void){ return trainer_enabled; }
@@ -1093,6 +1306,11 @@ void fantasies_key_event(int scancode, int down){
     } else if(scancode == 0x03){
         r = fantasies_toggle_spring();
         if(r >= 0) osd_show(r ? "BALL CONTROL: ON" : "BALL CONTROL: OFF");
+    } else if(scancode == 0x04){
+        r = fantasies_toggle_tilt();
+        if(r >= 0) osd_show(r ? "INFINITE TILTS: ON" : "INFINITE TILTS: OFF");
+    } else if(scancode == 0x2C){
+        if(spring_cheat_on) fantasies_jump_kick();
     }
 }
 

@@ -249,6 +249,8 @@ void fantasies_pause_tick(void);
 void fantasies_spring_tick(void);
 void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_patch_balls(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_patch_tilt(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_patch_jump(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_patch_ballgap(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_ballgap_exec(uint32_t lin);   /* cpu.c hook, gated by balldbg_on */
 void fantasies_ballgap_present(int fallback); /* main.c: one call per present */

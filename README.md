@@ -218,17 +218,21 @@ Notch 1 is what pfemu used before this setting was exposed.
 
 ### Optional trainer
 
-The launcher can enable two hotkeys recovered from the 1994 RAZOR DoX trainer:
+The launcher can enable hotkeys recovered from two 1994 trainers - RAZOR
+DoX (`PINTRN.COM`: infinite balls, ball control) and MAT's megatrainer
+(`TRAINER.EXE`: those plus infinite tilts and ball jump):
 
 | Key | Action |
 | --- | --- |
 | `1` | Toggle infinite balls |
 | `2` | Toggle ball control mode |
+| `3` | Toggle infinite tilts |
 
 In ball control mode, `Down Arrow` launches the ball from anywhere on the
-table. Both features are disabled unless **Enable trainer** is selected in the
-launcher, and an on-screen message confirms each change. Both hotkeys locate
-their targets by signature scan, so they work across all four releases alike,
+table, and `Z` kicks it upward mid-play. All features are disabled
+unless **Enable trainer** is selected in the launcher, and an on-screen
+message confirms each toggle. The hotkeys locate their targets by signature
+scan, so they work across all four releases alike,
 even though each ships differently laid-out table programs - and even though
 the demo's are compressed.
 

@@ -322,16 +322,16 @@ static void write_pinball_cfg(const char *dir, const uint8_t in[6]){
     fclose(f);
 }
 
-/* Trainer cheats, ported from trainer/PINTRN.COM (see src/fantasies.c for
- * the reverse-engineering writeup and the actual patch logic).  Separate
- * 2-byte file from pfemu_options.cfg above since these aren't part of
- * PINBALL.CFG's own layout - just a starting state that src/fantasies.c
- * applies the moment a table loads.  One checkbox in the UI ("Enable
- * trainer") drives both bytes together - infinite balls and ball control
- * mode are still two independent patches underneath (and the '1'/'2'
- * hotkeys still toggle them independently in-game), but there's no real
- * reason to make the user tick two boxes to turn "the trainer" on, so both
- * get written identically here.  Reading them back separately (rather than
+/* Trainer cheats, ported from trainer/PINTRN.COM and trainer/TRAINER.EXE
+ * (see src/fantasies.c for the reverse-engineering writeup and the actual
+ * patch logic).  Separate 2-byte file from pfemu_options.cfg above since
+ * these aren't part of PINBALL.CFG's own layout - just a starting state
+ * that src/fantasies.c applies the moment a table loads.  One checkbox in
+ * the UI ("Enable trainer") drives both bytes together - infinite balls,
+ * ball control and infinite tilts are still three independent patches
+ * underneath (and the '1'-'3' hotkeys still toggle them independently
+ * in-game), but there's no real reason to make the user tick two boxes
+ * to turn "the trainer" on, so both get written identically here.  Reading them back separately (rather than
  * assuming they match) means a config saved by an older build of this
  * launcher, with only one of the two set, still shows the checkbox checked
  * instead of silently discarding half of it. */
@@ -858,15 +858,15 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             y += 26;
         }
         y += 6;
-        st->hCheatEnable = CreateWindowExA(0,"BUTTON","Enable trainer (RAZOR DoX, 1994)",
+        st->hCheatEnable = CreateWindowExA(0,"BUTTON","Enable trainer ('1'-'3', 'Z')",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
                             24,y,324,20,h,(HMENU)ID_CHEAT_ENABLE,cs->hInstance,0);
         SendMessageA(st->hCheatEnable,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
         y += 20;
         c = CreateWindowExA(0,"STATIC",
-                            "Infinite balls, and full ball control from the\r\n"
-                            "down-arrow key ('1'/'2' toggle each in-game too).",
+                            "Infinite balls/tilts, ball control\r\n"
+                            "'1'-'3' toggle; down-arrow/'Z' move the ball.",
                             WS_CHILD|WS_VISIBLE,24,y,324,28,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         y += 34;
