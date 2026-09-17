@@ -39,7 +39,7 @@ polynomial.
 
 ## The interleaved CRC layer
 
-A plain `-lh5-` decoder recovered 3 files and failed the other 22 — always on
+A plain `-lh5-` decoder recovered 3 files and failed the other 22 - always on
 files over 4096 bytes. Running the original 8086 decompressor in an
 interpreter reproduced the same failures on the same bytes, so the decoder
 wasn't at fault; something altered the bytes before they reached it.
@@ -68,15 +68,15 @@ output was also checked against formats the container knows nothing about:
 |---|---|
 | `SETSOUND.EXE` LZEXE 0.91 entry lands on the header's `cs:ip` | `0149:000e` |
 | Six `.MOD` files carry ProTracker `M.K.` magic at offset 1080 | 6/6 |
-| Five `.MOD` files satisfy `1084 + 1024·patterns + samples = size` | exact |
+| Five `.MOD` files satisfy `1084 + 1024*patterns + samples = size` | exact |
 | MZ header page counts match byte lengths | exact |
 | `INTRO.PRG` yields readable game strings | yes |
 
-Module titles: `pinball2-table1`…`table4`, `Steelchambers2`, `adrenaline`.
+Module titles: `pinball2-table1`...`table4`, `Steelchambers2`, `adrenaline`.
 
 ## Installed layout
 
-`INSTALL.SYS` only places files — no config, no `AUTOEXEC.BAT` edits. Copying
+`INSTALL.SYS` only places files - no config, no `AUTOEXEC.BAT` edits. Copying
 the 25 files into one directory *is* the install, and it is path-independent:
 2 executables (`PINBALL.EXE`, `SETSOUND.EXE`), `INTRO.PRG`, `TABLE1-4.PRG`,
 6 `.MOD` music files, 11 `.SDR` sound drivers, `TIMER.BIN`. Per the original

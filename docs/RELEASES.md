@@ -21,7 +21,7 @@ sizes alone.
 | `demo` | 5 Min Demo (1993) | `PFDEMO.EXE` | 22 | 1,333,785 |
 
 The Power Pack year comes from the archive's external `21STINFO.DAT`, which
-is packaging metadata — no runtime file references it.
+is packaging metadata - no runtime file references it.
 
 Lineage, briefly: Power Pack is a floppy-family release. Its `PF.EXE` is
 byte-identical to the floppy `PINBALL.EXE`; its Table 3/4 programs, table
@@ -29,7 +29,7 @@ music, `MOD2.MOD`, and most drivers are the floppy files too. It has its own
 intro, its own Table 1/2, its own PAS16/SB16 drivers, and the newer
 `SETSOUND.EXE` shared with Deluxe. Deluxe has its own launcher, intro, and
 all four tables. The demo is the earliest artifact here (file dates November
-1993) and a branch of its own — see below.
+1993) and a branch of its own - see below.
 
 ## How detection works
 
@@ -46,13 +46,13 @@ all four tables. The demo is the earliest artifact here (file dates November
 
 Result states: `recognized`, `incomplete` (known intro, file missing),
 `modified` (known intro, hash differs), `mixed` (files point at different
-releases), `unknown` (anchor not in the database — the report lists sizes
+releases), `unknown` (anchor not in the database - the report lists sizes
 and hashes for collection), `ambiguous` (two layouts, or names differing
 only by case). Only `recognized` enables Launch.
 
 Extra files (`PINBALL.BAT`, `21STINFO.DAT`, readmes, logs, a populated
-`PFEMU-STATE/`) never break detection. A common mistake — files one folder
-too deep (`GAME/FANTASY/INTRO.PRG`) — is reported as such, not silently
+`PFEMU-STATE/`) never break detection. A common mistake - files one folder
+too deep (`GAME/FANTASY/INTRO.PRG`) - is reported as such, not silently
 recursed into.
 
 The options-buffer address is derived per boot by scanning the loaded intro
@@ -74,7 +74,7 @@ builds.
 
 `INTRO.MOD` needs special handling: all copies are 252,870 bytes with
 identical first 252,868 bytes (SHA-256
-`0051a695…48009`) and differing only in the last two bytes (`2B 3F` floppy,
+`0051a695...48009`) and differing only in the last two bytes (`2B 3F` floppy,
 `2D F9` the other three). The game overwrites those two bytes once the
 manual check is passed, so identity uses the prefix hash, never the full-file
 hash. See [Emulator](EMULATOR.md#copy-protection).
@@ -86,7 +86,7 @@ Per-release runtime data:
 | `floppy` | `full` | `PINBALL.EXE` | `DS:49A3` |
 | `power_pack` | `full` | `PF.EXE` | `DS:4846` |
 | `deluxe` | `full` | `PINBALL.EXE` | `DS:48D7` |
-| `demo` | `demo` | `PFDEMO.EXE` | none — no options menu or `PINBALL.CFG` |
+| `demo` | `demo` | `PFDEMO.EXE` | none - no options menu or `PINBALL.CFG` |
 
 The floppy intro defaults only the Scrolling byte when no config is found;
 Power Pack and Deluxe validate all six fields and default all six. pfemu NOPs
@@ -120,7 +120,7 @@ PF.EXE        1742  e7acf53b1af353bd44805579f49a594bf33d243cb8c50a23f0d5c50bb757
 ```
 
 Power Pack extras: `PINBALL.BAT` (82 bytes, runs `SETSOUND` if needed then
-`PF.EXE` — pfemu runs `PF.EXE` directly), its own `INTRO.MOD` tail (same as
+`PF.EXE` - pfemu runs `PF.EXE` directly), its own `INTRO.MOD` tail (same as
 Deluxe), rebuilt PAS16/SB16 drivers, and Deluxe's `SETSOUND.EXE`. Its Table
 1/2 are one paragraph larger than floppy's with relinked early code; the data
 tails are identical after the 16-byte shift. Its Table 3/4 are the floppy
@@ -151,7 +151,7 @@ against an independent implementation, including relocation lists). Unpacked,
 `PLAND.PRG` matches all six table signatures at offsets within ~40 bytes of
 floppy `TABLE1.PRG`, so it gets every table fix. `-nolzexe` keeps the packed
 path for comparison. The demo's `.SDR` drivers are PKLITE-packed and left to
-run their own stubs — nothing needs patching inside them.
+run their own stubs - nothing needs patching inside them.
 
 The demo's drivers still expose the Quality setting: every `.SDR` ends with
 an uncompressed `SP` descriptor past the load image that `SETSOUND.EXE` reads
@@ -160,7 +160,7 @@ the full game's. Its `SETSOUND.EXE` writes a 14-byte name + 3 bytes per
 parameter + 2-byte tail (pfemu writes `00 00` for the tail; the game accepts
 it).
 
-The four `.PCX` files on the demo disk are distribution artwork — its own
+The four `.PCX` files on the demo disk are distribution artwork - its own
 `INSTALL.BAT` doesn't copy them and no program reads them. Recorded and
 ignored.
 
@@ -188,17 +188,17 @@ Remaining per-release files (distribution/utility details, useful for
 diagnostics but not identity):
 
 ```text
-floppy:      INTRO.MOD 252870 e871ab…477e5 | PAS16 10712 e863cb…352fd2
-             SB16 11349 81a7c4…be7bab17 | SETSOUND 5652 21f3e5…2e1c37a34
-             TIMER.BIN 253 783f88…329f7a6787d0c
-power_pack:  INTRO.MOD 252870 f36bea…a9ec66613 | PAS16 10728 0fa603…dedaa5589
-             SB16 11349 3fb857…9103138ad | SETSOUND 27347 344831…1d847d94
-             PINBALL.BAT 82 1d5d8e…f50e4 | SOUND.CFG 20 9a85e5…65155d4
-deluxe:      INTRO.MOD 252870 f36bea…a9ec66613 | PAS16 10712 e863cb…352fd2
-             SB16 11349 81a7c4…be7bab17 | SETSOUND 27347 344831…1d847d94
-demo:        INTRO.MOD 252870 f36bea…a9ec66613 | TABLE1.MOD as above
-             TIMER.BIN as floppy | SETSOUND 41264 89ca84…63b4ad0ca7b
-             SOUND.CFG 16 99d5d1…870d56f16a55 | ADLIB 8179 / GUS 6904 /
+floppy:      INTRO.MOD 252870 e871ab...477e5 | PAS16 10712 e863cb...352fd2
+             SB16 11349 81a7c4...be7bab17 | SETSOUND 5652 21f3e5...2e1c37a34
+             TIMER.BIN 253 783f88...329f7a6787d0c
+power_pack:  INTRO.MOD 252870 f36bea...a9ec66613 | PAS16 10728 0fa603...dedaa5589
+             SB16 11349 3fb857...9103138ad | SETSOUND 27347 344831...1d847d94
+             PINBALL.BAT 82 1d5d8e...f50e4 | SOUND.CFG 20 9a85e5...65155d4
+deluxe:      INTRO.MOD 252870 f36bea...a9ec66613 | PAS16 10712 e863cb...352fd2
+             SB16 11349 81a7c4...be7bab17 | SETSOUND 27347 344831...1d847d94
+demo:        INTRO.MOD 252870 f36bea...a9ec66613 | TABLE1.MOD as above
+             TIMER.BIN as floppy | SETSOUND 41264 89ca84...63b4ad0ca7b
+             SOUND.CFG 16 99d5d1...870d56f16a55 | ADLIB 8179 / GUS 6904 /
              INTERNAL 7986 / NOSOUND 2066 / SB20 8295 / SBLASTER 8086 /
              SBPRO 8296 / SM2 7966 / THING 7602 (all earlier PKLITE builds)
              INSTALL.BAT 1379 | four .PCX artwork files
@@ -209,21 +209,21 @@ demo:        INTRO.MOD 252870 f36bea…a9ec66613 | TABLE1.MOD as above
 
 ## Where the demo stops
 
-The demo is detected and runs — both programs unpack, the driver calibrates,
-music plays, publisher and developer screens draw — then the title screen
+The demo is detected and runs - both programs unpack, the driver calibrates,
+music plays, publisher and developer screens draw - then the title screen
 stays black and the program waits. Scroll Lock still exits. Nothing about
 this affects the other releases.
 
 The title code clears 64 KB of video memory with interrupts disabled, then
-switches the sound driver off, then waits for frame flag `0040:0076` — a byte
+switches the sound driver off, then waits for frame flag `0040:0076` - a byte
 set only by a callback registered with the sound driver, which can no longer
 fire once the driver is off. So exactly one callback has to land between the
 last consume of the flag and the disable, and it doesn't:
 
 - At 6 MIPS the stall outlasts the ~9.3 ms inter-event gap, the driver's
   latency compensation underflows, and the next one-shot is scheduled ~44 ms
-  out — after the disable.
-- At 14–24 MIPS the stall is shorter but the pending event lands after the
+  out - after the disable.
+- At 14-24 MIPS the stall is shorter but the pending event lands after the
   disable's service calls have already cleared the driver's gate.
 
 No emulated CPU speed lands reliably inside the few-millisecond window, and a

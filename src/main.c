@@ -595,7 +595,7 @@ int main(int argc, char **argv){
     int ips_given = 0, speed_given = 0;
     /* Windows-subsystem binary: no console of its own, so double-clicking
      * shows only the UI.  When started from a console, reattach to it so
-     * CLI output (-secs stats, traces) still works — but never steal a
+     * CLI output (-secs stats, traces) still works - but never steal a
      * redirected stderr, so `2>file` log capture keeps working. */
     { HANDLE he = GetStdHandle(STD_ERROR_HANDLE);
       if(he == NULL || he == INVALID_HANDLE_VALUE ||

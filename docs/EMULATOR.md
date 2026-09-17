@@ -27,7 +27,7 @@ output still works from a terminal.
 ## The launch chain
 
 `.PRG` files are ordinary MZ executables with a renamed extension. They can't
-start on their own — they depend on services the launcher installs.
+start on their own - they depend on services the launcher installs.
 
 **`PINBALL.EXE` / `PF.EXE` / `PFDEMO.EXE`** ( ~1.7 KB, fully disassembled)
 shrinks its own memory block, hooks INT 9 (keyboard) and INT 24h (critical
@@ -42,14 +42,14 @@ handoff). Other values return and clear the last scancode.
 
 **Sound drivers** (`.SDR`) are TSRs: each game program EXECs the one named in
 `SOUND.CFG`, and it installs itself on INT 66h + INT 8 via INT 21h AH=31h.
-Every program loads its own copy — intro and each table. The driver owns
+Every program loads its own copy - intro and each table. The driver owns
 machine time: INT 8 drives the scheduled callbacks the game registers through
 INT 66h. `TIMER.BIN` is a raw code blob that sets mode 13h and measures
 machine speed.
 
 **Why emulate.** Static recompilation fails on computed jumps, self-modifying
 protection code, and interleaved data; a DOS-API shim fails because the game
-barely uses DOS — it programs the CRTC directly, reprograms the PIT, hooks
+barely uses DOS - it programs the CRTC directly, reprograms the PIT, hooks
 IRQs, and phase-locks its frame timer by polling port 3DAh. Emulating the
 machine is the bounded job: one program, one graphics family, one timer, one
 keyboard.
@@ -63,8 +63,8 @@ chains it.
 ## Time, CRT, and interrupts
 
 - `emu_time` advances at a fixed instruction rate (6 MIPS default, `-ips`).
-  The main loop runs the guest until emulated time catches up with wall time
-  × `-speed`, never running past the next timer deadline so IRQ 0 lands on
+  The main loop runs the guest until emulated time catches up with wall
+  time (times `-speed`), never running past the next timer deadline so IRQ 0 lands on
   the due instruction.
 - Polled registers (3DAh, PIT counters, port 61h) read through `emu_now()`,
   which folds outstanding instructions into the clock so short pulses can't
@@ -80,7 +80,7 @@ Two hardware behaviors the game depends on:
   a strictly monotone edge count; treating bit 0 as "display inactive"
   creates a flat step where it has to land and the loop never locks. It
   settles near reload 19921 (59.9 Hz tick vs 59.71 Hz refresh).
-- **PIT channel 0 mode 0 is a one-shot** — one interrupt per count, then the
+- **PIT channel 0 mode 0 is a one-shot** - one interrupt per count, then the
   output stays high until reloaded. Treating it as periodic delivered extra
   interrupts that walked the driver's event list off its end. Counter reads in
   mode 0 count down from the armed `next_irq` and keep decrementing past
@@ -93,7 +93,7 @@ Two DOS behaviors the game depends on:
 
 - **Resident children are released with their parent** (`mcb_free_children`).
   Strict DOS keeps a TSR forever, but the intro's 238 KB shrink + resident
-  driver leaves only 394 KB free while `TABLE1.PRG` needs 524 KB contiguous —
+  driver leaves only 394 KB free while `TABLE1.PRG` needs 524 KB contiguous -
   no table could ever load. Releasing also restores any IVT entries pointing
   into the child (the driver's own uninstall would have done the same).
 - **Registers survive EXEC.** The table sets `DX` for its INT 66h module-name
@@ -114,9 +114,9 @@ Applied in memory at load/run time, signature-checked, never written to disk:
   is bypassed by forging its own "already answered" flag: reads of 2 bytes at
   `Intro.Mod` offset 252868 get the sentinel `20 01` before reaching the
   guest, so the screen never draws and nothing is written back. (An earlier
-  JNC→JMP image patch did the same job less cleanly and is removed.)
+  JNC->JMP image patch did the same job less cleanly and is removed.)
 - **Pause race.** Clears an interrupt-handshake race after unpausing that
-  could leave the ball stuck — a bug noted in the original developers' own
+  could leave the ball stuck - a bug noted in the original developers' own
   source comments.
 - **Flippers.** Repairs shared flipper state when multiple flipper keys
   overlap, and recovers when Windows loses a modifier-key release.
@@ -129,15 +129,15 @@ Applied in memory at load/run time, signature-checked, never written to disk:
 
 ## Display
 
-Modes seen: text, 16-color planar 640×240 doubled to 480 scanlines (menu),
-unchained Mode X 320×240 with 480-line timing + CRTC scan doubling (tables),
+Modes seen: text, 16-color planar 640x240 doubled to 480 scanlines (menu),
+unchained Mode X 320x240 with 480-line timing + CRTC scan doubling (tables),
 mode 13h, and the amber dot-matrix score panel via the CRTC split-screen
 (line compare) register.
 
-Three presentation fixes, all display-side — game state untouched:
+Three presentation fixes, all display-side - game state untouched:
 
 - **Table-select palette split.** The menu loads two 16-color palettes (DAC
-  0–15 and 16–31, one per table graphic) and flips the Color Select bank
+  0-15 and 16-31, one per table graphic) and flips the Color Select bank
   (AR14) at a driver-ordered raster line (~line 230 in active coordinates,
   `cx = 220+10`). The renderer derives the split (upper bank, lower bank,
   seam) from recent switch history and applies it every frame, blanking the
@@ -160,9 +160,9 @@ Three presentation fixes, all display-side — game state untouched:
   `-nolatch` disable each.
 
 Earlier ideas that didn't survive: vsync-locked presents (parked the sample
-inside the ball gap — worse, reverted), viewport interpolation for 30 Hz
-scroll stepping (computed a ratio ≥ 1 on every frame and returned the raw
-register — inert, removed), and "DMD choppiness is intentional pacing" (wrong;
+inside the ball gap - worse, reverted), viewport interpolation for 30 Hz
+scroll stepping (computed a ratio >= 1 on every frame and returned the raw
+register - inert, removed), and "DMD choppiness is intentional pacing" (wrong;
 see next section).
 
 ## Sound
@@ -170,7 +170,7 @@ see next section).
 `SETSOUND.EXE` runs under pfemu; picking Sound Blaster writes a 25-byte
 `SOUND.CFG` (port, IRQ, quality) with no autodetection. The driver then does
 plain 8-bit auto-init DMA playback: mask channel 1, program page/offset/count
-(10,800-byte ring), DSP reset → `AA`, speaker on, time constant (e.g. `ADh` =
+(10,800-byte ring), DSP reset -> `AA`, speaker on, time constant (e.g. `ADh` =
 12,048 Hz), `14h` output, unmask. Its software MOD mixer fills one half-ring
 while the card plays the other, tracking the card by reading the DMA current
 address.
@@ -184,7 +184,7 @@ Win32 `waveOut` sink (blocks dropped, never queued, so audio stays live) and
 ## Dot-matrix and game tick
 
 The panel update is guarded by a `TIME_LEFT` flag the sound driver's ISR
-passes in — set when mixer headroom runs low (a table runs a 2-block ring
+passes in - set when mixer headroom runs low (a table runs a 2-block ring
 with a 1-block threshold, so this trips a few percent of the time). That
 costs ~3% of updates, not half: the halved tick was a PIT bug. Mode-0 counter
 reads were returned as free-running rate-generator phase instead of counting
@@ -192,9 +192,9 @@ down from the armed one-shot, corrupting the driver's per-interrupt delay
 (`+cx` added up to 11 ms instead of subtracting microseconds) so the second
 of its two timer events per frame never fired. With exact mode-0 reads plus a
 main-loop deadline fix (a truncated remainder serviced every IRQ ~one batch
-late) and smaller batches in the unarmed window, the tick went 29.7/s →
-59.3/s against 59.71 Hz CRT, one-shots 113/s → ~120/s (two per frame =
-119.4), IRQ latency 99 µs → 2.4 µs. Music tempo didn't change — the MOD player
+late) and smaller batches in the unarmed window, the tick went 29.7/s ->
+59.3/s against 59.71 Hz CRT, one-shots 113/s -> ~120/s (two per frame =
+119.4), IRQ latency 99 us -> 2.4 us. Music tempo didn't change - the MOD player
 runs off the audio clock at 50 Hz. `-matdbg` counts ticks/updates/crises and
 latency; `-nopitm0` restores the old reading for comparison.
 
@@ -209,8 +209,8 @@ are applied in memory at boot.
 
 ## Performance
 
-Same guest semantics, less host work. Measured ~36–43% faster (e.g. 33 →
-45 MIPS intro, 22 → 32 MIPS gameplay at 6 MIPS default):
+Same guest semantics, less host work. Measured ~36-43% faster (e.g. 33 ->
+45 MIPS intro, 22 -> 32 MIPS gameplay at 6 MIPS default):
 
 - Time base multiplies by a cached reciprocal instead of dividing per
   polled-register read.
@@ -220,11 +220,11 @@ Same guest semantics, less host work. Measured ~36–43% faster (e.g. 33 →
 - PIT counters cache inverse period per reload; same `fmod()` removal.
 - `cpu_ld/st` are `static inline` in the interpreter TU with single range
   checks; `REP MOVS/STOS` has a bulk `memmove`/`memset` path for plain-RAM,
-  forward, ≥16-count copies — except the overlapping forward case, which must
+  forward, >=16-count copies - except the overlapping forward case, which must
   stay on the per-element loop (`REP MOVS` propagates written bytes;
-  `memmove` doesn't; that one case is how LZ unpackers expand runs — found
+  `memmove` doesn't; that one case is how LZ unpackers expand runs - found
   via the demo's PKLITE drivers, regression-tested in `tools/reptest.c`).
-- Main-loop batch 64 → 256 with the timer-deadline clamp unchanged; build
+- Main-loop batch 64 -> 256 with the timer-deadline clamp unchanged; build
   with `/GL /LTCG`.
 
 Deliberately untouched: CPU dispatch (a dynarec would be a rewrite),
@@ -246,11 +246,11 @@ Numeric addresses are hex; key scripts are `time:scancode:state` triples
 
 | Flag | Purpose |
 |---|---|
-| `-secs N` + `-speed X` | Headless run: N wall seconds at X× realtime |
+| `-secs N` + `-speed X` | Headless run: N wall seconds at X times realtime |
 | `-shot F` / `-shotevery N` | PPM screenshot(s) |
-| `-keys "…"` | Scripted keyboard input at emulated times |
+| `-keys "..."` | Scripted keyboard input at emulated times |
 | `-wav FILE` | Capture audio |
-| `-xring` | Last 8,192 executed addresses at exit (runs collapsed) — the fastest way to find where a guest went off into data |
+| `-xring` | Last 8,192 executed addresses at exit (runs collapsed) - the fastest way to find where a guest went off into data |
 | `-trap LO HI` / `-trapexit` | Stop on entering an address range / on child exit |
 | `-mem LIN` | Dump 256 guest bytes at exit |
 | `-dumpseg SEG` / `-undefdump` | Write a 64 KB segment at exit / the faulting segment on bad opcode |
@@ -265,7 +265,7 @@ Numeric addresses are hex; key scripts are `time:scancode:state` triples
 | `-vgastate` | Video mode, select registers, DAC, pointed-to memory at exit |
 | `-force256`, `-nodbl`, `-oldtiming`, `-noballsync`, `-nolatch`, `-nophaselock`, `-nopitm0`, `-dmairq` | Disable one behavior to bisect display/timing faults |
 
-Reproducible headless runs (`-speed 8 -secs 3 -keys …` + PPM diff) beat
+Reproducible headless runs (`-speed 8 -secs 3 -keys ...` + PPM diff) beat
 interactive debugging for rendering and timing. Static helpers: `re/mz.py`
 (MZ parser), `re/d16.py` (Capstone 16-bit wrapper), `re/scan.py` (INT/IN/OUT
 scanner). Note the `.SDR` trap: the resident block is copied down over init
