@@ -1407,6 +1407,66 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
  * chosen rather than on the first runnable install. */
 static char last_dir[512] = "";
 
+/* Persistent memory of the last launched installation, across runs.
+ * One tiny host-only file next to the exe (a file can never be mistaken
+ * for an installation - release_scan() only looks at directories): the
+ * directory as picked plus the release id it detected as, so a renamed
+ * folder can still land on the same version.  Missing or unreadable just
+ * reads as "no memory", exactly like a first run - these are preferences,
+ * never a reason to refuse.  Deliberately not called pfemu.cfg: that name
+ * is already the per-install settings file (PFEMU-STATE/pfemu.cfg), and
+ * two different files sharing it would only confuse. */
+#define LAST_FILE "pfemu-last.cfg"
+
+static void last_save(const RelResult *r){
+    FILE *f;
+    if(!r || !r->dir[0]) return;
+    f = fopen(LAST_FILE, "w");
+    if(!f) return;
+    fprintf(f, "# Last installation launched from the pfemu launcher.\n");
+    fprintf(f, "dir=%s\n", r->dir);
+    fprintf(f, "release=%s\n", r->rel ? r->rel->id : "");
+    fclose(f);
+}
+
+/* Point st->sel at the remembered installation when it is still there:
+ * the same directory wins outright (even if what is in it changed - the
+ * detection line then says so), otherwise the first runnable install of
+ * the remembered release.  Returns 1 when it moved the selection. */
+static int last_restore(LaunchState *st){
+    char dir[512] = "", rel[64] = "";
+    char line[600];
+    FILE *f;
+    int i;
+    f = fopen(LAST_FILE, "r");
+    if(!f) return 0;
+    while(fgets(line, sizeof(line), f)){
+        char *k = line, *eq, *e;
+        while(*k==' '||*k=='\t') k++;
+        e = k + strlen(k);
+        while(e > k && (e[-1]==' '||e[-1]=='\t'||e[-1]=='\r'||e[-1]=='\n')) *--e = 0;
+        if(!*k || *k=='#' || *k==';') continue;
+        eq = strchr(k, '=');
+        if(!eq) continue;
+        *eq = 0;
+        { char *v = eq + 1;
+          while(*v==' '||*v=='\t') v++;
+          if(!strcmp(k, "dir")) snprintf(dir, sizeof(dir), "%s", v);
+          else if(!strcmp(k, "release")) snprintf(rel, sizeof(rel), "%s", v); }
+    }
+    fclose(f);
+    if(dir[0]){
+        for(i=0;i<st->ninst;i++)
+            if(!_stricmp(st->inst[i].dir, dir)){ st->sel = i; return 1; }
+    }
+    if(rel[0]){
+        for(i=0;i<st->ninst;i++)
+            if(release_runnable(&st->inst[i]) && st->inst[i].rel &&
+               !_stricmp(st->inst[i].rel->id, rel)){ st->sel = i; return 1; }
+    }
+    return 0;
+}
+
 /* Modal launcher.  Returns 1 with *out filled when the user picks Launch,
  * 0 when they quit (caller should exit without booting).  It can be shown
  * more than once per run: a refused launch returns to it. */
@@ -1447,6 +1507,11 @@ int show_launcher(LaunchChoice *out){
     { int i;
       for(i=0;i<st.ninst;i++)
           if(release_runnable(&st.inst[i])){ st.sel = i; break; } }
+    /* ...but the installation launched last time wins when it is still
+     * there (same directory, else the same release elsewhere) - its
+     * PFEMU-STATE/pfemu.cfg is then what the dialog below loads, so the
+     * settings come back with it. */
+    last_restore(&st);
     /* ...but a second showing (main() comes back here when a launch was
      * refused) lands on whatever was picked last, or the user would have to
      * find their installation again every time something is refused. */
@@ -1503,6 +1568,10 @@ int show_launcher(LaunchChoice *out){
         snprintf(out->prog, sizeof(out->prog), "%s",
                  r->boot[0] ? r->boot : r->rel->boot);
         snprintf(last_dir, sizeof(last_dir), "%s", r->dir);
+        /* Remember for next run (same dir, else same release): the next
+         * showing restores the selection above, and the per-install
+         * pfemu.cfg it loads brings the settings back with it. */
+        last_save(r);
     }
     out->fullscreen = st.fullscreen;
     out->start_table = st.start_table;
