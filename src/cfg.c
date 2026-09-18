@@ -46,6 +46,10 @@ static const char *legacy_names[6] = {
 static void cfg_defaults(PfCfg *c){
     memset(c, 0, sizeof(*c));
     c->volume = AUDIO_VOLUME_DEFAULT;
+    c->bass = AUDIO_BASS_DEFAULT;
+    c->treble = AUDIO_TREBLE_DEFAULT;
+    c->oomph = AUDIO_OOMPH_DEFAULT;
+    c->headphone = 0;
     c->quality = 0;
     memcpy(c->options, cfg_option_defaults, 6);
 }
@@ -129,6 +133,10 @@ static char *trim(char *s){
 static void apply_pair(PfCfg *c, const char *key, const char *val){
     int i, v = atoi(val);
     if(!strcmp(key, "volume")){ if(v >= 0 && v <= 100) c->volume = v; return; }
+    if(!strcmp(key, "bass")){ if(v >= -12 && v <= 12) c->bass = v; return; }
+    if(!strcmp(key, "treble")){ if(v >= -12 && v <= 12) c->treble = v; return; }
+    if(!strcmp(key, "oomph")){ if(v >= 0 && v <= 12) c->oomph = v; return; }
+    if(!strcmp(key, "headphone")){ c->headphone = v != 0; return; }
     if(!strcmp(key, "quality")){ if(v >= 0 && v <= 4) c->quality = v; return; }
     if(!strcmp(key, "trainer")){ c->trainer = v != 0; return; }
     if(!strcmp(key, "fullscreen")){ c->fullscreen = v != 0; return; }
@@ -183,6 +191,13 @@ void cfg_write(const char *dir, const PfCfg *c){
     fprintf(f, "# pfemu settings for this install - written by the launcher.\n"
                "# The game never reads this file; delete it to start over.\n");
     fprintf(f, "volume=%d\n", vol);
+    { int b = c->bass < -12 ? -12 : (c->bass > 12 ? 12 : c->bass);
+      int t = c->treble < -12 ? -12 : (c->treble > 12 ? 12 : c->treble);
+      int o = c->oomph < 0 ? 0 : (c->oomph > 12 ? 12 : c->oomph);
+      fprintf(f, "bass=%d\n", b);
+      fprintf(f, "treble=%d\n", t);
+      fprintf(f, "oomph=%d\n", o);
+      fprintf(f, "headphone=%d\n", c->headphone ? 1 : 0); }
     fprintf(f, "quality=%d\n", qual);
     for(i=0;i<6;i++) fprintf(f, "%s=%d\n", option_keys[i], c->options[i]);
     fprintf(f, "trainer=%d\n", c->trainer ? 1 : 0);

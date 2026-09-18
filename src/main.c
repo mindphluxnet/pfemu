@@ -339,6 +339,23 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
             fprintf(stderr, "[snd] volume %d%%\n", audio_volume);
             return 0;
         }
+        /* Keypad / toggles the enhancement bypass: the launcher's
+         * Bass/Treble/Oomph/Headphones vs flat (the old sound), for A/B
+         * comparison without quitting.  Sits with the other audio keys;
+         * key-repeat filtered so holding it doesn't flap.  Session-only -
+         * the saved settings are untouched - and host-only like volume,
+         * so it stays live on replay and never reaches the guest. */
+        if(m == WM_KEYDOWN && w == VK_DIVIDE && !(l & (1<<30))){
+            extern int audio_enh_bypass;
+            audio_enh_bypass = !audio_enh_bypass;
+            { char msg[32];
+              snprintf(msg, sizeof(msg), "ENHANCEMENT: %s",
+                       audio_enh_bypass ? "OFF" : "ON");
+              osd_show(msg); }
+            fprintf(stderr, "[snd] enhancement bypass %s\n",
+                    audio_enh_bypass ? "on" : "off");
+            return 0;
+        }
         /* F6 saves / F8 loads the single-slot snapshot (Play mode only;
          * serviced in the main loop, like F11 below).  F7 is reserved for
          * the replay stepper.  Intercepted pre-guest: zero guest effect,
@@ -1077,6 +1094,27 @@ relaunch:
     audio_volume = vol_override >= 0 ? vol_override : read_volume_cfg(dir);
     if(audio_volume < 0) audio_volume = 0;
     if(audio_volume > 100) audio_volume = 100;
+    /* Host DSP enhancement (src/sound.c): launcher-only settings, read like
+     * the saved volume above so headless runs sound like interactive ones.
+     * Never recorded and never forced by replay - same promise as volume. */
+    { PfCfg ecfg;
+      cfg_read(dir, &ecfg);
+      audio_bass = ecfg.bass;
+      audio_treble = ecfg.treble;
+      audio_oomph = ecfg.oomph;
+      audio_headphone = ecfg.headphone ? 1 : 0;
+      if(audio_bass < -12) audio_bass = -12;
+      if(audio_bass > 12) audio_bass = 12;
+      if(audio_treble < -12) audio_treble = -12;
+      if(audio_treble > 12) audio_treble = 12;
+      if(audio_oomph < 0) audio_oomph = 0;
+      if(audio_oomph > 12) audio_oomph = 12;
+      if(audio_bass || audio_treble || audio_oomph || audio_headphone)
+          fprintf(stderr, "[snd] enhancement: bass %+d dB, treble %+d dB,"
+                          " oomph +%d dB, headphones %s\n",
+                  audio_bass, audio_treble, audio_oomph,
+                  audio_headphone ? "on" : "off");
+    }
 
     /* Arm the Fantasies session.  Nothing Fantasies-specific runs unless the
      * directory's five program hashes identified an actual release, so no

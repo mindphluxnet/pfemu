@@ -80,6 +80,10 @@
 #define ID_BROWSE       119
 #define ID_TABLE        130   /* "Start at" combo; above ID_OPT_FIRST+5 */
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
+#define ID_BASS         131
+#define ID_TREBLE       132
+#define ID_OOMPH        133
+#define ID_HEADPHONE    134
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
 /* Sound off: byte-identical to what SETSOUND writes for NOSOUND.SDR. */
@@ -311,10 +315,45 @@ static const char *quality_labels[5] = {
     "5 - 21000 Hz (extended mix)"
 };
 
+/* Enhancement combo maps: bass/treble in 3 dB steps, oomph off then up. */
+static const char *eq_labels[9] = {
+    "-12 dB", "-9 dB", "-6 dB", "-3 dB", "Flat",
+    "+3 dB", "+6 dB", "+9 dB", "+12 dB"
+};
+static const char *oomph_labels[5] = {
+    "Off", "+3 dB", "+6 dB", "+9 dB", "+12 dB"
+};
+static int eq_idx_to_db(int idx){
+    if(idx < 0) idx = 4;
+    if(idx > 8) idx = 8;
+    return (idx - 4) * 3;
+}
+static int eq_db_to_idx(int db){
+    int i = (db + 12 + 1) / 3;
+    if(i < 0) i = 0;
+    if(i > 8) i = 8;
+    return i;
+}
+static int oomph_idx_to_db(int idx){
+    if(idx < 0) idx = 0;
+    if(idx > 4) idx = 4;
+    return idx * 3;
+}
+static int oomph_db_to_idx(int db){
+    int i = (db + 1) / 3;
+    if(i < 0) i = 0;
+    if(i > 4) i = 4;
+    return i;
+}
+
 typedef struct {
     int sound;              /* checkbox state */
     int quality;            /* combo state: SOUND.CFG quality notch, 0-4 */
     int volume;             /* slider state: host output gain, 0-100 */
+    int bass;               /* combo state: EQ bass shelf dB, -12..+12 */
+    int treble;             /* combo state: EQ treble shelf dB, -12..+12 */
+    int oomph;              /* combo state: extra low-bass dB, 0..+12 */
+    int headphone;          /* checkbox state: headphone pseudo-stereo */
     uint8_t cfg[6];         /* PINBALL.CFG option bytes */
     int cheat_enable;        /* checkbox state: trainer (infinite balls + ball control) */
     int fullscreen;          /* checkbox state: start the window fullscreen */
@@ -326,6 +365,7 @@ typedef struct {
     HWND hSound, hOpt[6], hCheatEnable, hFullscreen;
     HWND hInstall, hDetected, hDetails;
     HWND hQuality, hVolume, hVolLabel;
+    HWND hBass, hTreble, hOomph, hHeadphone;
     HWND hTable;            /* "Start at": menu, or straight to a table */
     int  start_table;       /* 0 = menu, 1-4 */
     HWND hModePlay, hModeRecord, hModeReplay, hPathLabel, hPath, hBrowse;
@@ -646,7 +686,10 @@ static void reload_for_dir(HWND h, LaunchState *st){
     st->sound = read_sound_is_sb(dir);
     st->quality = read_sound_quality(dir);   /* SOUND.CFG wins over c.quality */
     st->volume = c.volume;
-    memcpy(st->cfg, c.options, 6);
+    st->bass = c.bass;
+    st->treble = c.treble;
+    st->oomph = c.oomph;
+    st->headphone = c.headphone;
     st->cheat_enable = c.trainer;
     st->fullscreen = c.fullscreen;
     if(st->hSound){
@@ -654,6 +697,10 @@ static void reload_for_dir(HWND h, LaunchState *st){
         SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
         SendMessageA(st->hVolume,TBM_SETPOS,TRUE,st->volume);
         set_vol_label(st);
+        SendMessageA(st->hBass,CB_SETCURSEL,eq_db_to_idx(st->bass),0);
+        SendMessageA(st->hTreble,CB_SETCURSEL,eq_db_to_idx(st->treble),0);
+        SendMessageA(st->hOomph,CB_SETCURSEL,oomph_db_to_idx(st->oomph),0);
+        CheckDlgButton(h,ID_HEADPHONE,st->headphone?BST_CHECKED:BST_UNCHECKED);
         for(i=0;i<6;i++) SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
         CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
@@ -1137,6 +1184,48 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         SendMessageA(st->hVolLabel,WM_SETFONT,(WPARAM)st->hFont,0);
         set_vol_label(st);
         y += gh + 8;
+        /* Enhancement: host DSP only (src/sound.c), downstream of -wav.
+         * Flat/Off is the old sound; like volume, never recorded. */
+        gy = y; gh = 70;
+        c = CreateWindowExA(0,"BUTTON","Audio enhancement",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            12,gy,416,gh,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        c = CreateWindowExA(0,"STATIC","Bass:",WS_CHILD|WS_VISIBLE,
+                            24,gy+23,52,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hBass = CreateWindowExA(0,"COMBOBOX","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
+                            76,gy+20,110,200,h,(HMENU)ID_BASS,cs->hInstance,0);
+        SendMessageA(st->hBass,WM_SETFONT,(WPARAM)st->hFont,0);
+        for(i=0;i<9;i++)
+            SendMessageA(st->hBass,CB_ADDSTRING,0,(LPARAM)eq_labels[i]);
+        SendMessageA(st->hBass,CB_SETCURSEL,eq_db_to_idx(st->bass),0);
+        c = CreateWindowExA(0,"STATIC","Treble:",WS_CHILD|WS_VISIBLE,
+                            218,gy+23,52,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hTreble = CreateWindowExA(0,"COMBOBOX","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
+                            272,gy+20,110,200,h,(HMENU)ID_TREBLE,cs->hInstance,0);
+        SendMessageA(st->hTreble,WM_SETFONT,(WPARAM)st->hFont,0);
+        for(i=0;i<9;i++)
+            SendMessageA(st->hTreble,CB_ADDSTRING,0,(LPARAM)eq_labels[i]);
+        SendMessageA(st->hTreble,CB_SETCURSEL,eq_db_to_idx(st->treble),0);
+        c = CreateWindowExA(0,"STATIC","Oomph:",WS_CHILD|WS_VISIBLE,
+                            24,gy+47,52,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hOomph = CreateWindowExA(0,"COMBOBOX","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
+                            76,gy+44,110,200,h,(HMENU)ID_OOMPH,cs->hInstance,0);
+        SendMessageA(st->hOomph,WM_SETFONT,(WPARAM)st->hFont,0);
+        for(i=0;i<5;i++)
+            SendMessageA(st->hOomph,CB_ADDSTRING,0,(LPARAM)oomph_labels[i]);
+        SendMessageA(st->hOomph,CB_SETCURSEL,oomph_db_to_idx(st->oomph),0);
+        st->hHeadphone = CreateWindowExA(0,"BUTTON","Headphone mode",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
+                            218,gy+44,164,20,h,(HMENU)ID_HEADPHONE,cs->hInstance,0);
+        SendMessageA(st->hHeadphone,WM_SETFONT,(WPARAM)st->hFont,0);
+        CheckDlgButton(h,ID_HEADPHONE,st->headphone?BST_CHECKED:BST_UNCHECKED);
+        y += gh + 8;
         /* Game options in two columns instead of six stacked rows. Row-major
          * order preserves the PINBALL.CFG layout: Balls|Angle, Scrolling|
          * Music, Resolution|Color. */
@@ -1260,6 +1349,17 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         } else if(id==ID_QUALITY && HIWORD(w)==CBN_SELCHANGE){
             LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
             if(sel != CB_ERR) st->quality = (int)sel;
+        } else if(id==ID_BASS && HIWORD(w)==CBN_SELCHANGE){
+            LRESULT sel = SendMessageA(st->hBass,CB_GETCURSEL,0,0);
+            if(sel != CB_ERR) st->bass = eq_idx_to_db((int)sel);
+        } else if(id==ID_TREBLE && HIWORD(w)==CBN_SELCHANGE){
+            LRESULT sel = SendMessageA(st->hTreble,CB_GETCURSEL,0,0);
+            if(sel != CB_ERR) st->treble = eq_idx_to_db((int)sel);
+        } else if(id==ID_OOMPH && HIWORD(w)==CBN_SELCHANGE){
+            LRESULT sel = SendMessageA(st->hOomph,CB_GETCURSEL,0,0);
+            if(sel != CB_ERR) st->oomph = oomph_idx_to_db((int)sel);
+        } else if(id==ID_HEADPHONE){
+            st->headphone = IsDlgButtonChecked(h,ID_HEADPHONE)==BST_CHECKED;
         } else if(id==ID_CHEAT_ENABLE){
             st->cheat_enable = IsDlgButtonChecked(h,ID_CHEAT_ENABLE)==BST_CHECKED;
         } else if(id==ID_FULLSCREEN){
@@ -1364,6 +1464,12 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             dir = r->dir;
             { LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
               if(sel != CB_ERR) st->quality = (int)sel; }
+            { LRESULT sel = SendMessageA(st->hBass,CB_GETCURSEL,0,0);
+              if(sel != CB_ERR) st->bass = eq_idx_to_db((int)sel); }
+            { LRESULT sel = SendMessageA(st->hTreble,CB_GETCURSEL,0,0);
+              if(sel != CB_ERR) st->treble = eq_idx_to_db((int)sel); }
+            { LRESULT sel = SendMessageA(st->hOomph,CB_GETCURSEL,0,0);
+              if(sel != CB_ERR) st->oomph = oomph_idx_to_db((int)sel); }
             write_sound_cfg(dir, st->sound, st->quality);
             for(i=0;i<6;i++){
                 LRESULT sel = SendMessageA(st->hOpt[i],CB_GETCURSEL,0,0);
@@ -1376,6 +1482,10 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             { PfCfg c;
               cfg_read(dir, &c);
               c.volume = st->volume;
+              c.bass = st->bass;
+              c.treble = st->treble;
+              c.oomph = st->oomph;
+              c.headphone = st->headphone != 0;
               c.quality = st->quality;
               memcpy(c.options, st->cfg, 6);
               /* The trainer is incompatible with recording: the checkbox
@@ -1478,7 +1588,8 @@ int show_launcher(LaunchChoice *out){
      * report text to put on the stack for a dialog that runs once. */
     static LaunchState st;
     int sw, sh;
-    int winw = 458, winh = 562;   /* Extras grew a row for "Start at" */
+    int winw = 458, winh = 640;   /* Extras grew a row for "Start at",
+                                   then Enhancement added its own group */
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -1525,6 +1636,10 @@ int show_launcher(LaunchChoice *out){
       st.sound = read_sound_is_sb(dir);
       st.quality = read_sound_quality(dir);
       st.volume = c.volume;
+      st.bass = c.bass;
+      st.treble = c.treble;
+      st.oomph = c.oomph;
+      st.headphone = c.headphone;
       memcpy(st.cfg, c.options, 6);
       st.cheat_enable = c.trainer;
       st.fullscreen = c.fullscreen;

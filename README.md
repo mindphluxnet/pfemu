@@ -141,6 +141,7 @@ controls:
 | `F6` / `F8` | Save / load the snapshot slot (`savestates/`) |
 | `-` / `+` | Volume down / up in 5% steps |
 | `Keypad *` | Mute / restore |
+| `Keypad /` | Enhancement bypass on/off (A/B the old sound) |
 | `Scroll Lock` | Quit |
 
 Print Screen never reaches pfemu, because Windows 11 intercepts it for Snipping
@@ -160,6 +161,14 @@ driver mixes music (12-21 kHz). A higher notch costs more emulated CPU per
 second of audio, which is the same tradeoff this setting offered in 1992. If a
 high notch starves the game loop, `-ips` models a faster CPU. Notch 1 is what
 pfemu used before this setting was exposed.
+
+**Audio enhancement** (launcher, per install) shapes only what reaches your
+speakers: **Bass** and **Treble** (±12 dB shelves), **Oomph** (extra low-bass
+up to +12 dB with a limiter so it never clips), and **Headphone mode** (a
+narrow pseudo-stereo image with crossfeed, since the game's Sound Blaster
+music is mono). Flat/Off is the old sound. Like volume, these are host-only:
+they are never recorded, never affect replays, and `-wav` captures always
+stay dry so two runs remain comparable.
 
 **Resolution High** needs about twice the emulated CPU of Normal (360x350 at
 ~71 Hz against 320x240 at 60 Hz), so pfemu automatically models a faster CPU

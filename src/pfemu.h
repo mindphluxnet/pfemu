@@ -296,6 +296,20 @@ void osd_clear(void);
 #define AUDIO_VOLUME_DEFAULT 70
 extern int audio_volume;
 extern int audio_volume_dirty;   /* the -/+ keys moved it; save it on exit */
+/* Host DSP enhancement (src/sound.c), all downstream of the -wav tap:
+ * bass/treble EQ shelves in dB (-12..+12), oomph extra low-bass in dB
+ * (0..+12), headphone pseudo-stereo on/off.  Flat/off is the old sound:
+ * mono duplicated to both channels.  Like volume, never recorded. */
+#define AUDIO_BASS_DEFAULT 0
+#define AUDIO_TREBLE_DEFAULT 0
+#define AUDIO_OOMPH_DEFAULT 0
+extern int audio_bass;
+extern int audio_treble;
+extern int audio_oomph;
+extern int audio_headphone;
+/* Runtime bypass for the keypad-/ A/B hotkey (src/main.c): flat (the old
+ * sound) vs the launcher's enhancement, session-only, never saved. */
+extern int audio_enh_bypass;
 void wav_current_hash(char out[17], unsigned long *samples_out);
                                  /* running -wav capture hash ("none" when
                                   * no capture), for the replay footer */
@@ -310,6 +324,10 @@ void wav_current_hash(char out[17], unsigned long *samples_out);
  * you just read rather than building one from scratch. */
 typedef struct {
     int volume;             /* host output gain, 0-100 */
+    int bass;               /* EQ bass shelf dB, -12..+12 */
+    int treble;             /* EQ treble shelf dB, -12..+12 */
+    int oomph;              /* extra low-bass dB, 0..+12 */
+    int headphone;          /* headphone pseudo-stereo, 0/1 */
     int quality;            /* SOUND.CFG quality notch mirror, 0-4 */
     uint8_t options[6];     /* PINBALL.CFG option bytes (src/launch.c) */
     int trainer;            /* trainer armed for this install */

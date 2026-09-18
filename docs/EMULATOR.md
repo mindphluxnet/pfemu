@@ -184,8 +184,13 @@ address.
 `src/sound.c` provides: 8237 with flip-flop, modes, masks, pages, and
 auto-init reload; DSP reset/command state machine; `sb_tick()` pacing that
 converts emulated time to samples due and raises the IRQ at block boundaries;
-Win32 `waveOut` sink (blocks dropped, never queued, so audio stays live) and
-`-wav` capture upstream of the volume gain.
+a host DSP chain (linear resample of the 12-21 kHz mono source to 48 kHz
+stereo, DC block, bass/treble shelves, oomph low shelf with soft-clip
+limiter, optional headphone pseudo-stereo ambience + crossfeed, then the
+square-law volume gain); Win32 `waveOut` stereo sink (blocks dropped, never
+queued, so audio stays live) and `-wav` capture upstream of everything,
+so enhancement and volume never move a capture or its replay hash. Host DSP
+state is output-only: savestates don't store it, they just restart it.
 
 ## Dot-matrix and game tick
 
