@@ -902,6 +902,39 @@ int main(int argc, char **argv){
         return 0;
     }
 
+    /* The command line's own values, kept because the launcher merges its
+     * choices into these same variables and a refused attempt leaves them
+     * half-merged.  A second trip through the picker has to start from the
+     * command line again, not from the attempt that just failed. */
+    {
+    const char *cli_dir = dir, *cli_prog = prog, *cli_keys = keyscript;
+    int cli_fullscreen = start_fullscreen, cli_table = start_table;
+    int cli_nopatch = dos_no_patch, cli_nolzexe = dos_no_lzexe;
+    double cli_ips = emu_ips, cli_speed = speed;
+    int attempt = 0;
+
+    /* One pass from here to the first executed instruction is one attempt to
+     * start a session.  A refusal along the way - a replay that does not
+     * match the installation, a record target that will not open, a boot
+     * program that will not load - used to show its message box and then
+     * exit, which from the picker looks exactly like "Launch quits the app".
+     * It now refuses only the thing that was asked for and brings the picker
+     * back, so the user can pick something else.  A command-line run has no
+     * picker to return to and still exits with a status; that path comes
+     * through here exactly once. */
+relaunch:
+    if(attempt++){
+        /* Undo everything the refused attempt merged in or armed. */
+        replay_abort();
+        record_path = replay_path = NULL;
+        dir = cli_dir; prog = cli_prog; keyscript = cli_keys;
+        start_fullscreen = cli_fullscreen; start_table = cli_table;
+        dos_no_patch = cli_nopatch; dos_no_lzexe = cli_nolzexe;
+        emu_ips = cli_ips; emu_inv_ips = 1.0 / emu_ips; speed = cli_speed;
+        dos_set_time_frozen(freeze_time);
+        from_launcher = 0;
+    }
+
     /* Game picker, unless the run is explicit or automated: -p/-setup name
      * the program, -secs means a headless benchmark, -nolauncher forces the
      * old behaviour (boot dir/prog straight away).  In picker mode -d is
@@ -920,7 +953,7 @@ int main(int argc, char **argv){
             const char *e = replay_parse_error();
             if(e) fail_msg("%s", e);
             else fail_msg("cannot replay '%s'", replay_path);
-            return 1;
+            goto relaunch;
         }
         if(replay_path){
             int h;
@@ -961,10 +994,17 @@ int main(int argc, char **argv){
     if(force_release){
         const Release *fr = release_by_id(force_release);
         if(!fr){
+            /* A typo in a command-line flag, so the picker has nothing to
+             * offer instead - but say so in a box as well, or a run that
+             * happened to show the picker just disappears. */
+            char ids[512] = "";
             int k;
-            fprintf(stderr,"unknown release id '%s'; known ids are:", force_release);
-            for(k=0;k<release_count();k++) fprintf(stderr," %s", release_at(k)->id);
-            fprintf(stderr,"\n");
+            for(k=0;k<release_count();k++){
+                if(k) strncat(ids, " ", sizeof(ids)-strlen(ids)-1);
+                strncat(ids, release_at(k)->id, sizeof(ids)-strlen(ids)-1);
+            }
+            fail_msg("unknown release id '%s'; known ids are: %s",
+                     force_release, ids);
             return 1;
         }
         fprintf(stderr,"[release] forced to '%s' (detected: %s)\n",
@@ -1009,18 +1049,21 @@ int main(int argc, char **argv){
     if((record_path || replay_path) && fantasies_trainer_enabled()){
         fail_msg("[replay] refused: the trainer is enabled for '%s'."
                  " Recording and replay need it off.", dir);
+        if(from_launcher) goto relaunch;
         return 1;
     }
     if(record_path && !release_runnable(&rel)){
         fail_msg("[record] refused: '%s' is not a recognised release"
                  " (%s: %s).",
                  dir, release_state_name(rel.state), rel.summary);
+        if(from_launcher) goto relaunch;
         return 1;
     }
     if(replay_path){
         char why[512];
         if(replay_verify_install(&rel, prog, why, sizeof(why)) != 0){
             fail_msg("%s", why);
+            if(from_launcher) goto relaunch;
             return 1;
         }
         replay_apply_recorded_env();
@@ -1037,12 +1080,19 @@ int main(int argc, char **argv){
                                dos_no_patch, dos_no_lzexe, sound, quality, opts,
                                start_fullscreen, start_table) != 0){
             fail_msg("[record] cannot write '%s'", record_path);
+            if(from_launcher) goto relaunch;
             return 1;
         }
     }
 
-    ram = (uint8_t*)calloc(RAM_SIZE,1);
-    if(!ram){ fprintf(stderr,"out of memory\n"); return 1; }
+    /* Allocated once, wiped per attempt: a retry re-runs every init below,
+     * so the machine starts as fresh as on the first pass, but calloc()ing
+     * again would simply leak the previous attempt's RAM.  This is the one
+     * failure here that really is fatal, so it does end the process - but
+     * through fail_msg, so a launcher run sees why rather than vanishing. */
+    if(!ram) ram = (uint8_t*)calloc(RAM_SIZE,1);
+    else memset(ram, 0, RAM_SIZE);
+    if(!ram){ fail_msg("out of memory"); return 1; }
 
     cpu_reset();
     vga_init();
@@ -1078,8 +1128,6 @@ int main(int argc, char **argv){
          * driver mixes as recorded even when the install moved on. */
         replay_apply_config_to_overlay();
     }
-    plat_init("Pinball Fantasies - pfemu");
-    if(start_fullscreen) plat_set_fullscreen(1);
 
     /* Hand-built boot: park the CPU on a HLT in ROM, then EXEC the program.
      * -load skips the EXEC: the snapshot holds the whole machine already. */
@@ -1101,12 +1149,24 @@ int main(int argc, char **argv){
         char why[512] = "";
         if(snapshot_load(snap_load_path, &rel, why, sizeof(why)) != 0){
             fail_msg("%s", why[0] ? why : "cannot load snapshot");
+            if(from_launcher) goto relaunch;
             return 1;
         }
     } else if(dos_exec(prog, 0, 0, 0, 0) != 0){
         fail_msg("could not load %s from %s", prog, dir);
+        if(from_launcher) goto relaunch;
         return 1;
     }
+
+    /* The window opens here, after the last thing that can refuse the
+     * session.  Creating it with the machine (where this used to sit) meant
+     * a refused boot flashed an empty game window up and tore it down again
+     * behind the message box - and now that the picker comes back, it would
+     * have left that window standing behind it.  Nothing between dos_init()
+     * and this point draws or reads input, so there is nothing to miss. */
+    plat_init("Pinball Fantasies - pfemu");
+    if(start_fullscreen) plat_set_fullscreen(1);
+    }   /* end of the retry scope: the session is committed from here */
 
     t0 = plat_time();
     /* A snapshot resumes mid-stream: anchor the wall clock behind the

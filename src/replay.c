@@ -680,6 +680,34 @@ int replay_begin_replay(const char *path){
     return 0;
 }
 
+/* Disarm whatever a refused attempt had already armed.  The launcher comes
+ * back after a refusal (a replay whose install does not match, a record
+ * target that will not open, a boot program that will not load), and the
+ * next attempt has to start from a clean sheet: a file parsed but never
+ * started would otherwise leave mode_replay set and inject the old
+ * session's events into the following Play run.  The record file is
+ * removed rather than left behind - fopen("w") already emptied whatever
+ * was there, and a header with no events is not a replay, only a stub that
+ * would sit in the picker's file list pretending to be one.  No footer and
+ * no report: there was no session to close or count. */
+void replay_abort(void){
+    if(rec_fp){
+        fclose(rec_fp);
+        rec_fp = NULL;
+        if(rec_path[0]) remove(rec_path);
+    }
+    rec_path[0] = 0;
+    rec_events = 0;
+    mode_record = 0;
+    mode_replay = 0;
+    rh_valid = 0;
+    nev = 0; ev_idx = 0;
+    end_emu = -1.0; end_cycles = 0;
+    end_wav_hash[0] = 0; end_wav_samples = 0; have_end_wav = 0;
+    /* The isolated overlay copy belongs to the attempt that made it. */
+    replay_cleanup_overlay();
+}
+
 /* The install must BE the recording: same release id and same hash vector
  * (REPLAY.md section 4.1).  The directory name, boot filename spelling and
  * timestamps are explicitly not identity - but the release id and every

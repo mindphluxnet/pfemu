@@ -366,6 +366,8 @@ int  replay_begin_record(const char *path, const RelResult *rel, const char *pro
                          int fullscreen, int start_table);
 void replay_log_key(int scancode, int down);
 void replay_end_record(void);
+/* Abandon a half-armed record/replay so the launcher can offer another. */
+void replay_abort(void);
 /* Replay side: parse (header + sorted event list), verify against the
  * detected install, then force the recorded environment and inject. */
 int  replay_begin_replay(const char *path);

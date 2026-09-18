@@ -1536,8 +1536,14 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     return DefWindowProcA(h,m,w,l);
 }
 
+/* The installation the last showing launched.  main() comes back here when
+ * it has to refuse a launch, and the picker should reopen on what was
+ * chosen rather than on the first runnable install. */
+static char last_dir[512] = "";
+
 /* Modal launcher.  Returns 1 with *out filled when the user picks Launch,
- * 0 when they quit (caller should exit without booting). */
+ * 0 when they quit (caller should exit without booting).  It can be shown
+ * more than once per run: a refused launch returns to it. */
 int show_launcher(LaunchChoice *out){
     WNDCLASSEXA wc;
     HWND hwnd;
@@ -1575,6 +1581,12 @@ int show_launcher(LaunchChoice *out){
     { int i;
       for(i=0;i<st.ninst;i++)
           if(release_runnable(&st.inst[i])){ st.sel = i; break; } }
+    /* ...but a second showing (main() comes back here when a launch was
+     * refused) lands on whatever was picked last, or the user would have to
+     * find their installation again every time something is refused. */
+    if(last_dir[0]){ int i;
+      for(i=0;i<st.ninst;i++)
+          if(!_stricmp(st.inst[i].dir, last_dir)){ st.sel = i; break; } }
     if(st.ninst > 1) winh += 24;
     { const char *dir = cur_game_dir(&st);
       int balls, spring;
@@ -1611,6 +1623,7 @@ int show_launcher(LaunchChoice *out){
         snprintf(out->dir, sizeof(out->dir), "%s", r->dir);
         snprintf(out->prog, sizeof(out->prog), "%s",
                  r->boot[0] ? r->boot : r->rel->boot);
+        snprintf(last_dir, sizeof(last_dir), "%s", r->dir);
     }
     out->fullscreen = st.fullscreen;
     out->start_table = st.start_table;

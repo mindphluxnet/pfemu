@@ -79,6 +79,22 @@ window: whether the file can play and why not, the recorded session
 compared program by program against the selected install, and that
 install's own detection report.
 
+**A refusal refuses the launch, not the session.** Everything from the
+picker to the first executed instruction is one attempt: a replay whose
+install does not match, a record target that will not open, the trainer
+left on in either mode, a boot program that will not load. Any of these
+shows its message box and then brings the picker back, on the same
+installation, so the user can pick something else - rather than exiting,
+which from the picker looked exactly like "Launch quits the app". A retry
+starts from the command line's own values again, re-runs every init, and
+disarms whatever the failed attempt had armed (`replay_abort()`: a parsed
+replay, a header-only record file, an isolated overlay copy). The game
+window is created after the last of those checks, so a refused launch never
+flashes an empty window up. Out of memory is the one failure left that
+still ends the process - it prints its box first. On the command line
+nothing changed: with no picker to return to, every refusal exits with a
+status.
+
 ## Validation ("accurate" means)
 
 - Replay twice -> `-wav` hash, `-shotevery` frames, and exit `emu_time/cycles`
