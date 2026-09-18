@@ -24,11 +24,26 @@ fullscreen. pfemu also fixes a few bugs in the original game while it runs,
 without changing your game files. Those fixes are described in
 [Emulator](docs/EMULATOR.md).
 
-For full disclosure: this emulator was developed with the help of AI models -
-Anthropic's Claude Opus 5 (initial reverse engineering work, MVP emulator
-code), OpenAI's ChatGPT Sol 5.6 (additional features), and Meta AI's
-Muse Spark 1.3 (additional reverse engineering, trainer and replay features,
-UI redesign, testing). The original source code, published at
+For full disclosure: this emulator was developed with the help of AI models.
+Roughly who did what:
+
+- **Claude Opus 5** (Anthropic): initial reverse engineering and the MVP
+  emulator. Later, release detection by file hash, the mode-0 PIT counter fix
+  that got the engine running at its real frame rate, the table-select palette
+  and ball-flicker fixes, volume and quality controls, 1993 demo support,
+  savestates, direct-to-table, and replay verification hashes.
+- **Claude Sonnet 5** (Anthropic): Deluxe (CD-ROM) support, fullscreen, the
+  first trainer hotkeys (infinite balls, ball control), game options in the
+  launcher, and PNG screenshots.
+- **ChatGPT Sol 5.6** (OpenAI): core performance work, planar rendering fixes,
+  the DOS-layer manual check bypass, session record/replay, the megatrainer
+  hotkeys (infinite tilts, ball jump), the on-screen session badges, the
+  launcher UI cleanup, the documentation rewrites, and the release build.
+- **Muse Spark 1.3** (Meta AI): the original Win32 launcher, Pinball Dreams
+  support (since dropped), performance benchmarking, and the ball-flicker,
+  scrolling and dot-matrix cadence investigations.
+
+The original source code, published at
 https://github.com/historicalsource/pinballfantasies, was used as reference
 during development.
 
