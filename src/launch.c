@@ -1464,10 +1464,23 @@ int show_launcher(LaunchChoice *out){
       st.cheat_enable = c.trainer;
       st.fullscreen = c.fullscreen;
       st.start_table = c.start_table; }
-    hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
-                           WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
-                           CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,
-                           NULL,NULL,wc.hInstance,&st);
+    /* The picker is born DPI-virtualized (the pre-awareness behavior): its
+     * layout is fixed pixels under a DPI-scaled system font, so full
+     * awareness clips it whenever the font outgrows the boxes.  Set the
+     * THREAD context around creation - changing an existing window's
+     * context resizes it to logical units and reproduces the cutoff.  The
+     * game window stays per-monitor aware (physical pixels throughout). */
+    { HMODULE u = GetModuleHandleA("user32.dll");
+      void *(WINAPI *setthread)(void*) = u ?
+          (void*(WINAPI*)(void*))GetProcAddress(u, "SetThreadDpiAwarenessContext") : NULL;
+      /* UNAWARE = (HANDLE)-1, PER_MONITOR_AWARE_V2 = (HANDLE)-4 */
+      void *prev = setthread ? setthread((void*)(INT_PTR)-1) : NULL;
+      hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
+                             WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
+                             CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,
+                             NULL,NULL,wc.hInstance,&st);
+      if(setthread) setthread(prev ? prev : (void*)(INT_PTR)-4);
+    }
     if(!hwnd) return 0;
     sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
     SetWindowPos(hwnd,NULL,(sw-winw)/2,(sh-winh)/2,0,0,SWP_NOSIZE|SWP_NOZORDER);

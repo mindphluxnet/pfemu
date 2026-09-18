@@ -708,6 +708,29 @@ int main(int argc, char **argv){
               freopen("CONOUT$", "w", stderr);
           }
       } }
+    /* DPI awareness, first thing: without it the OS virtualizes the window
+     * (WM_SIZE reports logical pixels) and bitmap-scales everything up, so
+     * rendering goes soft on scaled displays instead of sharp.  Aware from
+     * here means every pixel ever named (WM_SIZE, blits, swapchains) is a
+     * physical one on both paths.  Per-monitor V2 where the OS knows it
+     * (Win10 1703+), system-aware back to Vista otherwise - nothing newer
+     * is linked, so Windows 7 still runs. */
+    { HMODULE u = GetModuleHandleA("user32.dll");
+      FARPROC (WINAPI *setv2)(void*) = u ? (FARPROC(WINAPI*)(void*))GetProcAddress(u, "SetProcessDpiAwarenessContext") : NULL;
+      /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = (HANDLE)-4 */
+      if(setv2) setv2((void*)(INT_PTR)-4);
+      else SetProcessDPIAware();
+      /* Keep the opening window its physical size: it was authored as
+       * 960x600 at 96 DPI. */
+      { HDC sdc = GetDC(NULL);
+        int dpi = sdc ? GetDeviceCaps(sdc, LOGPIXELSX) : 96;
+        if(sdc) ReleaseDC(NULL, sdc);
+        if(dpi < 96) dpi = 96;
+        win_w = (960 * dpi + 48) / 96;
+        win_h = (600 * dpi + 48) / 96;
+        fprintf(stderr, "[pfemu] dpi awareness: %d (dpi %d)\n",
+                IsProcessDPIAware(), dpi);
+      } }
     double t0, last_present = 0, wall_t0 = 0;
     double max_secs = 0, until_emu = -1.0;
     const char *shotfile = NULL;
