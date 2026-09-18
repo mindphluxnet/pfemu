@@ -266,8 +266,19 @@ static uint64_t until_cycles(double t){
 extern void kbd_release_all(void);
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
     switch(m){
-    case WM_DESTROY: case WM_CLOSE: running = 0; PostQuitMessage(0); return 0;
+    case WM_DESTROY: case WM_CLOSE:
+        /* Save here as well as after the main loop: the exit reports below
+         * must not be able to lose the position, whatever fails in them. */
+        plat_save_window_pos();
+        running = 0; PostQuitMessage(0); return 0;
     case WM_SIZE: win_w = LOWORD(l); win_h = HIWORD(l); return 0;
+    /* The user finished dragging the window: persist immediately, so a kill
+     * or crash after this point still keeps the spot.  Fullscreen has no
+     * movable window (see plat_save_window_pos), and programmatic moves
+     * never enter the modal loop that sends this. */
+    case WM_EXITSIZEMOVE:
+        if(!fullscreen) plat_save_window_pos();
+        return 0;
     /* Focus-loss releases are host leakage (docs/REPLAY.md section 2.4):
      * suppressed on replay, where no live keyboard reaches the guest. */
     case WM_KILLFOCUS: if(!replay_is_replaying()) kbd_release_all(); break;
@@ -486,6 +497,7 @@ static void suppress_accessibility_shortcuts(void){
 void plat_init(const char *title){
     WNDCLASSEXA wc;
     RECT r;
+    int winx, winy, have_pos = 0;
     /* 1 ms scheduling granularity for the emulation loop.  Stock Windows
      * timer resolution makes Sleep(1) wait up to 15.6 ms, which caps the
      * outer loop (and with it presents: one per iteration at most) far
@@ -510,9 +522,52 @@ void plat_init(const char *title){
     RegisterClassExA(&wc);
     r.left=0; r.top=0; r.right=win_w; r.bottom=win_h;
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    hwnd = CreateWindowA("pfemu", title, WS_OVERLAPPEDWINDOW|WS_VISIBLE,
-                         CW_USEDEFAULT, CW_USEDEFAULT,
-                         r.right-r.left, r.bottom-r.top, NULL,NULL,wc.hInstance,NULL);
+    {   int w = r.right-r.left, h = r.bottom-r.top;
+        /* Restore the global position when there is one, else open centered
+         * on the monitor with the cursor.  CW_USEDEFAULT cascades from the
+         * last opened window, which reads as "random" when the OS has no
+         * other anchor. */
+        have_pos = last_read_winpos(&winx, &winy);
+        if(have_pos){
+            /* A saved spot on a monitor that is no longer there (or after a
+             * resolution change) must not strand the window off-screen:
+             * fall back to centered when the point is on no monitor, and
+             * clamp so at least the title bar stays in the work area. */
+            HMONITOR hm = MonitorFromPoint(
+                (POINT){winx + w/2, winy + (h/2 < 16 ? h/2 : 16)},
+                MONITOR_DEFAULTTONULL);
+            if(!hm){
+                center_on_cursor_monitor(w, h, &winx, &winy);
+            } else {
+                MONITORINFO mi;
+                mi.cbSize = sizeof(mi);
+                if(GetMonitorInfoA(hm, &mi)){
+                    if(winx + w <= mi.rcWork.left ||
+                       winx >= mi.rcWork.right ||
+                       winy + h <= mi.rcWork.top ||
+                       winy >= mi.rcWork.bottom){
+                        /* Center on the saved monitor itself: the window
+                         * belongs where it was, just visible. */
+                        winx = mi.rcWork.left +
+                            ((mi.rcWork.right-mi.rcWork.left)-w)/2;
+                        winy = mi.rcWork.top +
+                            ((mi.rcWork.bottom-mi.rcWork.top)-h)/2;
+                    }
+                    if(winx + w > mi.rcWork.right)
+                        winx = mi.rcWork.right - w;
+                    if(winy + h > mi.rcWork.bottom)
+                        winy = mi.rcWork.bottom - h;
+                    if(winx < mi.rcWork.left) winx = mi.rcWork.left;
+                    if(winy < mi.rcWork.top) winy = mi.rcWork.top;
+                }
+            }
+        } else {
+            center_on_cursor_monitor(w, h, &winx, &winy);
+        }
+        hwnd = CreateWindowA("pfemu", title, WS_OVERLAPPEDWINDOW|WS_VISIBLE,
+                             winx, winy,
+                             w, h, NULL,NULL,wc.hInstance,NULL);
+    }
     hdc = GetDC(hwnd);
     memset(&bmi,0,sizeof(bmi));
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -520,6 +575,19 @@ void plat_init(const char *title){
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
     build_fonts();
+}
+
+/* Persist the windowed position globally (pfemu-winpos.cfg) for the next
+ * launch.  Fullscreen covers the monitor, so there is nothing worth
+ * remembering there - keep the pre-fullscreen rect instead.  Global, so
+ * replay's promise never to touch the install's real PFEMU-STATE/ is
+ * unaffected. */
+void plat_save_window_pos(void){
+    RECT rc;
+    if(!hwnd) return;
+    if(fullscreen) rc = windowed_rect;
+    else if(!GetWindowRect(hwnd, &rc)) return;
+    last_save_winpos((int)rc.left, (int)rc.top);
 }
 
 int plat_pump(void){
@@ -1616,6 +1684,13 @@ relaunch:
      * promises never to touch (REPLAY.md 3.3). */
     if(audio_volume_dirty && !replay_is_replaying())
         write_volume_cfg(dir, vol_muted && vol_premute > 0 ? vol_premute : audio_volume);
+
+    /* Remember where the window was for the next launch.  First thing
+     * after the loop with the volume save, for the same reason: the exit
+     * report below must not be able to lose it.  Global (pfemu-winpos.cfg),
+     * so replay's promise never to touch the install's PFEMU-STATE/ is
+     * unaffected - the window lives on the desk, not in the install. */
+    plat_save_window_pos();
 
     vga_render(fb,&fbw,&fbh);
     plat_present(fb,fbw,fbh);

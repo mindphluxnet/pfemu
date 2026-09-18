@@ -431,6 +431,7 @@ static void write_session_path(const char *dir, const char *p){
  * defined further down next to the controls they update. */
 static void show_detection(HWND h, LaunchState *st);
 static void reload_for_dir(HWND h, LaunchState *st);
+static void launch_save_pos(HWND h);
 
 /* Default record target: sessions/<install>_<date>.pfr (REPLAY.md section
  * 4), next to pfemu.exe.  The install dir is sanitised: it is only ever a
@@ -1508,8 +1509,32 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         if(st){ st->ok = 0; st->done = 1; }
         DestroyWindow(h);
         return 0;
+    /* Persist the dialog position.  WM_DESTROY fires on every teardown path
+     * (Launch, Quit, X), so one hook here covers them all; EXITSIZEMOVE
+     * covers a kill/crash after a drag.  Read under the unaware context the
+     * window was created in: mixing aware-thread geometry with this window
+     * rescales the coordinates, so the save would never match the restore. */
+    case WM_DESTROY:
+        launch_save_pos(h);
+        return 0;
+    case WM_EXITSIZEMOVE:
+        launch_save_pos(h);
+        return 0;
     }
     return DefWindowProcA(h,m,w,l);
+}
+
+/* Current dialog position into the global file, read the way it was
+ * written: unaware, like the window (see show_launcher). */
+static void launch_save_pos(HWND h){
+    HMODULE u = GetModuleHandleA("user32.dll");
+    void *(WINAPI *setthread)(void*) = u ?
+        (void*(WINAPI*)(void*))GetProcAddress(u, "SetThreadDpiAwarenessContext") : NULL;
+    void *prev = setthread ? setthread((void*)(INT_PTR)-1) : NULL;
+    RECT rc;
+    if(GetWindowRect(h, &rc))
+        last_save_launchpos((int)rc.left, (int)rc.top);
+    if(setthread) setthread(prev ? prev : (void*)(INT_PTR)-4);
 }
 
 /* The installation the last showing launched.  main() comes back here when
@@ -1527,11 +1552,46 @@ static char last_dir[512] = "";
  * is already the per-install settings file (PFEMU-STATE/pfemu.cfg), and
  * two different files sharing it would only confuse. */
 #define LAST_FILE "pfemu-last.cfg"
+/* Window positions live apart from install memory on purpose
+ * (pfemu-winpos.cfg): a read that finds nothing must only mean "center the
+ * window", never wipe the remembered installation - and vice versa.  Two
+ * tiny files that cannot clobber each other beat one clever one. */
+#define LAST_WINPOS "pfemu-winpos.cfg"
 
+/* Absolute path next to the exe.  A relative path would follow the process
+ * CWD, which is not stable: a shortcut's "Start in" directory, a CLI run
+ * from another folder, or any future file dialog can point launch-time and
+ * quit-time at two different files, so a position saved on quit is never
+ * found again on launch (or vice versa).  The exe's own directory never
+ * moves under a running process. */
+static void last_path(char *out, size_t n, const char *name){
+    char exe[1024];
+    DWORD len = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+    if(len > 0 && len < sizeof(exe)){
+        char *sep = strrchr(exe, '\\');
+        char *sep2 = strrchr(exe, '/');
+        if(sep2 && (!sep || sep2 > sep)) sep = sep2;
+        if(sep){
+            size_t dlen = (size_t)(sep - exe);
+            if(dlen + 1 + strlen(name) < n){
+                memcpy(out, exe, dlen);
+                out[dlen] = 0;
+                snprintf(out + dlen, n - dlen, "\\%s", name);
+                return;
+            }
+        }
+    }
+    snprintf(out, n, "%s", name);   /* degraded, but never a failure */
+}
+
+/* Install memory only: dir + release.  Written outright on Launch, so there
+ * is no read whose failure could ever blank it. */
 static void last_save(const RelResult *r){
+    char path[1080];
     FILE *f;
     if(!r || !r->dir[0]) return;
-    f = fopen(LAST_FILE, "w");
+    last_path(path, sizeof(path), LAST_FILE);
+    f = fopen(path, "w");
     if(!f) return;
     fprintf(f, "# Last installation launched from the pfemu launcher.\n");
     fprintf(f, "dir=%s\n", r->dir);
@@ -1539,16 +1599,134 @@ static void last_save(const RelResult *r){
     fclose(f);
 }
 
+/* Window positions only. Stored as full pairs or nothing: a half-written file
+ * (crash between lines) centers instead of restoring garbage. */
+typedef struct {
+    int win_x, win_y;
+    int have_win;
+    int launch_x, launch_y;
+    int have_launch;
+} WinPos;
+
+static void winpos_read(WinPos *o){
+    char line[600], path[1080];
+    FILE *f;
+    memset(o, 0, sizeof(*o));
+    last_path(path, sizeof(path), LAST_WINPOS);
+    f = fopen(path, "r");
+    if(!f) return;
+    while(fgets(line, sizeof(line), f)){
+        char *k = line, *eq, *e;
+        while(*k==' '||*k=='\t') k++;
+        e = k + strlen(k);
+        while(e > k && (e[-1]==' '||e[-1]=='\t'||e[-1]=='\r'||e[-1]=='\n')) *--e = 0;
+        if(!*k || *k=='#' || *k==';') continue;
+        eq = strchr(k, '=');
+        if(!eq) continue;
+        *eq = 0;
+        { char *v = eq + 1;
+          while(*v==' '||*v=='\t') v++;
+          if(!strcmp(k, "win_x")){ o->win_x = atoi(v); o->have_win |= 1; }
+          else if(!strcmp(k, "win_y")){ o->win_y = atoi(v); o->have_win |= 2; }
+          else if(!strcmp(k, "launch_x")){ o->launch_x = atoi(v); o->have_launch |= 1; }
+          else if(!strcmp(k, "launch_y")){ o->launch_y = atoi(v); o->have_launch |= 2; } }
+    }
+    fclose(f);
+    if(o->have_win != 3) o->have_win = 0;   /* need the full pair to restore */
+    if(o->have_launch != 3) o->have_launch = 0;
+}
+
+static void winpos_write(const WinPos *o){
+    char path[1080];
+    FILE *f;
+    last_path(path, sizeof(path), LAST_WINPOS);
+    f = fopen(path, "w");
+    if(!f) return;
+    fprintf(f, "# pfemu window positions - delete to re-center.\n");
+    if(o->have_win)
+        fprintf(f, "win_x=%d\nwin_y=%d\n", o->win_x, o->win_y);
+    if(o->have_launch)
+        fprintf(f, "launch_x=%d\nlaunch_y=%d\n", o->launch_x, o->launch_y);
+    fclose(f);
+}
+
+/* Global game-window position, shared by all installs (see pfemu.h). */
+int last_read_winpos(int *x, int *y){
+    WinPos o;
+    winpos_read(&o);
+    if(!o.have_win) return 0;
+    if(x) *x = o.win_x;
+    if(y) *y = o.win_y;
+    return 1;
+}
+
+void last_save_winpos(int x, int y){
+    WinPos o;
+    winpos_read(&o);   /* keep the launcher dialog's spot */
+    o.win_x = x; o.win_y = y; o.have_win = 3;
+    winpos_write(&o);
+}
+
+/* Launcher dialog position: same global file, its own keys (see pfemu.h).
+ * Saved on every teardown path, restored in show_launcher, centered when
+ * there is nothing saved yet. */
+int last_read_launchpos(int *x, int *y){
+    WinPos o;
+    winpos_read(&o);
+    if(!o.have_launch) return 0;
+    if(x) *x = o.launch_x;
+    if(y) *y = o.launch_y;
+    return 1;
+}
+
+void last_save_launchpos(int x, int y){
+    WinPos o;
+    winpos_read(&o);   /* keep the game window's spot */
+    o.launch_x = x; o.launch_y = y; o.have_launch = 3;
+    winpos_write(&o);
+}
+
+/* Center a w*h window in the work area of the monitor with the mouse cursor.
+ * That is the screen the user is looking at; the primary monitor's full size
+ * is the wrong answer twice over on a multi-monitor desk (wrong monitor, and
+ * the centered rect ends up under the taskbar).  Falls back to the primary
+ * monitor when the cursor position is unavailable. */
+void center_on_cursor_monitor(int w, int h, int *ox, int *oy){
+    POINT pt;
+    HMONITOR hm = NULL;
+    MONITORINFO mi;
+    int sw, sh;
+    if(GetCursorPos(&pt))
+        hm = MonitorFromPoint(pt, MONITOR_DEFAULTTONULL);
+    if(!hm)
+        hm = MonitorFromPoint((POINT){0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    mi.cbSize = sizeof(mi);
+    if(hm && GetMonitorInfoA(hm, &mi)){
+        int aw = mi.rcWork.right - mi.rcWork.left;
+        int ah = mi.rcWork.bottom - mi.rcWork.top;
+        int x = mi.rcWork.left + (aw - w) / 2;
+        int y = mi.rcWork.top + (ah - h) / 2;
+        if(x < mi.rcWork.left) x = mi.rcWork.left;
+        if(y < mi.rcWork.top) y = mi.rcWork.top;
+        if(ox) *ox = x;
+        if(oy) *oy = y;
+        return;
+    }
+    sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
+    if(ox) *ox = (sw - w) / 2 < 0 ? 0 : (sw - w) / 2;
+    if(oy) *oy = (sh - h) / 2 < 0 ? 0 : (sh - h) / 2;
+}
+
 /* Point st->sel at the remembered installation when it is still there:
  * the same directory wins outright (even if what is in it changed - the
  * detection line then says so), otherwise the first runnable install of
  * the remembered release.  Returns 1 when it moved the selection. */
 static int last_restore(LaunchState *st){
-    char dir[512] = "", rel[64] = "";
-    char line[600];
+    char line[600], path[1080], dir[512] = "", rel[64] = "";
     FILE *f;
     int i;
-    f = fopen(LAST_FILE, "r");
+    last_path(path, sizeof(path), LAST_FILE);
+    f = fopen(path, "r");
     if(!f) return 0;
     while(fgets(line, sizeof(line), f)){
         char *k = line, *eq, *e;
@@ -1587,7 +1765,6 @@ int show_launcher(LaunchChoice *out){
     /* static: it now carries a RelResult per installation, which is a lot of
      * report text to put on the stack for a dialog that runs once. */
     static LaunchState st;
-    int sw, sh;
     int winw = 458, winh = 640;   /* Extras grew a row for "Start at",
                                    then Enhancement added its own group */
     INITCOMMONCONTROLSEX icc;
@@ -1655,15 +1832,70 @@ int show_launcher(LaunchChoice *out){
           (void*(WINAPI*)(void*))GetProcAddress(u, "SetThreadDpiAwarenessContext") : NULL;
       /* UNAWARE = (HANDLE)-1, PER_MONITOR_AWARE_V2 = (HANDLE)-4 */
       void *prev = setthread ? setthread((void*)(INT_PTR)-1) : NULL;
-      hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
-                             WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
-                             CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,
-                             NULL,NULL,wc.hInstance,&st);
+      /* Explicit creation coordinates, never CW_USEDEFAULT: a window born
+       * with CW_USEDEFAULT keeps a pending cascade that first-show can
+       * apply over a pre-show SetWindowPos (observed: the dialog drifted
+       * off the restored spot on its own).  Everything down to ShowWindow
+       * runs unaware, so creation, MonitorFromPoint, GetWindowRect and
+       * SetWindowPos all share the unaware window's logical pixels - mixing
+       * aware-thread geometry in here rescales the coordinates and the save
+       * would never match the restore. */
+      { int cx, cy, have_cx = 0;
+        if(last_read_launchpos(&cx, &cy)){
+            HMONITOR hm0 = MonitorFromPoint(
+                (POINT){cx + winw/2, cy + 12}, MONITOR_DEFAULTTONULL);
+            if(hm0) have_cx = 1;
+        }
+        if(!have_cx) center_on_cursor_monitor(winw, winh, &cx, &cy);
+        hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
+                               WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
+                               cx, cy, winw, winh,
+                               NULL,NULL,wc.hInstance,&st);
+      }
+      if(hwnd){
+          /* Restore the saved dialog position when there is one, else center
+           * the real window (GetWindowRect, not the requested size: DPI
+           * virtualization can make them differ) on the monitor with the
+           * cursor.  A spot on a disconnected monitor falls back to
+           * centered, and the rect is clamped into the work area. */
+          RECT rc;
+          int w, h, x, y;
+          if(GetWindowRect(hwnd, &rc)){
+              w = rc.right - rc.left; h = rc.bottom - rc.top;
+              if(last_read_launchpos(&x, &y)){
+                  HMONITOR hm = MonitorFromPoint(
+                      (POINT){x + w/2, y + (h/2 < 16 ? h/2 : 16)},
+                      MONITOR_DEFAULTTONULL);
+                  if(!hm){
+                      center_on_cursor_monitor(w, h, &x, &y);
+                  } else {
+                      MONITORINFO mi;
+                      mi.cbSize = sizeof(mi);
+                      if(GetMonitorInfoA(hm, &mi)){
+                          if(x + w <= mi.rcWork.left || x >= mi.rcWork.right ||
+                             y + h <= mi.rcWork.top || y >= mi.rcWork.bottom){
+                              x = mi.rcWork.left +
+                                  ((mi.rcWork.right-mi.rcWork.left)-w)/2;
+                              y = mi.rcWork.top +
+                                  ((mi.rcWork.bottom-mi.rcWork.top)-h)/2;
+                          }
+                          if(x + w > mi.rcWork.right) x = mi.rcWork.right - w;
+                          if(y + h > mi.rcWork.bottom) y = mi.rcWork.bottom - h;
+                          if(x < mi.rcWork.left) x = mi.rcWork.left;
+                          if(y < mi.rcWork.top) y = mi.rcWork.top;
+                      } else {
+                          center_on_cursor_monitor(w, h, &x, &y);
+                      }
+                  }
+              } else {
+                  center_on_cursor_monitor(w, h, &x, &y);
+              }
+              SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE|SWP_NOZORDER);
+          }
+      }
       if(setthread) setthread(prev ? prev : (void*)(INT_PTR)-4);
     }
     if(!hwnd) return 0;
-    sw = GetSystemMetrics(SM_CXSCREEN); sh = GetSystemMetrics(SM_CYSCREEN);
-    SetWindowPos(hwnd,NULL,(sw-winw)/2,(sh-winh)/2,0,0,SWP_NOSIZE|SWP_NOZORDER);
     ShowWindow(hwnd,SW_SHOW);
     UpdateWindow(hwnd);
     while(!st.done && GetMessageA(&msg,NULL,0,0)>0){

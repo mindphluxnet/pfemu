@@ -16,3 +16,4 @@ GAME
 *.bin
 *.txt
 /pfemu-last.cfg
+/pfemu-winpos.cfg

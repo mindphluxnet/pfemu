@@ -275,6 +275,7 @@ extern int fantasies_res_override;
 
 /* ------------------------------------------------------------ platform --- */
 void plat_init(const char *title);
+void plat_save_window_pos(void); /* persist game-window position globally */
 int  plat_pump(void);                 /* returns 0 when the user closes the window */
 void plat_present(const uint32_t *pix, int w, int h);
 double plat_time(void);
@@ -356,6 +357,21 @@ int  read_sound_is_sb(const char *dir);
 int  read_sound_quality(const char *dir);      /* SOUND.CFG byte 14h, 0-4 */
 int  read_volume_cfg(const char *dir);         /* host-only file, 0-100 */
 void write_volume_cfg(const char *dir, int vol); /* keeps the stored quality */
+/* Global UI state next to the exe (pfemu-winpos.cfg): the game-window and
+ * launcher screen positions shared by all installs, and the centering
+ * helper behind them.
+ * Unlike PfCfg above this is NOT per-install - the windows live on the
+ * user's desk, not in a game directory. */
+int  last_read_winpos(int *x, int *y);   /* 1 when a position was saved */
+void last_save_winpos(int x, int y);
+int  last_read_launchpos(int *x, int *y); /* launcher dialog position */
+void last_save_launchpos(int x, int y);
+/* Top-left that centers a w*h window in the work area of the monitor
+ * holding the mouse cursor (falling back to the primary monitor).  This is
+ * what "centered on my screen" means on a multi-monitor desk: the primary
+ * monitor's full size is the wrong answer twice over (wrong monitor, and
+ * under the taskbar). */
+void center_on_cursor_monitor(int w, int h, int *x, int *y);
 
 /* ------------------------------------------------- session record/replay */
 /* Deterministic input recording (docs/REPLAY.md).  v1 records from the boot
