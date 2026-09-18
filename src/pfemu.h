@@ -358,7 +358,6 @@ typedef struct {
 } ReplayHeader;
 int  replay_read_header(const char *path, ReplayHeader *out);
 const char *replay_parse_error(void);   /* last parse failure, for fail_msg */
-void replay_header_detail(const ReplayHeader *h, char *dst, size_t n);
 /* Record side: open with the full session context, log every kbd_key entry
  * with emu_now() (dev.c calls in), close with the footer at exit. */
 int  replay_begin_record(const char *path, const RelResult *rel, const char *prog,

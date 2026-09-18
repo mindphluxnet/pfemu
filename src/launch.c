@@ -39,6 +39,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include "pfemu.h"
 #include "../res/resource.h"
 
@@ -833,6 +834,357 @@ static void reload_for_dir(HWND h, LaunchState *st){
     show_detection(h, st);
 }
 
+/* ------------------------------------------------------- details window */
+/* Details used to be a MessageBox.  That renders the report in the shell's
+ * proportional UI font, so every column the report aligns with %-11s and a
+ * 64-hex digest collapsed into an unreadable ribbon, and a long report was
+ * cut off with no way to scroll.  In replay mode it was worse still: the
+ * recorded header and the install report were simply concatenated, so the
+ * release id, the layout, the boot program and the entire code vector each
+ * appeared twice, once in each half's own wording.
+ *
+ * So: a real modal window, fixed-pitch and scrollable and resizable, fed a
+ * single report that states each thing once.  The code vector in particular
+ * now appears exactly one time - as a recorded-vs-installed comparison,
+ * which is the only form of it that answers the question the user opened
+ * this window to ask.  The text stays plain and copyable (Copy selects the
+ * lot and copies it): for a release the database does not know, it is the
+ * intake format of docs/RELEASES.md, sizes and hashes the user can send on
+ * without having run anything.
+ */
+#define ID_DET_TEXT  200
+#define ID_DET_COPY  201
+/* Close carries IDCANCEL so Esc, the title bar's X and the button are one
+ * path (IsDialogMessage turns Esc into WM_COMMAND/IDCANCEL). */
+
+#define DET_MAX 20480
+#define DET_RULE "----------------------------------------------------------------"
+
+static void det_add(char *dst, size_t n, const char *fmt, ...){
+    va_list ap;
+    size_t used = strlen(dst);
+    if(used + 1 >= n) return;
+    va_start(ap, fmt);
+    vsnprintf(dst + used, n - used, fmt, ap);
+    va_end(ap);
+}
+
+static void det_sect(char *dst, size_t n, const char *title){
+    det_add(dst, n, "%s%s\n%s\n", dst[0] ? "\n" : "", title, DET_RULE);
+}
+
+/* One fact per line, label column fixed so the values line up. */
+static void det_kv(char *dst, size_t n, const char *label, const char *fmt, ...){
+    char val[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(val, sizeof(val), fmt, ap);
+    va_end(ap);
+    det_add(dst, n, "  %-13s %s\n", label, val);
+}
+
+/* Someone else's report (release.c's), indented into this one unchanged -
+ * its own alignment is already monospace and it is what -releases prints. */
+static void det_body(char *dst, size_t n, const char *text){
+    const char *p = text;
+    while(*p){
+        const char *nl = strchr(p, '\n');
+        int len = nl ? (int)(nl - p) : (int)strlen(p);
+        det_add(dst, n, "  %.*s\n", len, p);
+        if(!nl) break;
+        p = nl + 1;
+    }
+}
+
+static void det_hex32(const uint8_t d[32], char out[65]){
+    static const char *hx = "0123456789abcdef";
+    int i;
+    for(i=0;i<32;i++){ out[i*2] = hx[d[i]>>4]; out[i*2+1] = hx[d[i]&15]; }
+    out[64] = 0;
+}
+
+/* The six intro options as words rather than the raw bytes the .pfr keeps:
+ * the labels are the launcher's own, minus their trailing colon.  Three to
+ * a line - all six on one runs past the width the code vector below already
+ * decides, and this is the one value here long enough to do that. */
+static void det_options(const uint8_t o[6], char *dst, size_t n, int from, int to){
+    int i;
+    dst[0] = 0;
+    for(i=from;i<to;i++){
+        char lab[32];
+        int v = o[i];
+        size_t l;
+        snprintf(lab, sizeof(lab), "%s", opts[i].label);
+        l = strlen(lab);
+        if(l && lab[l-1] == ':') lab[l-1] = 0;
+        snprintf(dst + strlen(dst), n - strlen(dst), "%s%s %s",
+                 dst[0] ? ", " : "", lab,
+                 (v >= 0 && v < opts[i].n) ? opts[i].values[v] : "?");
+    }
+}
+
+/* Recorded identity against what is on disk now.  This is the one place any
+ * hash is printed in replay mode; the second line only appears for a program
+ * that actually differs, in release.c's expected/actual idiom. */
+static void det_vector(char *dst, size_t n, const ReplayHeader *h,
+                       const RelResult *r){
+    int k;
+    char hx[65];
+    for(k=0;k<h->ncode;k++){
+        int same;
+        /* The leftmost column is the program name, or DIFFERS on the second
+         * line of a pair - so a mismatch is visible down the left edge and
+         * every line still ends at the same column. */
+        if(h->have[k]){
+            det_hex32(h->sha[k], hx);
+            det_add(dst, n, "  %-11s %-9s %8u  %s\n",
+                    h->names[k], "recorded", (unsigned)h->size[k], hx);
+        } else {
+            det_add(dst, n, "  %-11s %-9s %8s\n",
+                    h->names[k], "recorded", "MISSING");
+        }
+        if(!r || k >= r->ncode || _stricmp(h->names[k], r->code_names[k])){
+            det_add(dst, n, "  %-11s %-9s no program of this name\n",
+                    "DIFFERS", "installed");
+            continue;
+        }
+        same = (h->have[k] == r->code_have[k]) &&
+               (!h->have[k] || (h->size[k] == r->code_size[k] &&
+                                !memcmp(h->sha[k], r->code_sha[k], 32)));
+        if(same) continue;
+        if(r->code_have[k]){
+            det_hex32(r->code_sha[k], hx);
+            det_add(dst, n, "  %-11s %-9s %8u  %s\n",
+                    "DIFFERS", "installed", (unsigned)r->code_size[k], hx);
+        } else {
+            det_add(dst, n, "  %-11s %-9s %8s\n",
+                    "DIFFERS", "installed", "MISSING");
+        }
+    }
+}
+
+/* The whole report for whatever the dialog is currently showing. */
+static void details_build(LaunchState *st, char *dst, size_t n){
+    const RelResult *r = cur_inst(st);
+    dst[0] = 0;
+    if(st->mode == LAUNCH_REPLAY){
+        char why[256];
+        int ok = replay_selection_ok(st, why, sizeof(why));
+        det_sect(dst, n, "Status");
+        det_add(dst, n, "  %s\n", ok ? "Ready to replay." : why);
+        if(st->rhdr_ok){
+            const ReplayHeader *h = &st->rhdr;
+            char buf[512];
+            det_sect(dst, n, "Replay file");
+            det_kv(dst, n, "File", "%s", st->replay_path);
+            det_kv(dst, n, "Recorded from", "%s - %s", h->release_id, h->summary);
+            det_kv(dst, n, "Starts at", "%s, then %s", h->program,
+                   (h->start_table >= 1 && h->start_table <= 4)
+                   ? table_labels[h->start_table] : "the table menu");
+            if(h->nevents > 0 && h->have_end)
+                det_kv(dst, n, "Session", "%d events, %.1f s, %llu cycles",
+                       h->nevents, h->end_emu,
+                       (unsigned long long)h->end_cycles);
+            else if(h->nevents > 0)
+                det_kv(dst, n, "Session", "%d events", h->nevents);
+            if(h->sound)
+                det_kv(dst, n, "Sound", "on, quality %s",
+                       (h->quality >= 0 && h->quality < 5)
+                       ? quality_labels[h->quality] : "?");
+            else
+                det_kv(dst, n, "Sound", "off");
+            det_options(h->options, buf, sizeof(buf), 0, 3);
+            det_kv(dst, n, "Options", "%s", buf);
+            det_options(h->options, buf, sizeof(buf), 3, 6);
+            det_kv(dst, n, "", "%s", buf);
+            det_kv(dst, n, "Display", "%s", h->fullscreen ? "fullscreen" : "windowed");
+            snprintf(buf, sizeof(buf), "%.0f ips, speed %g", h->ips, h->speed);
+            if(h->nopatch) snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf), ", nopatch");
+            if(h->nolzexe) snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf), ", nolzexe");
+            det_kv(dst, n, "Emulation", "%s", buf);
+            /* Only worth a line when it is the reason the file is refused:
+             * a playable replay always recorded with the trainer off. */
+            if(!h->trainer_off)
+                det_kv(dst, n, "Trainer", "on when recorded - unplayable");
+            if(h->overlay[0]) det_kv(dst, n, "Overlay", "%s", h->overlay);
+            if(h->have_wav && strcmp(h->wav_hash, "none"))
+                det_kv(dst, n, "Capture", "%s, %lu samples",
+                       h->wav_hash, h->wav_samples);
+            if(h->dir_hint[0]) det_kv(dst, n, "Recorded in", "%s", h->dir_hint);
+            snprintf(buf, sizeof(buf), "Programs - recorded (%s layout)"
+                     " vs. this install", h->layout);
+            det_sect(dst, n, buf);
+            det_vector(dst, n, h, r);
+        }
+    }
+    det_sect(dst, n, "Installation");
+    if(r) det_body(dst, n, r->detail);
+    else  det_add(dst, n, "  No installation is selected.\n");
+}
+
+/* Edit controls want CRLF; every report above is built with bare \n. */
+static void det_crlf(const char *src, char *dst, size_t n){
+    size_t o = 0;
+    for(; *src && o + 3 < n; src++){
+        if(*src == '\n') dst[o++] = '\r';
+        dst[o++] = *src;
+    }
+    dst[o] = 0;
+}
+
+typedef struct {
+    const char *text;
+    HWND owner, hEdit, hCopy, hClose;
+    HFONT hMono, hUi;
+    int done;
+} DetState;
+
+static int det_registered = 0;
+
+static LRESULT CALLBACK details_proc(HWND h, UINT m, WPARAM w, LPARAM l){
+    DetState *d = (DetState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
+    switch(m){
+    case WM_CREATE: {
+        CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
+        d = (DetState*)cs->lpCreateParams;
+        SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)d);
+        /* ES_AUTOHSCROLL with a horizontal scrollbar rather than wrapping:
+         * a wrapped hash line is exactly the mess this window exists to
+         * fix, and every line is written to fit the default width anyway. */
+        d->hEdit = CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT","",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|WS_HSCROLL|
+                        ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|ES_AUTOHSCROLL,
+                        0,0,10,10,h,(HMENU)ID_DET_TEXT,cs->hInstance,0);
+        SendMessageA(d->hEdit,WM_SETFONT,(WPARAM)d->hMono,0);
+        SetWindowTextA(d->hEdit, d->text);
+        d->hCopy = CreateWindowExA(0,"BUTTON","Copy",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                        0,0,10,10,h,(HMENU)ID_DET_COPY,cs->hInstance,0);
+        SendMessageA(d->hCopy,WM_SETFONT,(WPARAM)d->hUi,0);
+        d->hClose = CreateWindowExA(0,"BUTTON","Close",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
+                        0,0,10,10,h,(HMENU)IDCANCEL,cs->hInstance,0);
+        SendMessageA(d->hClose,WM_SETFONT,(WPARAM)d->hUi,0);
+        return 0; }
+    case WM_SIZE: {
+        int cw = LOWORD(l), ch = HIWORD(l);
+        int pad = 10, bw = 88, bh = 26;
+        if(!d) return 0;
+        MoveWindow(d->hEdit, pad, pad, cw-2*pad, ch-3*pad-bh, TRUE);
+        MoveWindow(d->hCopy, cw-pad-2*bw-8, ch-pad-bh, bw, bh, TRUE);
+        MoveWindow(d->hClose, cw-pad-bw, ch-pad-bh, bw, bh, TRUE);
+        return 0; }
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO *mm = (MINMAXINFO*)l;
+        mm->ptMinTrackSize.x = 420;
+        mm->ptMinTrackSize.y = 220;
+        return 0; }
+    /* A read-only EDIT paints itself in the button face colour, which is
+     * half of why the old report looked washed out.  Give it the same
+     * white a normal text field has. */
+    case WM_CTLCOLORSTATIC:
+        if(d && (HWND)l == d->hEdit){
+            SetBkColor((HDC)w, GetSysColor(COLOR_WINDOW));
+            SetTextColor((HDC)w, GetSysColor(COLOR_WINDOWTEXT));
+            return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        }
+        break;
+    case WM_SETFOCUS:
+        if(d && d->hEdit) SetFocus(d->hEdit);
+        return 0;
+    case WM_COMMAND: {
+        int id = LOWORD(w);
+        if(id == ID_DET_COPY && d){
+            SendMessageA(d->hEdit, EM_SETSEL, 0, (LPARAM)-1);
+            SendMessageA(d->hEdit, WM_COPY, 0, 0);
+            SendMessageA(d->hEdit, EM_SETSEL, (WPARAM)-1, 0);
+            SetWindowTextA(d->hCopy, "Copied");
+            SetFocus(d->hEdit);
+            return 0;
+        }
+        if(id == IDCANCEL || id == IDOK){
+            SendMessageA(h, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        return 0; }
+    case WM_CLOSE:
+        /* Hand the launcher back its input before this window goes away,
+         * or the focus lands in whatever is behind pfemu. */
+        if(d){
+            d->done = 1;
+            if(d->owner) EnableWindow(d->owner, TRUE);
+        }
+        DestroyWindow(h);
+        return 0;
+    }
+    return DefWindowProcA(h,m,w,l);
+}
+
+/* Modal report window, owned by and centred on the launcher. */
+static void show_details(HWND owner, const char *text){
+    DetState d;
+    MSG msg;
+    HINSTANCE hinst = GetModuleHandleA(NULL);
+    RECT ro;
+    int winw = 780, winh = 540, x, y;
+    HDC dc;
+
+    memset(&d, 0, sizeof(d));
+    d.text = text;
+    d.owner = owner;
+    d.hUi = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    dc = GetDC(NULL);
+    d.hMono = CreateFontA(-MulDiv(9, GetDeviceCaps(dc, LOGPIXELSY), 72), 0, 0, 0,
+                          FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                          CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+                          FIXED_PITCH|FF_MODERN, "Consolas");
+    ReleaseDC(NULL, dc);
+
+    if(!det_registered){
+        WNDCLASSEXA wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = details_proc;
+        wc.hInstance = hinst;
+        wc.lpszClassName = "pfemu-details";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+        wc.hIcon = LoadIcon(hinst, MAKEINTRESOURCE(IDI_PFEMU));
+        wc.hIconSm = (HICON)LoadImage(hinst, MAKEINTRESOURCE(IDI_PFEMU),
+                                      IMAGE_ICON, 16, 16, 0);
+        if(!RegisterClassExA(&wc)){ DeleteObject(d.hMono); return; }
+        det_registered = 1;
+    }
+    if(owner && GetWindowRect(owner, &ro)){
+        x = (int)ro.left + ((int)(ro.right-ro.left) - winw)/2;
+        y = (int)ro.top + ((int)(ro.bottom-ro.top) - winh)/2;
+    } else {
+        x = (GetSystemMetrics(SM_CXSCREEN)-winw)/2;
+        y = (GetSystemMetrics(SM_CYSCREEN)-winh)/2;
+    }
+    if(x < 0) x = 0;
+    if(y < 0) y = 0;
+    {   HWND hwnd = CreateWindowExA(0,"pfemu-details","pfemu - details",
+                        WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,
+                        x, y, winw, winh, owner, NULL, hinst, &d);
+        if(!hwnd){ DeleteObject(d.hMono); return; }
+        /* Modal by hand: the launcher has no dialog manager to do it. */
+        EnableWindow(owner, FALSE);
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+        SetFocus(d.hEdit);
+        while(!d.done && GetMessageA(&msg, NULL, 0, 0) > 0){
+            if(!IsDialogMessageA(hwnd, &msg)){
+                TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+        }
+    }
+    EnableWindow(owner, TRUE);
+    SetActiveWindow(owner);
+    DeleteObject(d.hMono);
+}
+
 static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     LaunchState *st = (LaunchState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
     switch(m){
@@ -1055,22 +1407,14 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             LRESULT sel = SendMessageA(st->hInstall,CB_GETCURSEL,0,0);
             if(sel != CB_ERR){ st->sel = (int)sel; reload_for_dir(h, st); }
         } else if(id==ID_DETAILS){
-            /* The full report, verbatim and selectable (Ctrl+C copies a
-             * message box whole).  For a release we do not know this is also
-             * the intake format: five sizes and hashes the user can send on
-             * without having run anything.  In replay mode the recorded
-             * header leads, so a refused file explains itself against what
-             * was actually found. */
-            const RelResult *r = cur_inst(st);
-            if(st->mode == LAUNCH_REPLAY && st->rhdr_ok){
-                static char both[4096];
-                char head[2048];
-                replay_header_detail(&st->rhdr, head, sizeof(head));
-                snprintf(both, sizeof(both), "%s\n[current install]\n%s",
-                         head, r ? r->detail : "(none)");
-                MessageBoxA(h, both, "pfemu - replay details", MB_OK);
-            }
-            else if(r) MessageBoxA(h, r->detail, "pfemu - detection details", MB_OK);
+            /* One report, built for whatever mode the dialog is in, shown
+             * in the modal above.  static: the composed text plus its CRLF
+             * copy is more than a window procedure's stack wants to carry. */
+            static char raw[DET_MAX];
+            static char text[DET_MAX*2];
+            details_build(st, raw, sizeof(raw));
+            det_crlf(raw, text, sizeof(text));
+            show_details(h, text);
         } else if(id==ID_MODE_PLAY || id==ID_MODE_RECORD || id==ID_MODE_REPLAY){
             st->mode = (id==ID_MODE_RECORD) ? LAUNCH_RECORD :
                        (id==ID_MODE_REPLAY) ? LAUNCH_REPLAY : LAUNCH_PLAY;
@@ -1258,6 +1602,7 @@ int show_launcher(LaunchChoice *out){
         }
     }
     UnregisterClassA("pfemu-launcher",wc.hInstance);
+    if(det_registered){ UnregisterClassA("pfemu-details",wc.hInstance); det_registered = 0; }
     if(!st.ok) return 0;
     {   /* The boot program comes from the detected release, not from a
          * constant: Power Pack's is PF.EXE, the other two ship PINBALL.EXE.

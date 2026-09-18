@@ -73,8 +73,11 @@ picked path always wins; record re-targets on install switch, replay keeps
 the loaded file). A typed record path gains the `.pfr` extension when it
 has none. The trainer checkbox is greyed out in record/replay mode; the
 volume slider stays enabled in all modes. CLI and launcher are thin
-frontends to the same injector. Details in replay mode shows the recorded
-header (events, duration, wav hash) against the current install.
+frontends to the same injector. Details in replay mode opens a report
+window: whether the file can play and why not, the recorded session
+(events, duration, options, sound, capture hash), the recorded code vector
+compared program by program against the selected install, and that
+install's own detection report.
 
 ## Validation ("accurate" means)
 

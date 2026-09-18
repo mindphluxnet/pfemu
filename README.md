@@ -109,9 +109,9 @@ release.
 Starting `pfemu.exe` with no arguments opens the launcher. It offers sound and
 sound quality, balls, table angle, scrolling, in-game music, resolution, color
 mode, trainer support, and fullscreen. When several installations are present
-it also lets you pick between them. The **Details** button shows the full
-detection report, which is worth including if you ever report a release that
-pfemu does not recognise.
+it also lets you pick between them. The **Details** button opens a scrollable
+report window with a **Copy** button; that report is worth including if you
+ever report a release that pfemu does not recognise.
 
 If an installation is not recognised, **Launch** stays disabled. Each release
 stores its options at a different address in memory, so applying one release's

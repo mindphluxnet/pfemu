@@ -669,44 +669,6 @@ int replay_read_header(const char *path, ReplayHeader *out){
     return parse_file(path, out, 0);
 }
 
-void replay_header_detail(const ReplayHeader *h, char *dst, size_t n){
-    size_t used = 0;
-    int k;
-    used += (size_t)snprintf(dst+used, n-used,
-        "replay: %s\nsummary: %s\nboot: %s  program: %s  layout: %s\n"
-        "ips: %.0f  speed: %g  nopatch: %d  nolzexe: %d\n"
-        "sound: %d  quality: %d  options: %02X %02X %02X %02X %02X %02X  fullscreen: %d\n"
-        "trainer_off: %d  overlay: %s  dir_hint: %s\ncode vector:\n",
-        h->release_id, h->summary, h->boot, h->program, h->layout,
-        h->ips, h->speed, h->nopatch, h->nolzexe,
-        h->sound, h->quality, h->options[0], h->options[1], h->options[2],
-        h->options[3], h->options[4], h->options[5], h->fullscreen,
-        h->trainer_off, h->overlay, h->dir_hint);
-    if(h->have_wav && used+1<n)
-        used += (size_t)snprintf(dst+used, n-used, "wav: %s (%lu samples)\n",
-                                 h->wav_hash, h->wav_samples);
-    if(h->nevents > 0 && used+1<n){
-        if(h->have_end)
-            used += (size_t)snprintf(dst+used, n-used,
-                "events: %d, duration: %.1fs / %llu cycles\n",
-                h->nevents, h->end_emu, h->end_cycles);
-        else
-            used += (size_t)snprintf(dst+used, n-used, "events: %d\n", h->nevents);
-    }
-    if(used+1<n)
-        used += (size_t)snprintf(dst+used, n-used, "code vector:\n");
-    for(k=0;k<h->ncode && used+1<n;k++){
-        if(h->have[k]){
-            char hx[65];
-            hex32(h->sha[k], hx);
-            used += (size_t)snprintf(dst+used, n-used, "  %-11s %8u  %s\n",
-                                     h->names[k], (unsigned)h->size[k], hx);
-        } else {
-            used += (size_t)snprintf(dst+used, n-used, "  %-11s MISSING\n", h->names[k]);
-        }
-    }
-}
-
 int replay_begin_replay(const char *path){
     nev = 0; ev_idx = 0; end_emu = -1.0; end_cycles = 0;
     end_wav_hash[0] = 0; end_wav_samples = 0; have_end_wav = 0;
