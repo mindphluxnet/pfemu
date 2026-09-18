@@ -537,6 +537,7 @@ static int scan_sig(uint32_t base, uint32_t len, const uint8_t *sig,
  * discovered. */
 int fantasies_cfgscan = 0;
 static uint32_t cfg_sites(uint32_t base, uint32_t len, uint32_t *first, uint32_t *conflict);
+static uint32_t data_seg_vote(uint32_t load_base, uint32_t imglen);
 void fantasies_report_cfgscan(const char *dospath, uint32_t base, uint32_t len){
     uint32_t buf = 0, n;
     if(!fantasies_cfgscan) return;
@@ -761,8 +762,7 @@ void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t img
     char b[64];
     uint32_t i, pa = (uint32_t)-1, pb = (uint32_t)-1;
     uint16_t off_pf, off_lwv;
-    uint16_t cand_val[64]; uint32_t cand_cnt[64]; int ncand = 0;
-    uint32_t data_seg = 0, best = 0, cs_base;
+    uint32_t data_seg, cs_base;
     int tn;
 
     if(!session_armed || dos_no_patch) return;
@@ -790,18 +790,8 @@ void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t img
     off_pf  = img_u16(load_base, pa + 41);
     off_lwv = img_u16(load_base, pb + 3);
 
-    for(i = 0; i + 4 <= imglen; i++){
-        if(ram[load_base+i] == 0x68 && ram[load_base+i+3] == 0x1F){
-            uint16_t v = img_u16(load_base, i+1);
-            int j;
-            for(j = 0; j < ncand; j++) if(cand_val[j] == v) break;
-            if(j == ncand){ if(ncand < 64){ cand_val[ncand]=v; cand_cnt[ncand]=1; ncand++; } }
-            else cand_cnt[j]++;
-        }
-    }
-    for(i = 0; i < (uint32_t)ncand; i++)
-        if(cand_cnt[i] > best){ best = cand_cnt[i]; data_seg = cand_val[i]; }
-    if(!data_seg || best < 8){
+    data_seg = data_seg_vote(load_base, imglen);
+    if(!data_seg){
         trc("[fantasies] pause-race fix: DATA segment not confidently found (table %d), leaving unpatched\n", tn);
         return;
     }
@@ -1073,8 +1063,7 @@ void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t im
         1,1,0,0,1 };
     char b[64];
     uint32_t i;
-    uint16_t cand_val[64]; uint32_t cand_cnt[64]; int ncand = 0;
-    uint32_t data_seg = 0, best = 0;
+    uint32_t data_seg;
     int tn;
 
     if(!session_armed || dos_no_patch) return;
@@ -1083,18 +1072,8 @@ void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t im
     tn = prog_slot(b);
     if(load_base + imglen > RAM_SIZE || imglen < sizeof(sig)) return;
 
-    for(i = 0; i + 4 <= imglen; i++){
-        if(ram[load_base+i] == 0x68 && ram[load_base+i+3] == 0x1F){
-            uint16_t v = img_u16(load_base, i+1);
-            int j;
-            for(j = 0; j < ncand; j++) if(cand_val[j] == v) break;
-            if(j == ncand){ if(ncand < 64){ cand_val[ncand]=v; cand_cnt[ncand]=1; ncand++; } }
-            else cand_cnt[j]++;
-        }
-    }
-    for(i = 0; i < (uint32_t)ncand; i++)
-        if(cand_cnt[i] > best){ best = cand_cnt[i]; data_seg = cand_val[i]; }
-    if(!data_seg || best < 8){
+    data_seg = data_seg_vote(load_base, imglen);
+    if(!data_seg){
         trc("[fantasies] spring-valid fix: DATA segment not confidently found (table %d), leaving unpatched\n", tn);
         return;
     }
@@ -1169,8 +1148,7 @@ void fantasies_patch_jump(const char *dospath, uint32_t load_base, uint32_t imgl
         1,1 };
     char b[64];
     uint32_t i;
-    uint16_t cand_val[64]; uint32_t cand_cnt[64]; int ncand = 0;
-    uint32_t data_seg = 0, best = 0;
+    uint32_t data_seg;
     uint16_t vel_off = 0;
     int tn;
 
@@ -1195,18 +1173,8 @@ void fantasies_patch_jump(const char *dospath, uint32_t load_base, uint32_t imgl
         return;
     }
 
-    for(i = 0; i + 4 <= imglen; i++){
-        if(ram[load_base+i] == 0x68 && ram[load_base+i+3] == 0x1F){
-            uint16_t v = img_u16(load_base, i+1);
-            int j;
-            for(j = 0; j < ncand; j++) if(cand_val[j] == v) break;
-            if(j == ncand){ if(ncand < 64){ cand_val[ncand]=v; cand_cnt[ncand]=1; ncand++; } }
-            else cand_cnt[j]++;
-        }
-    }
-    for(i = 0; i < (uint32_t)ncand; i++)
-        if(cand_cnt[i] > best){ best = cand_cnt[i]; data_seg = cand_val[i]; }
-    if(!data_seg || best < 8){
+    data_seg = data_seg_vote(load_base, imglen);
+    if(!data_seg){
         jump_vel_addr[tn] = 0;
         trc("[fantasies] ball-jump fix: DATA segment not confidently found (table %d), leaving unpatched\n", tn);
         return;
@@ -1922,6 +1890,568 @@ void fantasies_matrix_report(void){
     fprintf(stderr, "\n      n:  ");
     for(k = 1; k < MAT_GAPS; k++) fprintf(stderr, "%7lu ", mat_gap_hist[k]);
     fprintf(stderr, "\n");
+}
+
+/* --------------------------------------------------------------- scoring ---
+ * -scoredbg: Spike A of docs/VERIFY.md.  Locate the score, cut a session into
+ * attempts, and print the per-attempt table a replay verifier would emit.
+ * Windows, no port, no server - the point of the spike is to find out whether
+ * the score can be located reliably across the three ranked releases before
+ * anything gets built on top of the idea.
+ *
+ * STRICTLY READ-ONLY.  Nothing here writes guest memory or guest time, because
+ * a scored run that diverged from an unscored one would be worthless: replay
+ * the same .pfr with and without the flag and the footers must come out
+ * identical.  The two cpu_step() hooks below only observe the address of an
+ * instruction that was going to execute anyway.
+ *
+ * Everything is located by masked opcode-signature scan of the loaded image,
+ * the way the rest of this file locates its targets, and every signature here
+ * was confirmed to match exactly once in all twelve TABLE1-4.PRG of the
+ * floppy, Power Pack and Deluxe releases by static byte-scan before any of
+ * this was written.  (The 1993 demo matches none of them - its programs are
+ * LZEXE-packed on disk - and it is excluded from verification anyway.)
+ *
+ * The map is historicalsource/pinballfantasies (see this file's header for
+ * what that is worth): FANTASIE.ASM for the shared engine, PLAND.ASM for the
+ * per-table game flow.  The five things this needs:
+ *
+ *  SIFFRORNA  the score itself - "the digits", 12 unpacked BCD bytes, most
+ *             significant first (FANTASIE.ASM's addscoreBCD adds from index 11
+ *             downwards with an AAA after each digit, so 999999999999 is the
+ *             ceiling).  Located from `zeroscore` (PLAND.ASM), which a
+ *             finished game runs as it hands the table back to attract mode:
+ *             PUSH ES / PUSH DS / POP ES / MOV CX,6 / MOV AX,0 /
+ *             MOV DI,offset SIFFRORNA / REP STOSW / POP ES / RETN.
+ *             Cross-checked, as docs/VERIFY.md demands, against a second and
+ *             independent source: the dot-matrix score print (MOV SI,offset
+ *             SIFFRORNA / MOV BX,0C8h / PUSH CS / POP ES /
+ *             CALL DWORD PTR ES:[PEKOR], FANTASIE.ASM ONLY_SCORE), which is
+ *             what puts the number on the panel the player is reading.  Every
+ *             site must name the same address or the table is left unscored -
+ *             one source is a guess.
+ *  DEMOMODE   attract mode.  GO_DEMO_MODE and GO_GAME_MODE (FANTASIE.ASM) are
+ *             two tiny adjacent procs; the three-store shape of the first is
+ *             unique and its third store names the flag, which then picks
+ *             GO_GAME_MODE's single store out of the several `MOV byte,0 /
+ *             RETN` sites in the image.  Those two instruction addresses are
+ *             the attempt boundaries.
+ *  BALLS[11]  the ball number - 1-based and counting UP to NO_OF_BALLS, not a
+ *             "balls left" countdown.  docs/VERIFY.md assumed a countdown;
+ *             the binary says otherwise, and so does the byte FE /0 = INC in
+ *             fantasies_patch_balls()'s own signature, whose comment calls it
+ *             a DEC.  (What that cheat does is unchanged: NOPing the counter
+ *             update still means the ball number never advances.)
+ *  PLAYERS    how many are in this game, and PLAYER whose turn it is.  Both
+ *             fall out of one site: fantasies_patch_balls()'s signature
+ *             extended backwards by MOV AL,[PLAYER] / CMP AL,[PLAYERS] / JE,
+ *             which is _CHANGE_PLAYER deciding whether the ball just lost
+ *             belonged to the last player.  A second, independent site agrees
+ *             on PLAYERS (the F1-F8 add-player handler's MOV PLAYERS,AL), and
+ *             that agreement is checked below.
+ *
+ * All five are DATA-segment offsets; DATA's runtime paragraph comes from the
+ * same majority vote over `PUSH imm16 / POP DS` the spring and jump locators
+ * already use, refusal path included.
+ *
+ * The state machine per table residency, from docs/VERIFY.md:
+ *
+ *   idle    attract mode.  GO_GAME_MODE starting a game opens an attempt.
+ *   open    a game is running but the player count is not yet fixed - more
+ *           players can still be added right up to the first launch.
+ *   locked  the first SPRING_VALID true->false transition (the ball leaving
+ *           the spring lane) while the ball number is still 1.  The player
+ *           count is sampled here, and an attempt with more than one player
+ *           is marked unrankable immediately - the early abort docs/VERIFY.md
+ *           calls for, a minute of emulated time into a session rather than
+ *           at the end of it.
+ *   ended   GO_DEMO_MODE.  The authoritative terminal signal, and the only
+ *           point at which the score may be read: the ball number reaching
+ *           NO_OF_BALLS is not the end of the attempt, because the match
+ *           (PLAND.ASM `_knacket`, drawn from the same free-running counter
+ *           as everything else) can hand out another ball and the score
+ *           carries on accumulating into it.  TO_DEMO_FROM_GAME calls
+ *           GO_DEMO_MODE and then `zeroscore`, in that order, so this hook
+ *           sits a handful of instructions ahead of the score being wiped.
+ *
+ * Leaving the table mid-game closes the attempt as abandoned, which is not
+ * rankable: an attempt has to start from a clean start observed in this
+ * session and reach attract mode on its own.
+ *
+ * Not carried in savestates, like the -matdbg sites and the ballgap
+ * histograms: the locators re-derive on the next table load, and an attempt
+ * in flight across a snapshot is a diagnostic loss, not a correctness one. */
+int scoredbg_on = 0;                      /* -scoredbg */
+
+/* Per-table locators, all linear addresses; 0 = not located for that table,
+ * which leaves the table unscored rather than guessed at. */
+static uint32_t sc_score[5];              /* SIFFRORNA, 12 BCD digits */
+static uint32_t sc_demomode[5];           /* the attract-mode flag itself */
+static uint32_t sc_ball[5];               /* BALLS[11], 1..NO_OF_BALLS */
+static uint32_t sc_nballs[5];             /* NO_OF_BALLS (the 3/5 option) */
+static uint32_t sc_players[5];            /* PLAYERS, 1..8 */
+static uint32_t sc_player[5];             /* PLAYER, whose turn it is */
+static uint32_t sc_begin_site[5];         /* GO_GAME_MODE's store */
+static uint32_t sc_end_site[5];           /* GO_DEMO_MODE's store */
+
+/* The two addresses cpu_step() compares against, set from the arrays above
+ * when a located table is running and zeroed the moment it is not.  Both stay
+ * 0 unless -scoredbg is on, so an ordinary run pays one predictable branch
+ * per instruction and nothing else. */
+uint32_t score_hook_begin = 0, score_hook_end = 0;
+
+#define SC_LOG 64
+typedef struct {
+    int table, index, players, nballs, ball_reached;
+    int launches, launches_after_last_ball, rankable, bad_digits, decreased;
+    int locked, trainer;
+    unsigned long long start_cycles, end_cycles;
+    double start_emu, end_emu;
+    uint64_t score;
+    const char *how;                      /* attract | abandoned | ... */
+} ScAttempt;
+static ScAttempt sc_log[SC_LOG];
+static int sc_nlog = 0;
+
+static int sc_state = 0;                  /* 0 idle, 1 open, 2 locked */
+static ScAttempt sc_cur;
+static int sc_next_index = 1;
+static int sc_spring_prev = -1;           /* SPRING_VALID at the last poll */
+static int sc_ball_prev = -1;
+static int sc_have_ball = 0;               /* BALLS[11] has read 1 this attempt */
+static int sc_flag_warned = 0;             /* DEMOMODE audit, reported once */
+static uint64_t sc_last_score = 0;
+static double sc_poll_t = -1.0, sc_line_t = -1.0;
+static unsigned long sc_no_digits = 0;    /* polls that read a non-BCD byte */
+
+/* DATA's runtime paragraph, by majority vote over every `PUSH imm16 / POP DS`
+ * in the image.  Extracted from fantasies_patch_spring()/_patch_jump(), which
+ * each had their own copy of it; the `best < 8` floor is theirs - DATA is by
+ * far the most common target of that idiom, and a thin majority means the
+ * image is not the one this code thinks it is. */
+static uint32_t data_seg_vote(uint32_t load_base, uint32_t imglen){
+    uint16_t cand_val[64]; uint32_t cand_cnt[64]; int ncand = 0;
+    uint32_t i, best = 0, seg = 0;
+    for(i = 0; i + 4 <= imglen; i++){
+        if(ram[load_base+i] == 0x68 && ram[load_base+i+3] == 0x1F){
+            uint16_t v = img_u16(load_base, i+1);
+            int j;
+            for(j = 0; j < ncand; j++) if(cand_val[j] == v) break;
+            if(j == ncand){ if(ncand < 64){ cand_val[ncand]=v; cand_cnt[ncand]=1; ncand++; } }
+            else cand_cnt[j]++;
+        }
+    }
+    for(i = 0; i < (uint32_t)ncand; i++)
+        if(cand_cnt[i] > best){ best = cand_cnt[i]; seg = cand_val[i]; }
+    return best >= 8 ? seg : 0;
+}
+
+/* Count matches of a masked signature; on exactly one match, hand back where
+ * it sits and the 16-bit immediate at `imm` inside it.  Everything here wants
+ * exactly one: more than that means the shape is not as distinctive as the
+ * static byte-scan said, and the result must not be trusted. */
+static int sc_scan1(uint32_t load_base, uint32_t imglen, const uint8_t *sig,
+                    const uint8_t *mask, uint32_t n, uint32_t imm,
+                    uint32_t *at_out, uint16_t *imm_out){
+    uint32_t i, hits = 0, first = 0;
+    if(imglen < n) return 0;
+    for(i = 0; i + n <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        for(k = 0; k < n; k++) if(mask[k] && ram[at+k] != sig[k]) break;
+        if(k == n){ if(!hits++) first = i; }
+    }
+    if(hits == 1){
+        if(at_out) *at_out = load_base + first;
+        if(imm_out) *imm_out = img_u16(load_base, first + imm);
+    }
+    return (int)hits;
+}
+
+/* Every site that matches `sig` must carry the same 16-bit immediate at `imm`,
+ * and there must be at least one.  This is the cross-check half of the score
+ * and player-count locators: a single site is a guess, two sites that were
+ * written for different purposes and name the same byte are a measurement.
+ * Returns the agreed address in *off, or 0 on disagreement or no match. */
+static int sc_scan_agree(uint32_t load_base, uint32_t imglen, const uint8_t *sig,
+                         const uint8_t *mask, uint32_t n, uint32_t imm,
+                         uint16_t *off){
+    uint32_t i, hits = 0;
+    if(imglen < n) return 0;
+    for(i = 0; i + n <= imglen; i++){
+        uint32_t at = load_base + i, k;
+        uint16_t v;
+        for(k = 0; k < n; k++) if(mask[k] && ram[at+k] != sig[k]) break;
+        if(k < n) continue;
+        v = img_u16(load_base, i + imm);
+        if(!hits++) *off = v;
+        else if(v != *off) return -1;         /* sites disagree */
+    }
+    return (int)hits;
+}
+
+void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imglen){
+    /* push es / push ds / pop es / mov cx,6 / mov ax,0 / mov di,SIFFRORNA /
+     * rep stosw / pop es / retn                         (PLAND.ASM zeroscore) */
+    static const uint8_t zer[16] = {
+        0x06,0x1E,0x07, 0xB9,0x06,0x00, 0xB8,0x00,0x00, 0xBF,0,0,
+        0xF3,0xAB, 0x07, 0xC3 };
+    static const uint8_t zerm[16] = { 1,1,1, 1,1,1, 1,1,1, 1,0,0, 1,1, 1, 1 };
+    /* mov si,SIFFRORNA / mov bx,0C8h / push cs / pop es / call far [PEKOR]
+     * (FANTASIE.ASM ONLY_SCORE - the dot-matrix print of the same digits) */
+    static const uint8_t dmd[13] = {
+        0xBE,0,0, 0xBB,0xC8,0x00, 0x0E,0x07, 0x26,0xFF,0x1E,0,0 };
+    static const uint8_t dmdm[13] = { 1,0,0, 1,1,1, 1,1, 1,1,1,0,0 };
+    /* mov cs:[ALREADY_QUITTING],FALSE / mov cs:[KEYBOARD_ENABLED],TRUE /
+     * mov [DEMOMODE],TRUE / retn                  (FANTASIE.ASM GO_DEMO_MODE) */
+    static const uint8_t gdm[18] = {
+        0x2E,0xC6,0x06,0,0,0x00, 0x2E,0xC6,0x06,0,0,0xFF,
+        0xC6,0x06,0,0,0xFF, 0xC3 };
+    static const uint8_t gdmm[18] = { 1,1,1,0,0,1, 1,1,1,0,0,1, 1,1,0,0,1, 1 };
+    /* mov al,[PLAYER] / cmp al,[PLAYERS] / je / nop*3 / inc [PLAYER] / jmp /
+     * nop / inc [BALLS+11] / mov al,[NO_OF_BALLS] / cmp [BALLS+11],al / ja
+     * (PLAND.ASM _CHANGE_PLAYER; from inc [PLAYER] on this is
+     * fantasies_patch_balls()'s own signature) */
+    static const uint8_t bal[31] = {
+        0xA0,0,0, 0x3A,0x06,0,0, 0x74,0, 0x90,0x90,0x90,
+        0xFE,0x06,0,0, 0xEB,0, 0x90,
+        0xFE,0x06,0,0, 0xA0,0,0, 0x38,0x06,0,0, 0x77 };
+    static const uint8_t balm[31] = {
+        1,0,0, 1,1,0,0, 1,0, 1,1,1,
+        1,1,0,0, 1,0, 1,
+        1,1,0,0, 1,0,0, 1,1,0,0, 1 };
+    /* sub al,3Ah / mov [PLAYERS],al / add al,37h / mov [text],al - the F1-F8
+     * add-player handler, a second and independent read on PLAYERS */
+    static const uint8_t f18[9] = { 0x2C,0x3A, 0xA2,0,0, 0x04,0x37, 0xA2,0 };
+    static const uint8_t f18m[9] = { 1,1, 1,0,0, 1,1, 1,0 };
+    /* mov [DEMOMODE],FALSE / retn (GO_GAME_MODE), built once DEMOMODE is
+     * known: the bare shape is common, and the operand is what makes it the
+     * right one. */
+    uint8_t ggm[6] = { 0xC6,0x06,0,0,0x00,0xC3 };
+    static const uint8_t ggmm[6] = { 1,1,1,1,1,1 };
+    char b[64];
+    uint32_t seg, at_gdm = 0, at_ggm = 0, at_bal = 0;
+    uint16_t o_score = 0, o_dmd = 0, o_demo = 0, o_player = 0, o_players = 0;
+    uint16_t o_player2 = 0, o_ball = 0, o_ball2 = 0, o_nballs = 0, o_players2 = 0;
+    int tn, n;
+
+    if(!scoredbg_on || !session_armed || dos_no_patch) return;
+    base_up(dospath, b, sizeof(b));
+    if(!is_table_prog(b)){
+        /* A running table EXECs its own .SDR, and that must not tear the hooks
+         * down under a live attempt.  Leaving the table for another program
+         * must, or they would go on matching addresses that now belong to
+         * somebody else's code - and the attempt in flight is abandoned. */
+        const char *dot = strrchr(b, '.');
+        if(dot && (!strcmp(dot,".PRG") || !strcmp(dot,".EXE") || !strcmp(dot,".COM")))
+            fantasies_score_leave();
+        return;
+    }
+    tn = prog_slot(b);
+    fantasies_score_leave();
+    sc_score[tn] = sc_demomode[tn] = sc_ball[tn] = sc_nballs[tn] = 0;
+    sc_players[tn] = sc_player[tn] = sc_begin_site[tn] = sc_end_site[tn] = 0;
+    if(load_base + imglen > RAM_SIZE) return;
+
+    seg = data_seg_vote(load_base, imglen);
+    if(!seg){
+        fprintf(stderr, "[score] table %d: DATA segment not confidently found;"
+                        " table left unscored\n", tn);
+        return;
+    }
+    if(sc_scan1(load_base, imglen, zer, zerm, sizeof(zer), 10, NULL, &o_score) != 1){
+        fprintf(stderr, "[score] table %d: score-clear signature not unique;"
+                        " table left unscored\n", tn);
+        return;
+    }
+    n = sc_scan_agree(load_base, imglen, dmd, dmdm, sizeof(dmd), 1, &o_dmd);
+    if(n < 1 || o_dmd != o_score){
+        fprintf(stderr, "[score] table %d: dot-matrix print (%d site(s), DS:%04X)"
+                " does not confirm the score clear (DS:%04X); table left unscored\n",
+                tn, n, n > 0 ? o_dmd : 0, o_score);
+        return;
+    }
+    if(sc_scan1(load_base, imglen, gdm, gdmm, sizeof(gdm), 14, &at_gdm, &o_demo) != 1){
+        fprintf(stderr, "[score] table %d: attract-mode entry not unique;"
+                        " table left unscored\n", tn);
+        return;
+    }
+    ggm[2] = (uint8_t)(o_demo & 0xFF); ggm[3] = (uint8_t)(o_demo >> 8);
+    if(sc_scan1(load_base, imglen, ggm, ggmm, sizeof(ggm), 2, &at_ggm, NULL) != 1){
+        fprintf(stderr, "[score] table %d: game-start store on DS:%04X not unique;"
+                        " table left unscored\n", tn, o_demo);
+        return;
+    }
+    if(sc_scan1(load_base, imglen, bal, balm, sizeof(bal), 1, &at_bal, &o_player) != 1){
+        fprintf(stderr, "[score] table %d: ball/player site not unique;"
+                        " table left unscored\n", tn);
+        return;
+    }
+    o_players = img_u16(at_bal, 5);
+    o_player2 = img_u16(at_bal, 14);
+    o_ball    = img_u16(at_bal, 21);
+    o_nballs  = img_u16(at_bal, 24);
+    o_ball2   = img_u16(at_bal, 28);
+    if(o_player != o_player2 || o_ball != o_ball2){
+        fprintf(stderr, "[score] table %d: ball/player site disagrees with itself"
+                " (PLAYER %04X/%04X, BALLS %04X/%04X); table left unscored\n",
+                tn, o_player, o_player2, o_ball, o_ball2);
+        return;
+    }
+    n = sc_scan_agree(load_base, imglen, f18, f18m, sizeof(f18), 3, &o_players2);
+    if(n < 1 || o_players2 != o_players){
+        fprintf(stderr, "[score] table %d: add-player handler (%d site(s), DS:%04X)"
+                " does not confirm PLAYERS (DS:%04X); table left unscored\n",
+                tn, n, n > 0 ? o_players2 : 0, o_players);
+        return;
+    }
+
+    sc_score[tn]      = seg*16 + o_score;
+    sc_demomode[tn]   = seg*16 + o_demo;
+    sc_ball[tn]       = seg*16 + o_ball;
+    sc_nballs[tn]     = seg*16 + o_nballs;
+    sc_players[tn]    = seg*16 + o_players;
+    sc_player[tn]     = seg*16 + o_player;
+    sc_begin_site[tn] = at_ggm;
+    sc_end_site[tn]   = at_gdm + 12;          /* the MOV [DEMOMODE],TRUE itself */
+    score_hook_begin  = sc_begin_site[tn];
+    score_hook_end    = sc_end_site[tn];
+    fprintf(stderr, "[score] table %d: data_seg=%04X score=DS:%04X(%05X)"
+            " demomode=DS:%04X ball=DS:%04X nballs=DS:%04X players=DS:%04X"
+            " player=DS:%04X\n",
+            tn, (unsigned)seg, o_score, (unsigned)sc_score[tn], o_demo, o_ball,
+            o_nballs, o_players, o_player);
+    fprintf(stderr, "[score] table %d: game start hooked at %05X, attract at %05X\n",
+            tn, (unsigned)score_hook_begin, (unsigned)score_hook_end);
+}
+
+/* The 12 unpacked BCD digits, most significant first.  A digit above 9 cannot
+ * come out of AAA, so it means the address is wrong (or something worse) - it
+ * is counted and reported, and the attempt marked unrankable, rather than
+ * silently turned into a number. */
+static uint64_t sc_read_score(int *bad){
+    uint32_t a = sc_score[table_num];
+    uint64_t v = 0;
+    int i;
+    if(bad) *bad = 0;
+    if(!a || a + 12 > RAM_SIZE) return 0;
+    for(i = 0; i < 12; i++){
+        uint8_t d = ram[a+i];
+        if(d > 9){ if(bad) *bad = 1; return 0; }
+        v = v*10 + d;
+    }
+    return v;
+}
+
+static int sc_byte(const uint32_t *tab){
+    uint32_t a = tab[table_num];
+    return (a && a < RAM_SIZE) ? ram[a] : -1;
+}
+
+static void sc_print(const ScAttempt *a){
+    const char *why =
+        a->rankable              ? "  [RANKABLE]" :
+        strcmp(a->how,"attract") ? "  [not rankable: no clean end]" :
+        a->trainer               ? "  [not rankable: trainer enabled]" :
+        !a->locked               ? "  [not rankable: first launch never seen]" :
+        a->players != 1          ? "  [not rankable: player count is not 1]" :
+        a->bad_digits            ? "  [not rankable: score digits out of range]" :
+        a->decreased             ? "  [not rankable: score decreased]" :
+                                   "  [not rankable]";
+    fprintf(stderr,
+        "[score] attempt %d table=%d start_cyc=%llu end_cyc=%llu"
+        " start_emu=%.3f end_emu=%.3f score=%llu players=%d balls=%d"
+        " ball_reached=%d launches=%d extra_after_last=%d ended=%s%s\n",
+        a->index, a->table, a->start_cycles, a->end_cycles,
+        a->start_emu, a->end_emu, (unsigned long long)a->score,
+        a->players, a->nballs, a->ball_reached, a->launches,
+        a->launches_after_last_ball, a->how, why);
+}
+
+static void sc_close(const char *how){
+    if(!sc_state) return;
+    sc_cur.how = how;
+    sc_cur.locked = (sc_state == 2);
+    sc_cur.end_cycles = cpu.cycles;
+    sc_cur.end_emu = emu_time;
+    /* The trainer is refused outright for recording and replay (docs/REPLAY.md
+     * 3.2/3.3), so an attempt played with it armed can never be a verified
+     * one either - whether or not a hotkey was actually pressed. */
+    sc_cur.rankable = (!strcmp(how, "attract") && sc_cur.locked &&
+                       !sc_cur.trainer && sc_cur.players == 1 &&
+                       !sc_cur.bad_digits && !sc_cur.decreased);
+    if(sc_nlog < SC_LOG) sc_log[sc_nlog++] = sc_cur;
+    sc_print(&sc_cur);
+    sc_state = 0;
+}
+
+/* Called when the running table goes away (another program EXECs, or the
+ * session ends): an attempt in flight did not reach attract mode on its own,
+ * so it is abandoned, not scored. */
+void fantasies_score_leave(void){
+    if(sc_state) sc_close("abandoned");
+    score_hook_begin = score_hook_end = 0;
+}
+
+/* cpu_step() hook.  Reached only after the two address compares there have
+ * already matched, so this is off the hot path. */
+void fantasies_score_exec(uint32_t lin){
+    int bad = 0;
+    if(lin == score_hook_begin){
+        if(sc_state) sc_close("restarted");     /* should not happen; say so */
+        memset(&sc_cur, 0, sizeof(sc_cur));
+        sc_cur.index = sc_next_index++;
+        sc_cur.table = table_num;
+        sc_cur.start_cycles = cpu.cycles;
+        sc_cur.start_emu = emu_time;
+        sc_cur.players = sc_byte(sc_players);
+        sc_cur.nballs = sc_byte(sc_nballs);
+        sc_cur.trainer = fantasies_trainer_enabled();
+        sc_state = 1;
+        sc_spring_prev = -1;
+        sc_ball_prev = -1;
+        sc_have_ball = 0;
+        sc_flag_warned = 0;
+        sc_last_score = sc_read_score(&bad);
+        sc_line_t = -1.0;
+        fprintf(stderr, "[score] t=%.3f attempt %d begins on table %d"
+                        " (players=%d balls=%d)\n",
+                emu_time, sc_cur.index, sc_cur.table, sc_cur.players,
+                sc_cur.nballs);
+        if(sc_cur.trainer)
+            fprintf(stderr, "[score] the trainer is enabled, so nothing this"
+                            " session can be ranked\n");
+        return;
+    }
+    /* lin == score_hook_end: GO_DEMO_MODE.  The score is still intact here -
+     * TO_DEMO_FROM_GAME wipes it a few instructions later - so this is where
+     * it gets read. */
+    if(sc_state){
+        uint64_t v = sc_read_score(&bad);
+        if(bad) sc_cur.bad_digits = 1; else sc_cur.score = v;
+        sc_close("attract");
+    } else {
+        fprintf(stderr, "[score] t=%.3f attract mode entered with no attempt"
+                        " open\n", emu_time);
+    }
+}
+
+/* Polled from dev_tick(), far more often than the game's own logic runs, so it
+ * is throttled to ~500 Hz of emulated time - seven times the frame rate, which
+ * is the rate at which any of this can actually change. */
+void fantasies_score_tick(void){
+    int spring = -1, ball, bad = 0;
+    uint64_t v;
+    if(!scoredbg_on || !sc_state || !table_num) return;
+    if(sc_poll_t >= 0.0 && emu_time - sc_poll_t < 0.002) return;
+    sc_poll_t = emu_time;
+
+    /* GO_GAME_MODE runs a few hundred instructions ahead of
+     * WHEN_NEW_GAME_RESET, which is what sets BALLS[11] back to 1 - so a poll
+     * landing in that window reads the *previous* game's last ball number, and
+     * an attempt would open claiming to have reached ball 4 before its first
+     * launch.  Nothing is tracked until a poll has actually seen ball 1. */
+    ball = sc_byte(sc_ball);
+    if(!sc_have_ball){
+        if(ball != 1) return;
+        sc_have_ball = 1;
+    }
+
+    /* The boundaries are hooked on the two instructions that write DEMOMODE,
+     * so the flag itself is a free audit of them: while an attempt is open it
+     * has to read FALSE.  If it does not, the segmentation is wrong and every
+     * number below is worthless - which is exactly what a spike should be
+     * listening for. */
+    if(!sc_flag_warned && sc_byte(sc_demomode) != 0){
+        sc_flag_warned = 1;
+        fprintf(stderr, "[score] t=%.3f DEMOMODE is set while attempt %d is"
+                        " open - the attempt boundaries are wrong\n",
+                emu_time, sc_cur.index);
+    }
+    if(ball > 0){
+        if(ball > sc_cur.ball_reached) sc_cur.ball_reached = ball;
+        if(sc_ball_prev > 0 && ball != sc_ball_prev)
+            fprintf(stderr, "[score] t=%.3f ball %d -> %d (of %d)\n",
+                    emu_time, sc_ball_prev, ball, sc_cur.nballs);
+        sc_ball_prev = ball;
+    }
+
+    /* SPRING_VALID true->false is the ball leaving the spring lane: a launch.
+     * The flag is continuously driven by the table's own switch handlers (see
+     * fantasies_patch_spring()), which is exactly why the transition, and not
+     * the level, is what means something here. */
+    {
+        uint32_t a = spring_valid_addr[table_num];
+        if(a && a < RAM_SIZE) spring = (ram[a] == 0xFF);
+    }
+    if(spring == 0 && sc_spring_prev == 1){
+        sc_cur.launches++;
+        if(sc_cur.nballs > 0 && ball > sc_cur.nballs)
+            sc_cur.launches_after_last_ball++;
+        if(sc_state == 1 && ball == 1){
+            sc_cur.players = sc_byte(sc_players);
+            sc_state = 2;
+            fprintf(stderr, "[score] t=%.3f attempt %d locked: players=%d balls=%d%s\n",
+                    emu_time, sc_cur.index, sc_cur.players, sc_cur.nballs,
+                    sc_cur.players == 1 ? "" :
+                    "  <- a verifier rejects the submission here, not at the end");
+        } else {
+            fprintf(stderr, "[score] t=%.3f launch %d (ball %d)%s\n",
+                    emu_time, sc_cur.launches, ball,
+                    (sc_cur.nballs > 0 && ball > sc_cur.nballs) ?
+                        "  <- past the last ball: the match or an extra ball" : "");
+        }
+    }
+    if(spring >= 0) sc_spring_prev = spring;
+
+    v = sc_read_score(&bad);
+    if(bad){
+        sc_cur.bad_digits = 1;
+        if(!sc_no_digits++)
+            fprintf(stderr, "[score] t=%.3f score bytes are not BCD digits -"
+                            " the address is wrong\n", emu_time);
+        return;
+    }
+    /* Monotonicity, per docs/VERIFY.md: a decrease means the address is wrong,
+     * or that a player change handed the variable to somebody else - which is
+     * the multi-player case this refuses anyway. */
+    if(v < sc_last_score && !sc_cur.decreased){
+        sc_cur.decreased = 1;
+        fprintf(stderr, "[score] t=%.3f score went DOWN, %llu -> %llu\n",
+                emu_time, (unsigned long long)sc_last_score,
+                (unsigned long long)v);
+    }
+    if(v != sc_last_score && (sc_line_t < 0.0 || emu_time - sc_line_t >= 0.25)){
+        fprintf(stderr, "[score] t=%.3f ball=%d player=%d/%d score=%llu\n",
+                emu_time, ball, sc_byte(sc_player), sc_cur.players,
+                (unsigned long long)v);
+        sc_line_t = emu_time;
+    }
+    sc_last_score = v;
+}
+
+/* Exit summary: the table a verifier would hand to the database.  Printed for
+ * every -scoredbg run, including the ones with nothing in it - "no attempts"
+ * is a result too. */
+void fantasies_score_report(void){
+    int i;
+    if(!scoredbg_on) return;
+    if(sc_state) sc_close("unfinished");
+    fprintf(stderr, "[score] %d attempt(s) this session\n", sc_nlog);
+    if(sc_nlog){
+        fprintf(stderr, "[score] %3s %5s %7s %5s %5s %7s %14s  %s\n",
+                "#", "table", "players", "balls", "reach", "launch", "score",
+                "ended");
+        for(i = 0; i < sc_nlog; i++){
+            const ScAttempt *a = &sc_log[i];
+            fprintf(stderr, "[score] %3d %5d %7d %5d %5d %7d %14llu  %s%s\n",
+                    a->index, a->table, a->players, a->nballs, a->ball_reached,
+                    a->launches, (unsigned long long)a->score, a->how,
+                    a->rankable ? "  RANKABLE" : "");
+        }
+    }
+    if(sc_no_digits)
+        fprintf(stderr, "[score] %lu poll(s) read a non-BCD score byte\n",
+                sc_no_digits);
 }
 
 /* ------------------------------------------------------ direct-to-table --- */

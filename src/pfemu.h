@@ -259,6 +259,15 @@ int  fantasies_present_window(double *lo, double *hi); /* 1 once learned */
 void fantasies_find_matrix(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_matrix_exec(uint32_t lin);    /* cpu.c hook, gated by mat_dbg */
 void fantasies_matrix_report(void);          /* exit summary */
+/* -scoredbg (Spike A of docs/VERIFY.md): locate the score and cut the session
+ * into scored attempts.  Read-only throughout - see src/fantasies.c. */
+void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imglen);
+void fantasies_score_exec(uint32_t lin);     /* cpu.c hook, gated by scoredbg_on */
+void fantasies_score_tick(void);             /* dev_tick() poll */
+void fantasies_score_leave(void);            /* the scored table went away */
+void fantasies_score_report(void);           /* exit summary */
+extern int scoredbg_on;                      /* -scoredbg */
+extern uint32_t score_hook_begin, score_hook_end; /* 0 = nothing to watch */
 extern int mat_dbg;                          /* -matdbg */
 extern uint32_t mat_tick_site, mat_call_site, mat_crisis_site; /* 0 = unknown */
 extern int balldbg_on;                       /* -balldbg */

@@ -806,6 +806,14 @@ void cpu_step(void){
         if(la == mat_tick_site || la == mat_call_site || la == mat_crisis_site)
             fantasies_matrix_exec(la);
     }
+    /* -scoredbg: the two attempt boundaries - the game leaving attract mode
+     * and coming back to it (see fantasies.c).  Both stay 0 unless the flag
+     * is on and a located table is running, so normal play pays one compare. */
+    if(score_hook_begin){
+        uint32_t la = cs_base + cpu.eip;
+        if(la == score_hook_begin || la == score_hook_end)
+            fantasies_score_exec(la);
+    }
     if(x_on){
         x_ring[x_pos & (XRING-1)] = cs_base + cpu.eip;
         x_cs[x_pos & (XRING-1)] = cpu.sreg[S_CS];

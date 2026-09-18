@@ -582,6 +582,7 @@ void io_w16(uint16_t p, uint16_t v){ io_w8(p,(uint8_t)v); io_w8((uint16_t)(p+1),
 void dev_tick(void){
     fantasies_pause_tick();
     fantasies_spring_tick();
+    fantasies_score_tick();
     emu_advance();
     sb_tick();
     /* PIT channel 0 -> IRQ0.

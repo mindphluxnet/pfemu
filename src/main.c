@@ -918,6 +918,10 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-dmd")) vga_dmdlog = 1;
         else if(!strcmp(argv[i],"-matdbg")){ extern int pit0_m0_log;
             mat_dbg = 1; pit0_m0_log = 60; }
+        /* -scoredbg: per-attempt score/segmentation trace, Spike A of
+         * docs/VERIFY.md.  Read-only - a run with it on must produce the
+         * same footer as one without. */
+        else if(!strcmp(argv[i],"-scoredbg")){ scoredbg_on = 1; }
         else if(!strcmp(argv[i],"-pitm0")){ extern int pit_m0_exact; pit_m0_exact = 1; }
         else if(!strcmp(argv[i],"-nopitm0")){ extern int pit_m0_exact; pit_m0_exact = 0; }
         else if(!strcmp(argv[i],"-paldbg")) vga_paldbg = 1;
@@ -1716,6 +1720,7 @@ relaunch:
     replay_report();
     fantasies_ballgap_report();
     fantasies_matrix_report();
+    fantasies_score_report();
     { extern unsigned long vsync_edges;
       printf("[pfemu] vsync edges seen = %lu (%.1f/s)\n",
              vsync_edges, vsync_edges/(emu_time>0?emu_time:1)); }
