@@ -444,6 +444,11 @@ void wav_close(void){
     fprintf(stderr, "[snd] wrote %s: %lu samples\n", wav_path, wav_samples);
 }
 
+/* Queue-full drops: pushed faster than waveOut consumes, i.e. the emulated
+ * clock running ahead of the wall (the opposite of fell-behind lag).
+ * Reported at exit ([pfemu] pace in src/main.c). */
+unsigned long audio_drop_n = 0;
+
 void plat_audio_push(const int16_t *s, int n){
     WAVEHDR *h;
     int take, g;
@@ -460,7 +465,7 @@ void plat_audio_push(const int16_t *s, int n){
     g = audio_gain_q15();                          /* read once: -/+ can move it */
     while(n > 0){
         h = &hdrs[hdr_i];
-        if(!(h->dwFlags & WHDR_DONE)) return;      /* queue full: drop, stay live */
+        if(!(h->dwFlags & WHDR_DONE)){ audio_drop_n += (unsigned long)n; return; }  /* queue full: drop, stay live */
         if(h->lpData) waveOutUnprepareHeader(hwo, h, sizeof(*h));
         take = n > BUFSAMP ? BUFSAMP : n;
         if(g >= 32768) memcpy(bufs[hdr_i], s, (size_t)take * 2);

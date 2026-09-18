@@ -269,6 +269,9 @@ FILE *fantasies_open_cdmarker(const char *fname);
 int  fantasies_fix_active(void);
 int  fantasies_session_armed(void);
 void fantasies_key_event(int scancode, int down);
+/* -res normal|high (src/main.c): one-run resolution override without saving,
+ * like -vol for volume. -1 = unset (use the install's saved options). */
+extern int fantasies_res_override;
 
 /* ------------------------------------------------------------ platform --- */
 void plat_init(const char *title);

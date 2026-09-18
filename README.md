@@ -161,6 +161,14 @@ second of audio, which is the same tradeoff this setting offered in 1992. If a
 high notch starves the game loop, `-ips` models a faster CPU. Notch 1 is what
 pfemu used before this setting was exposed.
 
+**Resolution High** needs about twice the emulated CPU of Normal (360x350 at
+~71 Hz against 320x240 at 60 Hz), so pfemu automatically models a faster CPU
+there: 12 MIPS instead of the default 6, unless `-ips` or a replay says
+otherwise. Without it the game runs slow and the music crackles, even on the
+lowest sound notch. The switch is picked up from the launcher setting at boot
+and, for an F5 change mid-session, from the first hi-res frame itself (play
+mode only; `-ips` always wins).
+
 ### Trainer (optional)
 
 These hotkeys come from two 1994 trainers. Turn on **Enable trainer** in the
@@ -222,12 +230,13 @@ development.
 | `-nopatch` | Disable the game-specific fixes |
 | `-nolzexe` | Don't unpack LZEXE programs at load |
 | `-speed X` | Run at X times normal speed |
-| `-ips N` | Emulated instructions per second (default 6,000,000) |
+| `-ips N` | Emulated instructions per second (default 6,000,000; 12,000,000 when Resolution is High unless `-ips` or a replay overrides) |
 | `-vol N` | Volume 0-100 for this run only |
 | `-record FILE` / `-replay FILE` | Record / replay a session |
 | `-load FILE` / `-snapsave FILE` | Boot from / write a snapshot |
 | `-untilemu SEC` | Stop at an emulated-time point (validation) |
 | `-table N` | Start at table N (1-4) instead of the intro |
+| `-res normal|high` | Resolution for this run only, without saving (like `-vol`) |
 | `-freezetime` | Pin the guest DOS clock, so two runs are comparable (validation) |
 | `-secs N` | Run headless for N wall-clock seconds |
 | `-shot FILE` / `-shotevery N` | Save PPM screenshot(s) |

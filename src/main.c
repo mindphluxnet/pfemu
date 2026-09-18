@@ -1,6 +1,7 @@
 /* Win32 host: window, framebuffer presentation, keyboard, main emulation loop */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <timeapi.h>
 #include <stdarg.h>
 #include "pfemu.h"
 #include "../res/resource.h"
@@ -468,6 +469,13 @@ static void suppress_accessibility_shortcuts(void){
 void plat_init(const char *title){
     WNDCLASSEXA wc;
     RECT r;
+    /* 1 ms scheduling granularity for the emulation loop.  Stock Windows
+     * timer resolution makes Sleep(1) wait up to 15.6 ms, which caps the
+     * outer loop (and with it presents: one per iteration at most) far
+     * below what a 70 Hz hi-res frame needs, reading as scroll judder on
+     * top of any emulation lag.  Restored at exit next to plat_audio_close.
+     * Standard practice for real-time loops; power cost lasts one session. */
+    timeBeginPeriod(1);
     suppress_accessibility_shortcuts();
     memset(&wc,0,sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -753,6 +761,14 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-wav") && i+1<argc){ extern const char *wav_path; wav_path = argv[++i]; }
         else if(!strcmp(argv[i],"-snddbg")){ extern int sound_debug; sound_debug = 1; }
         else if(!strcmp(argv[i],"-vol") && i+1<argc) vol_override = atoi(argv[++i]);
+        /* -res normal|high: one-run resolution override without saving
+         * (like -vol for volume). The guest really boots in that mode;
+         * refused with -replay, which must run the recorded one. */
+        else if(!strcmp(argv[i],"-res") && i+1<argc){
+            const char *r = argv[++i];
+            if(!strcmp(r,"normal")) fantasies_res_override = 0;
+            else if(!strcmp(r,"high")) fantasies_res_override = 1;
+            else { fail_msg("-res takes normal|high"); return 1; } }
         else if(!strcmp(argv[i],"-dmairq")){ extern int sb_dmairq; sb_dmairq = 1; }
         else if(!strcmp(argv[i],"-nopatch")){ extern int dos_no_patch; dos_no_patch = 1; }
         else if(!strcmp(argv[i],"-nolzexe")){ dos_no_lzexe = 1; }
@@ -821,6 +837,10 @@ int main(int argc, char **argv){
     }
     if(prog_opt && replay_path){
         fail_msg("cannot combine -p with -replay: replay boots the recorded program");
+        return 1;
+    }
+    if(replay_path && fantasies_res_override != -1){
+        fail_msg("cannot combine -res with -replay: replay boots the recorded resolution");
         return 1;
     }
     /* Snapshots hold the whole machine, so there is nothing to record or
@@ -1042,6 +1062,33 @@ relaunch:
      * can be poked into a different intro's code. */
     fantasies_begin_session(dir, prog, release_runnable(&rel) ? rel.rel : NULL);
 
+    /* High resolution is a different machine load: 360x350 at ~71 Hz
+     * against 320x240 at 60 Hz (see FANTASIE.ASM: SH_HI/SH_LO,
+     * sync_per_sec 71 vs 60, and the TECHSCROLL mode line).  That is
+     * ~1.64x the pixels per frame at ~1.18x the frames, so ~2x the
+     * fill plus unscaled physics (init_ballspeed skips its 5/6 downscale
+     * in hi-res).  At the default 6 MIPS the guest cannot meet its own
+     * frame deadlines, so emu_time runs behind wall time: the game
+     * (scrolling) and the MOD player (tempo) both run slow, and the
+     * waveOut queue starves between emu-paced pushes, which reads as
+     * crackle.  Lowering the sound notch does not help because the
+     * mixer is not the bottleneck - the pixels are.  Model a faster CPU
+     * automatically (record stores the bumped value, replay keeps its
+     * own, -ips always wins). */
+    if(!ips_given && !replay_is_replaying()){
+        int eff_hi;
+        if(fantasies_res_override == 1) eff_hi = 1;
+        else if(fantasies_res_override == 0) eff_hi = 0;
+        else { PfCfg cc; cfg_read(dir, &cc); eff_hi = (cc.options[4] == 1); }
+        if(eff_hi && emu_ips < 12000000.0){
+            emu_ips = 12000000.0;
+            emu_inv_ips = 1.0 / emu_ips;
+            fprintf(stderr, "[pfemu] High resolution: using 12000000 ips"
+                            " (default 6000000 is not enough for 360x350);"
+                            " -ips overrides\n");
+        }
+    }
+
     /* Replay preconditions (docs/REPLAY.md sections 3.2/3.3): the trainer is
      * incompatible with both modes, recording needs a recognised install to
      * have any identity to store, and replay boots the recorded program in
@@ -1076,6 +1123,11 @@ relaunch:
         int quality = read_sound_quality(dir);
         uint8_t opts[6];
         replay_read_options(dir, opts);
+        /* A -res override changes what the guest executes, so the header
+         * must store it - otherwise replay (which runs the header's blob)
+         * would diverge from what was recorded. */
+        if(fantasies_res_override == 0 || fantasies_res_override == 1)
+            opts[4] = (uint8_t)fantasies_res_override;
         if(replay_begin_record(record_path, &rel, prog, emu_ips,
                                dos_no_patch, dos_no_lzexe, sound, quality, opts,
                                start_fullscreen, start_table) != 0){
@@ -1175,6 +1227,15 @@ relaunch:
      * marker. */
     wall_t0 = plat_time();
     if(snap_load_path) t0 -= emu_now() / speed;
+    /* Fell-behind re-anchors (below): how many times the guest failed to
+     * keep up with wall time.  Reported at exit ([pfemu] pace) - the
+     * number that says whether a slowdown is emulation lagging the wall
+     * (this climbs) or game logic running slow on a healthy clock. */
+    unsigned long fell_n = 0;
+    /* Wall-time split for the same report: emulation (catch-up batches)
+     * vs presentation (render + StretchDIBits + blit).  Says whether a
+     * host ceiling is interpreter throughput or the present path. */
+    double t_emu_w = 0.0, t_pres_w = 0.0;
     { unsigned long long pres_last_frame = 0; int pending_present = 0;
     while(plat_pump() && !cpu.shutdown){
         double wall = plat_time() - t0;
@@ -1185,6 +1246,7 @@ relaunch:
          * guest must see only the recorded list (REPLAY.md 2.4/3.3). */
         if(!replay_is_replaying()) kbd_reconcile_physical();
         int guard = 0;
+        { double t0e = plat_time();
         while(emu_time < real && !cpu.shutdown && guard < 10000){
             int n;
             /* Emu-time injection (REPLAY.md 2.1): due events fire on the
@@ -1349,7 +1411,8 @@ relaunch:
             if(replay_is_replaying() && replay_should_stop()) break;
             guard++;
         }
-        if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; }  /* fell behind */
+        t_emu_w += plat_time() - t0e; }
+        if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; fell_n++; }  /* fell behind */
         /* Replay end condition (REPLAY.md 3.3): the footer's emu_time, with
          * the event list exhausted.  ScrollLock / window close still end it
          * early through plat_pump(), exactly as in normal play.  Paused
@@ -1434,10 +1497,26 @@ relaunch:
           }
           pending_present = 0;
           if(go){
+            double t0p = plat_time();
             pres_last_frame = idx;
             last_present = plat_time();
             fantasies_ballgap_present(fell_behind);
             vga_render(fb, &fbw, &fbh);
+            /* Live hi-res latch: the F5 menu can switch resolution without
+             * rebooting, which the boot-time cfg check above never sees.
+             * A 256-colour table frame 340-360 rows high IS the hi-res
+             * table mode (Normal renders 240, the menu 480, text 400), so
+             * latch the same faster-CPU model on first sight.  Play mode
+             * only: recording must keep the ips its header already stored
+             * and replay must keep the recorded one, or the two diverge. */
+            if(!ips_given && !replay_is_recording() && !replay_is_replaying()
+               && emu_ips < 12000000.0 && fbh >= 340 && fbh <= 360){
+                emu_ips = 12000000.0;
+                emu_inv_ips = 1.0 / emu_ips;
+                fprintf(stderr, "[pfemu] High-resolution frame (%dx%d):"
+                                " using 12000000 ips; -ips overrides\n",
+                        fbw, fbh);
+            }
             /* Captures first, badges after: -shotevery/-shot frames and
              * F11 screenshots are validation artifacts and stay pixel-clean
              * (this also lifts the old OSD text out of them).  The window
@@ -1453,6 +1532,7 @@ relaunch:
                 take_screenshot(fb, fbw, fbh);
             }
             plat_present(fb, fbw, fbh);
+            t_pres_w += plat_time() - t0p;
           } }
         plat_sleep_ms(1);
     }
@@ -1549,6 +1629,22 @@ relaunch:
       } }
     printf("[pfemu] stopped: emu_time=%.3fs instructions=%llu mode=%02Xh %dx%d\n",
            emu_time, (unsigned long long)cpu.cycles, vga_get_mode(), fbw, fbh);
+    { extern unsigned long audio_drop_n;
+      double wall_used = plat_time() - wall_t0;
+      /* Pace: did emulation keep up with the wall?  fell_behind climbing
+       * with emu_time < wall means the guest (or the host) could not hold
+       * the modelled rate - game slow-motion plus starved audio.  audio
+       * drops climbing instead means pushes outran consumption. */
+      printf("[pfemu] pace: wall=%.3fs emu=%.3fs ips=%.0f fell_behind=%lu"
+             " audio_drops=%lu host_mips=%.2f\n",
+             wall_used, emu_time, emu_ips, fell_n, audio_drop_n,
+             wall_used > 0.0 ? (double)(unsigned long long)cpu.cycles / wall_used / 1e6 : 0.0);
+      /* Where the wall time went: emulation vs presentation, the rest
+       * (other) is sleep + message pump + input. */
+      printf("[pfemu] wsplit: emu=%.2fs present=%.2fs other=%.2fs of wall=%.2fs\n",
+             t_emu_w, t_pres_w,
+             wall_used - t_emu_w - t_pres_w > 0.0 ? wall_used - t_emu_w - t_pres_w : 0.0,
+             wall_used); }
     /* hex window around the final CS:IP - enough to disassemble whatever loop
      * the guest was spinning in when we stopped */
     { uint32_t lin = cpu.sbase[S_CS] + cpu.eip; uint32_t s = lin > 0x60 ? lin-0x60 : 0; int i;
@@ -1560,7 +1656,7 @@ relaunch:
           if((i&15)==15) printf("\n");
       } }
     { extern void wav_close(void); extern void plat_audio_close(void);
-      wav_close(); plat_audio_close(); }
+      wav_close(); plat_audio_close(); timeEndPeriod(1); }
     dos_close_all_handles();
     replay_cleanup_overlay();
     if(trace_fp) fclose(trace_fp);

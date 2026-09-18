@@ -356,6 +356,13 @@ void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len){
 static uint8_t options_cache[6] = {0,0,1,0,0,0};
 static int options_loaded = 0;
 
+/* -res normal|high (src/main.c): one-run resolution override without saving,
+ * like -vol for volume. Applied to the six-byte blob the guest actually
+ * reads (both the intro poke and the direct-to-table INT 65h blob below),
+ * so the game really boots in that mode. Ignored on replay, where the
+ * recorded blob wins (docs/REPLAY.md section 3.1). */
+int fantasies_res_override = -1;
+
 static void load_options_cache(void){
     PfCfg c;
     options_loaded = 1;
@@ -370,6 +377,11 @@ static void load_options_cache(void){
     }
     cfg_read(session_dir, &c);
     memcpy(options_cache, c.options, 6);
+    if(fantasies_res_override == 0 || fantasies_res_override == 1){
+        options_cache[4] = (uint8_t)fantasies_res_override;
+        fprintf(stderr, "[fantasies] resolution override: %s for this run (not saved)\n",
+                fantasies_res_override ? "High" : "Normal");
+    }
 }
 
 int fantasies_intercept_cfg_open(const char *fname){

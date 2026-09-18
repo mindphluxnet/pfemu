@@ -63,6 +63,12 @@ chains it.
 ## Time, CRT, and interrupts
 
 - `emu_time` advances at a fixed instruction rate (6 MIPS default, `-ips`).
+  High resolution (360x350 at ~71 Hz vs 320x240 at 60 Hz) needs ~2x the
+  guest CPU, so the default becomes 12 MIPS there unless `-ips` or a
+  replay overrides it; otherwise the game runs slow and audio crackles
+  even at the lowest sound notch. The exit `[pfemu] pace:` line reports
+  wall vs emulated time, the ips in force, fell-behind re-anchors and
+  audio drops, so a slowdown can be told apart from game-logic pacing.
   The main loop runs the guest until emulated time catches up with wall
   time (times `-speed`), never running past the next timer deadline so IRQ 0 lands on
   the due instruction.
