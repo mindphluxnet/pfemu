@@ -708,3 +708,76 @@ void dev_init(void){
     memset(kbd_held, 0, sizeof(kbd_held));
     port61 = 0;
 }
+
+/* Mid-table savestate (src/snapshot.c): the clock trio must travel together
+ * (emu_now folds cycles-last_cycles into emu_time), then PIC/PIT/port/kbd.
+ * Diagnostic accumulators (pit0_lat_*, st1_*, port60 reads) are exit-report
+ * only and deliberately omitted. */
+void dev_save_state(SnapW *w){
+    int i;
+    snap_w_dbl(w, emu_time);
+    snap_w_dbl(w, emu_ips);
+    snap_w_u64(w, last_cycles);
+    snap_w_bytes(w, pic, sizeof(pic));
+    for(i=0;i<3;i++){
+        snap_w_u16(w, pit[i].reload);
+        snap_w_u8(w, pit[i].mode);
+        snap_w_u8(w, pit[i].rw);
+        snap_w_u8(w, pit[i].latched_cnt_valid);
+        snap_w_u16(w, pit[i].latch);
+        snap_w_u32(w, (uint32_t)pit[i].rd_hi);
+        snap_w_u32(w, (uint32_t)pit[i].wr_hi);
+        snap_w_u16(w, pit[i].wr_tmp);
+        snap_w_dbl(w, pit[i].next_irq);
+        snap_w_dbl(w, pit[i].inv_per);
+        snap_w_u32(w, (uint32_t)pit[i].armed);
+    }
+    snap_w_u8(w, port61);
+    snap_w_u32(w, (uint32_t)pit_m0_exact);
+    snap_w_dbl(w, pit0_due);
+    snap_w_dbl(w, pit0_raise_t);
+    snap_w_bytes(w, kbd_buf, sizeof(kbd_buf));
+    snap_w_u32(w, (uint32_t)kbd_head);
+    snap_w_u32(w, (uint32_t)kbd_tail);
+    snap_w_u8(w, kbd_last);
+    snap_w_u32(w, (uint32_t)kbd_a20);
+    snap_w_u8(w, kbc_cmd);
+    snap_w_bytes(w, kbd_held, sizeof(kbd_held));
+    snap_w_u8(w, cmos_idx);
+    snap_w_u8(w, adlib_idx);
+}
+int dev_load_state(SnapR *r){
+    int i;
+    emu_time = snap_r_dbl(r);
+    emu_ips = snap_r_dbl(r);
+    emu_inv_ips = emu_ips > 0.0 ? 1.0 / emu_ips : 1.0 / 6000000.0;
+    last_cycles = snap_r_u64(r);
+    snap_r_bytes(r, pic, sizeof(pic));
+    for(i=0;i<3;i++){
+        pit[i].reload = snap_r_u16(r);
+        pit[i].mode = snap_r_u8(r);
+        pit[i].rw = snap_r_u8(r);
+        pit[i].latched_cnt_valid = snap_r_u8(r);
+        pit[i].latch = snap_r_u16(r);
+        pit[i].rd_hi = (int)snap_r_u32(r);
+        pit[i].wr_hi = (int)snap_r_u32(r);
+        pit[i].wr_tmp = snap_r_u16(r);
+        pit[i].next_irq = snap_r_dbl(r);
+        pit[i].inv_per = snap_r_dbl(r);
+        pit[i].armed = (int)snap_r_u32(r);
+    }
+    port61 = snap_r_u8(r);
+    pit_m0_exact = (int)snap_r_u32(r);
+    pit0_due = snap_r_dbl(r);
+    pit0_raise_t = snap_r_dbl(r);
+    snap_r_bytes(r, kbd_buf, sizeof(kbd_buf));
+    kbd_head = (int)snap_r_u32(r);
+    kbd_tail = (int)snap_r_u32(r);
+    kbd_last = snap_r_u8(r);
+    kbd_a20 = (int)snap_r_u32(r);
+    kbc_cmd = snap_r_u8(r);
+    snap_r_bytes(r, kbd_held, sizeof(kbd_held));
+    cmos_idx = snap_r_u8(r);
+    adlib_idx = snap_r_u8(r);
+    return r->err ? -1 : 0;
+}

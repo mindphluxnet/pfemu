@@ -265,7 +265,7 @@ static void mcb_dump(const char *why){
 }
 
 /* -------------------------------------------------------------- handles */
-typedef struct { FILE *f; int used; char name[260]; } DFile;
+typedef struct { FILE *f; int used; int wr; char name[260]; } DFile;
 static DFile fh[64];
 /* Exit-time close of every guest handle.  Only used so the replay overlay
  * cleanup can delete the temp copy: on Windows an open FILE* pins its path,
@@ -542,6 +542,12 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
          * fantasies_filter_read() (called from the AH=3Fh handler below),
          * which makes INTRO.PRG believe the check already passed before it
          * ever draws the screen - see docs/EMULATOR.md (copy protection). */
+        /* The boot patch needs the CS base, not the load base: its INT 65h
+         * locators are CS-relative and the two only coincide when the EXE
+         * header has e_cs = 0 (Deluxe does; the floppy build and PF.EXE
+         * have e_cs = 0x28, which put every write 0x280 bytes low). */
+        fantasies_patch_boot(dospath, (uint32_t)load*16, imglen,
+                             (uint32_t)(uint16_t)(load + cs) * 16);
         fantasies_patch_intro(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_pause(dospath, (uint32_t)load*16, imglen);
         fantasies_patch_spring(dospath, (uint32_t)load*16, imglen);
@@ -911,7 +917,7 @@ void dos_int21(void){
             if(virt){
                 h = alloc_handle();
                 if(h<0){ fclose(virt); AX = 4; bios_set_cf(1); break; }
-                fh[h].f = virt; fh[h].used = 1;
+                fh[h].f = virt; fh[h].used = 1; fh[h].wr = 0;
                 snprintf(fh[h].name,sizeof(fh[h].name),"%s",name);
                 AX = (uint16_t)h; bios_set_cf(0);
                 trc("[dos] open '%s' intercepted (virtual, handle %d)\n", name, h);
@@ -942,7 +948,8 @@ void dos_int21(void){
             trc("[dos] open FAILED '%s' (%s)\n", name, host);
             AX = 2; bios_set_cf(1); break;
         }
-        fh[h].used = 1; snprintf(fh[h].name,sizeof(fh[h].name),"%s",name);
+        fh[h].used = 1; fh[h].wr = (AH==0x3C) || ((AL & 3) != 0);
+        snprintf(fh[h].name,sizeof(fh[h].name),"%s",name);
         AX = (uint16_t)h; bios_set_cf(0);
         trc("[dos] open '%s' -> handle %d\n", name, h);
         break; }
@@ -1012,6 +1019,17 @@ void dos_int21(void){
         int r;
         read_dosstr(cpu.sbase[S_DS] + DX, name, sizeof(name));
         if(AL != 0){ AX = 1; bios_set_cf(1); break; }
+        /* Direct-to-table (src/fantasies.c): the boot program's first EXEC
+         * of the intro is skipped outright rather than redirected to a
+         * table.  Its loop is "EXEC intro; if(next) EXEC table[next]; again"
+         * - redirecting the intro slot ran the table there and then ran it a
+         * second time in the table slot, which is what made quitting look
+         * like a restart.  Skipping the intro instead leaves the table to
+         * the slot that owns it, so quitting falls through to the next
+         * iteration and the real intro: back to the menu, as usual.
+         * Reported as a child that ran and exited 0, so the parent just
+         * carries on (normal IRET, no process switch). */
+        if(fantasies_exec_skip(name)){ last_retcode = 0; bios_set_cf(0); break; }
         r = dos_exec(name, cpu.sreg[S_ES], BX, 0, 0);
         if(r){ AX = (uint16_t)r; bios_set_cf(1); trc("[dos] exec '%s' failed (%d)\n", name, r); break; }
         cpu_no_iret();
@@ -1086,4 +1104,131 @@ void dos_init(const char *hostdir){
     cb_table[0x28] = dos_int28;
     cb_table[0x2F] = dos_int2f;
     find_state_reset();
+}
+
+/* Mid-table savestate (src/snapshot.c).  Everything the guest can observe
+ * through DOS: alloc strategy, the IVT snapshot for child unhooking, the
+ * current PSP/DTA/drive/return code, the 0Ah resume flag, the overlay dir
+ * and the time-freeze gate, and the EXEC parent stack.  gamedir is set by
+ * dos_init() and identical on load, so it is not stored.  Open handles
+ * travel separately (below): FILE* values are meaningless across runs, so
+ * each is re-resolved by name and seeked back - never re-truncated. */
+void dos_save_state(SnapW *w){
+    snap_w_u16(w, dos_alloc_strategy);
+    snap_w_u32(w, (uint32_t)ivt_snap_valid);
+    snap_w_bytes(w, ivt_snap, sizeof(ivt_snap));
+    snap_w_u16(w, cur_psp);
+    snap_w_u16(w, dta_seg); snap_w_u16(w, dta_off);
+    snap_w_u8(w, cur_drive);
+    snap_w_u16(w, last_retcode);
+    snap_w_u32(w, (uint32_t)oa_active);
+    snap_w_u32(w, (uint32_t)strlen(writedir));
+    snap_w_bytes(w, writedir, strlen(writedir));
+    snap_w_u32(w, (uint32_t)time_frozen);
+    snap_w_u32(w, (uint32_t)nproc);
+    snap_w_bytes(w, procs, sizeof(procs));
+    snap_w_u32(w, find_h != INVALID_HANDLE_VALUE ? 1 : 0);
+}
+int dos_load_state(SnapR *r){
+    uint32_t wl, tf, np, find_active;
+    cur_psp = 0; nproc = 0;
+    dos_alloc_strategy = snap_r_u16(r);
+    ivt_snap_valid = (int)snap_r_u32(r);
+    snap_r_bytes(r, ivt_snap, sizeof(ivt_snap));
+    cur_psp = snap_r_u16(r);
+    dta_seg = snap_r_u16(r); dta_off = snap_r_u16(r);
+    cur_drive = snap_r_u8(r);
+    last_retcode = snap_r_u16(r);
+    oa_active = (int)snap_r_u32(r);
+    wl = snap_r_u32(r);
+    if(r->err || wl >= sizeof(writedir)) return -1;
+    snap_r_bytes(r, writedir, wl);
+    if(r->err) return -1;
+    writedir[wl] = 0;
+    tf = snap_r_u32(r);
+    np = snap_r_u32(r);
+    if(r->err || np > 8) return -1;
+    snap_r_bytes(r, procs, sizeof(procs));
+    if(r->err) return -1;
+    nproc = (int)np;
+    find_active = snap_r_u32(r);
+    /* An in-flight FindFirst iteration is not preserved (boot-time op in
+     * practice): the search is reset and the guest re-issues it. */
+    find_state_reset();
+    if(find_active && !r->err)
+        fprintf(stderr, "[snapshot] note: in-flight file search reset\n");
+    dos_set_time_frozen((int)tf);
+    return r->err ? -1 : 0;
+}
+
+/* Re-resolve one saved handle exactly the way AH=3Ch/3Dh did - virtual
+ * cdmarker first, then overlay-or-install - but never with "w+b": the
+ * file already exists where it should, re-creating would truncate it. */
+static int reopen_handle(const char *name, int wr, long pos){
+    char host[512], ov[600];
+    int h = alloc_handle();
+    FILE *virt;
+    if(h < 0) return -1;
+    virt = fantasies_open_cdmarker(name);
+    if(virt){
+        fh[h].f = virt; fh[h].used = 1; fh[h].wr = 0;
+        snprintf(fh[h].name, sizeof(fh[h].name), "%s", name);
+        fseek(virt, pos, SEEK_SET);
+        return h;
+    }
+    dos_path(name, host, sizeof(host));
+    overlay_path(name, ov, sizeof(ov));
+    if(file_exists(ov)) snprintf(host, sizeof(host), "%s", ov);
+    else if(wr){
+        _mkdir(writedir);
+        if(!file_exists(ov)) copy_to_overlay(host, ov);
+        if(file_exists(ov)) snprintf(host, sizeof(host), "%s", ov);
+    }
+    fh[h].f = fopen(host, wr ? "r+b" : "rb");
+    if(!fh[h].f && wr) fh[h].f = fopen(host, "rb");
+    if(!fh[h].f) return -1;
+    fh[h].used = 1; fh[h].wr = wr;
+    snprintf(fh[h].name, sizeof(fh[h].name), "%s", name);
+    fseek(fh[h].f, pos, SEEK_SET);
+    return h;
+}
+
+void dos_save_handles(SnapW *w){
+    int h, n = 0;
+    for(h=5;h<64;h++) if(fh[h].used) n++;
+    snap_w_u32(w, (uint32_t)n);
+    for(h=5;h<64;h++) if(fh[h].used){
+        long pos = ftell(fh[h].f);
+        snap_w_u32(w, (uint32_t)h);
+        snap_w_u32(w, (uint32_t)strlen(fh[h].name));
+        snap_w_bytes(w, fh[h].name, strlen(fh[h].name));
+        snap_w_u32(w, pos < 0 ? 0 : (uint32_t)pos);
+        snap_w_u32(w, (uint32_t)fh[h].wr);
+    }
+}
+int dos_load_handles(SnapR *r){
+    uint32_t n, k;
+    dos_close_all_handles();
+    n = snap_r_u32(r);
+    if(r->err || n > 59) return -1;
+    for(k=0;k<n;k++){
+        uint32_t idx, nl, pos, wr;
+        char name[260];
+        idx = snap_r_u32(r);
+        nl = snap_r_u32(r);
+        if(r->err || nl == 0 || nl >= sizeof(name)) return -1;
+        snap_r_bytes(r, name, nl);
+        if(r->err) return -1;
+        name[nl] = 0;
+        pos = snap_r_u32(r);
+        wr = snap_r_u32(r);
+        if(r->err) return -1;
+        /* Handles are re-resolved by name; the saved index is only a
+         * sanity check (fresh table, so slots should line up). */
+        if(idx < 5 || idx >= 64) return -1;
+        if(reopen_handle(name, wr ? 1 : 0, (long)pos) < 0){
+            fprintf(stderr, "[snapshot] warning: cannot reopen '%s'\n", name);
+        }
+    }
+    return r->err ? -1 : 0;
 }

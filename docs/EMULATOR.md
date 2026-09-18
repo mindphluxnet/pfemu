@@ -207,6 +207,148 @@ prefer the copy once it exists. Installed files are never modified, and
 deleting `PFEMU-STATE/` resets state. Launcher options live separately and
 are applied in memory at boot.
 
+## Starting at a table
+
+`-table N` / the launcher's **Start at** boots into `TABLEn.PRG` without
+the intro. What it is not is `-p TABLEn.PRG`: the tables are not
+standalone, and booting one that way leaves it with no INT 65h API and no
+program loop to return to, which is why quitting used to die.
+
+The boot program stays exactly where it is. Its loop is:
+
+```
+again:  EXEC intro                  <- skipped, once
+        if (next == 0) exit
+        EXEC name_table[next]       <- the wanted table lands here
+        goto again                  <- quitting reaches the real intro
+```
+
+so the only intervention is skipping the first intro EXEC, reported to the
+guest as a child that ran and exited 0. Everything after that is the
+game's own control flow, which is why quitting a table returns to the menu
+without anything having to arrange it. Redirecting that first EXEC to the
+table instead - the obvious first try - ran it twice, once in the intro
+slot and again in the table slot, and read as "quitting restarts the
+table".
+
+Two locators in the boot program's resident segment make it work, derived
+from the loaded image rather than baked in (Deluxe has them at `CS:01F7`
+and `CS:0020`; there is no reason for `PF.EXE` to agree):
+
+- the six-byte options blob INT 65h `0100` stashes and `0200` retrieves.
+  The tables read their options from here and **never** from
+  `PINBALL.CFG` - `-cfgscan` finds no six-byte config transfer in
+  `TABLE1.PRG` at all - so skipping the intro would otherwise silently
+  drop every launcher setting. pfemu pokes it with what the intro would
+  have stashed.
+- the one-byte next-program index the loop EXECs through its 12-byte name
+  table, set by INT 65h `FFFF`.
+
+Signatures: `MOV DI,imm16 / MOV CX,6 / REP MOVSB` for the stash,
+`MOV SI,imm16` for the fetch (both must name the same address), and
+`CMP AX,FFFFh / JNZ / MOV CS:[imm16],BL` for the index.
+
+Those operands are **CS-relative**, so the addresses are `CS_base + imm16`,
+not `load_base + imm16`. The two are equal only when the EXE header has
+`e_cs = 0`, which Deluxe happens to have and the floppy build and `PF.EXE`
+do not (`e_cs = 0x28`). Getting this wrong puts every write 0x280 bytes
+low, into the PSP, where it does no visible damage: the real index keeps
+its own value and the loop quietly runs whatever that already pointed at,
+so `-table N` always started table 1 on those two releases while Deluxe
+worked perfectly. Scanning still covers the whole loaded image - it is only
+the derived data address that is CS-based. A miss or a
+disagreement turns the feature off and starts at the menu with a message,
+rather than running the table on defaults and discarding the options
+silently. `-cfgscan` reports the options-buffer scan for every program
+that loads.
+
+The `.pfr` carries `start_table:`, and a replay's value wins over `-table`:
+the recorded event stream assumes whichever way that session began.
+
+## Savestates
+
+`F6` freezes the session into `savestates/<install>-<hash>.pfs` (one slot
+per install, overwritten each save; the hash of the full install path keeps
+two installs with a long common prefix apart); `F8` resumes it. Both are host-only keys
+like `F11`: no guest effect, nothing logged. Implemented in
+`src/snapshot.c` with per-subsystem save/load pairs (`dev/vga/dos/sound/
+fantasies.c`): CPU + A20 gate, low 1 MB RAM, the clock trio
+(`emu_time`/`emu_ips`/fold point), PIC/PIT/keyboard, VGA registers + VRAM,
+DOS state with open files re-resolved by name and seeked back (never
+re-truncated), DSP/DMA, and the resolved game locators. The release id +
+code vector travel in the file and are verified on load; `PFEMU-STATE/`
+drift only warns, as in replay.
+
+Loading is verify-then-apply. The first pass checks the magic, section
+bounds, the FNV seal, completeness and the release identity without writing
+any emulator state, so a corrupt, truncated, foreign or wrong-install file
+is refused with the running session untouched. Only then does the second
+pass apply the sections. A failure in that second pass means the file
+passed its own seal but this build no longer matches the one that wrote it;
+that is unrecoverable and the message says so rather than reporting a clean
+refusal over a half-loaded machine.
+
+Play mode only: saving or loading while recording or replaying is refused
+without exception, and so is a trainer-on session. (The removed replay
+scrubber used to hold the one bypass, for its own rewind snapshots; with it
+gone the refusal is a flat invariant again.) An in-flight `FindFirst` iteration is
+reset on load (boot-time op in practice). `-load FILE` boots a snapshot
+headless and `-snapsave FILE` writes one at exit.
+
+`-untilemu SEC` stops at an emulated-time point. Like the replay footer
+stop, it clamps the instruction batch and the idle clock jump to the target
+cycle rather than testing once per wall-clock-paced frame, so two runs stop
+on the same instruction instead of a variable distance past it. That is
+what makes a round-trip comparable at all: run to a point, `-snapsave`,
+`-load` and continue to a later point, and compare against one
+uninterrupted run to the same point.
+
+Pair it with `-freezetime`. `INT 21h` `AH=2Ah`/`2Ch` are the only
+host-clock reads the guest can see (`INT 1Ah` runs off the emulated BDA
+tick), and the game folds the result into its own state, so without the
+freeze two otherwise identical runs differ - measured as exactly one byte
+of guest RAM at linear `0x3A17C` on the deluxe release. `-freezetime`
+pins the same constants replay uses. `tools/pfsdiff.py a.pfs b.pfs`
+compares two snapshots section by section and locates a difference inside
+the opaque ones.
+
+Measured on the deluxe release. Boot through the intro attract loop, no
+input: two independent runs to `emu_time` 30.000s (180,000,001 cycles)
+produced byte-identical 1.3 MB snapshots, and a run stopped at 15.000s,
+written to disk, resumed in a fresh process and continued to 30.000s
+produced a snapshot byte-identical to the uninterrupted one - across a
+process boundary and a 13h -> 12h mode change.
+
+Mid-table, driven by `-keys` into Partyland with both flippers flapping:
+a run split at 64.000s with a ball in flight and rejoined at 80.000s
+matched the uninterrupted run in every guest-visible section - CPU, all
+1 MB of low RAM, VRAM, PIC/PIT/keyboard, DOS with reopened handles, and
+DSP/DMA. Two defects came out of that round:
+
+- The interactive `F8` path never re-anchored the wall clock, while
+  `-load` always had. The batch loop only runs while `emu_time < real`, so
+  a snapshot from a longer session than the current one left `emu_time`
+  ahead and no batch ran again - the window kept painting the restored
+  frame, so it read as an instant freeze. Loading a state from earlier in
+  the same session moved the clock the other way, where the fell-behind
+  re-anchor already covered it, which is why it only ever showed up on a
+  cold restore.
+- The in-flight ball-draw span (`bg_inside`/`bg_line0`, set by the entry
+  hook and consumed by the position hook) did not travel, so a snapshot
+  taken between the two lost one `pw_mark()` sample. Render-path only, but
+  it made snapshots differ by four bytes across an otherwise exact
+  round-trip.
+
+Both fixes confirmed interactively: cold restore resumes, and a snapshot
+restores from anywhere in the game - from a different table, from the
+loading screen, from the menu. That falls out of what the file holds. A
+`.pfs` is the whole machine, not a table-scoped save: low RAM, CPU, DOS
+state and the handle table are replaced wholesale, so whatever the guest
+was doing is simply overwritten. The release identity check is what keeps
+that safe, since the one thing that must still match is the install.
+
+Still not covered: releases other than deluxe.
+
 ## Performance
 
 Same guest semantics, less host work. Measured ~36-43% faster (e.g. 33 ->

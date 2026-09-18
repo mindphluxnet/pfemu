@@ -528,13 +528,34 @@ static int scan_sig(uint32_t base, uint32_t len, const uint8_t *sig,
     return (int)hits;
 }
 
-static void derive_cfg_buf(uint32_t base, uint32_t len){
-    /* MOV CX,6 / MOV DX,imm16 / (MOV AX,3F00 | MOV AH,40) / INT 21h */
+/* -cfgscan: run the options-buffer scan over every program that loads, not
+ * just the intro, and report what it finds.  The question it answers is
+ * whether TABLE*.PRG carries the same six-byte PINBALL.CFG transfer the
+ * intro does - if it does, a direct-to-table boot can have the launcher's
+ * options poked into the table itself; if it does not, direct-to-table runs
+ * on the game's defaults and that has to be said out loud rather than
+ * discovered. */
+int fantasies_cfgscan = 0;
+static uint32_t cfg_sites(uint32_t base, uint32_t len, uint32_t *first, uint32_t *conflict);
+void fantasies_report_cfgscan(const char *dospath, uint32_t base, uint32_t len){
+    uint32_t buf = 0, n;
+    if(!fantasies_cfgscan) return;
+    if(base + len > RAM_SIZE) return;
+    n = cfg_sites(base, len, &buf, NULL);
+    if(n) fprintf(stderr, "[cfgscan] %-12s %u site(s), buffer DS:%04X\n",
+                  dospath, (unsigned)n, (unsigned)buf);
+    else   fprintf(stderr, "[cfgscan] %-12s no six-byte config transfer\n", dospath);
+}
+
+/* The raw scan, shared by derive_cfg_buf() and the -cfgscan report: counts
+ * matching sites and hands back the first buffer address.  Returns 0 when
+ * the sites disagree, which is the ambiguous case the caller must refuse. */
+static uint32_t cfg_sites(uint32_t base, uint32_t len, uint32_t *first, uint32_t *conflict){
     static const uint8_t rd[11] = {0xB9,0x06,0x00,0xBA,0,0,0xB8,0x00,0x3F,0xCD,0x21};
     static const uint8_t rdm[11] = {1,1,1,1,0,0,1,1,1,1,1};
     static const uint8_t wr[10] = {0xB9,0x06,0x00,0xBA,0,0,0xB4,0x40,0xCD,0x21};
     static const uint8_t wrm[10] = {1,1,1,1,0,0,1,1,1,1};
-    uint32_t i, k, found = 0, buf = 0, n = 0;
+    uint32_t i, k, found, buf = 0, n = 0;
     for(i = 0; i + sizeof(wr) <= len; i++){
         int hit = 0;
         if(i + sizeof(rd) <= len){
@@ -550,10 +571,22 @@ static void derive_cfg_buf(uint32_t base, uint32_t len){
         found = (uint32_t)ram[base+i+4] | ((uint32_t)ram[base+i+5] << 8);
         if(n++ == 0) buf = found;
         else if(found != buf){
-            trc("[fantasies] intro options buffer ambiguous "
-                "(DS:%04X and DS:%04X); not poking\n", buf, found);
-            return;
+            if(first) *first = buf;
+            if(conflict) *conflict = found;
+            return 0;                     /* sites disagree: caller refuses */
         }
+    }
+    if(first) *first = buf;
+    return n;
+}
+
+static void derive_cfg_buf(uint32_t base, uint32_t len){
+    uint32_t buf = 0, conflict = 0, n;
+    n = cfg_sites(base, len, &buf, &conflict);
+    if(!n && conflict){
+        trc("[fantasies] intro options buffer ambiguous "
+            "(DS:%04X and DS:%04X); not poking\n", buf, conflict);
+        return;
     }
     if(!n){
         /* Expected in a build that has no options menu at all - the demo's
@@ -590,6 +623,7 @@ void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t img
     int hits;
     if(!session_armed || dos_no_patch) return;
     base_up(dospath, b, sizeof(b));
+    fantasies_report_cfgscan(b, load_base, imglen);
     if(prog_slot(b) != 0) return;       /* the release's intro, whatever it is called */
     if(load_base + imglen > RAM_SIZE) return;
 
@@ -1888,4 +1922,258 @@ void fantasies_matrix_report(void){
     fprintf(stderr, "\n      n:  ");
     for(k = 1; k < MAT_GAPS; k++) fprintf(stderr, "%7lu ", mat_gap_hist[k]);
     fprintf(stderr, "\n");
+}
+
+/* ------------------------------------------------------ direct-to-table --- */
+/* Starting at a table instead of the intro, without breaking the way out of
+ * one.  The naive version - EXEC TABLEn.PRG as the boot program - is what
+ * -p already does, and it is why quitting a table booted that way dies: the
+ * tables are not standalone.  The boot program installs an INT 65h API, EXECs
+ * the intro, then loops EXECing Table<n>.Prg; a table that quits hands the
+ * next program index back through that API and terminates, expecting the loop
+ * to still be there.  Boot it alone and there is no handler and no loop.
+ *
+ * So the boot program stays exactly where it is, resident, with its API and
+ * its loop intact, and only its FIRST EXEC is redirected from the intro to a
+ * table.  Everything after that is the game's own control flow: quitting the
+ * table returns to the loop, which goes back to the menu as it always does.
+ *
+ * Two locators in the boot program's resident segment make it work, both
+ * derived from the loaded image the way cfg_buf is derived from the intro's
+ * rather than baked in as constants - Deluxe puts them at CS:01F7/CS:0020,
+ * and there is no reason for PF.EXE to agree:
+ *
+ *   blob  the six bytes INT 65h AX=0100 stashes and AX=0200 hands back.  The
+ *         tables read their options from here, NOT from PINBALL.CFG - a scan
+ *         of TABLE1.PRG finds no six-byte config transfer at all, which is
+ *         why skipping the intro would otherwise silently drop every setting
+ *         the launcher offers.  Poking it is what keeps them.
+ *   next  the one-byte program index the main loop EXECs through its 12-byte
+ *         name table, set by INT 65h AX=FFFF.  Not written here (the first
+ *         EXEC is redirected instead), but deriving it confirms the handler
+ *         really is the one this code thinks it is.
+ *
+ * Signatures, from the handler's own dispatch:
+ *   MOV DI,imm16 / MOV CX,6 / REP MOVSB      the 0100 stash  -> blob
+ *   MOV SI,imm16 / MOV CX,6 / REP MOVSB      the 0200 fetch  -> blob (agree)
+ *   CMP AX,FFFFh / JNZ rel8 / MOV CS:[imm16],BL              -> next
+ * Both blob sites must name the same address; disagreement, or a miss on
+ * either, leaves the whole feature off rather than half-configured. */
+static uint32_t boot_base = 0;   /* linear load address of the boot program */
+static uint32_t boot_blob = 0;   /* CS offset of the six-byte options blob */
+static uint32_t boot_next = 0;   /* CS offset of the next-program index */
+static int boot_locs = 0;        /* both derived and in agreement */
+static int start_table = 0;      /* 1-4: redirect the first EXEC to this */
+static int start_done = 0;       /* ...which has now happened */
+
+void fantasies_set_start_table(int n){
+    start_table = (n >= 1 && n <= 4) ? n : 0;
+    start_done = 0;
+}
+int fantasies_start_table(void){ return start_table; }
+
+void fantasies_patch_boot(const char *dospath, uint32_t load_base,
+                          uint32_t imglen, uint32_t cs_base){
+    static const uint8_t st[8]  = {0xBF,0,0,0xB9,0x06,0x00,0xF3,0xA4};
+    static const uint8_t stm[8] = {1,0,0,1,1,1,1,1};
+    static const uint8_t fe[8]  = {0xBE,0,0,0xB9,0x06,0x00,0xF3,0xA4};
+    static const uint8_t nx[8]  = {0x3D,0xFF,0xFF,0x75,0,0x2E,0x88,0x1E};
+    static const uint8_t nxm[8] = {1,1,1,1,0,1,1,1};
+    char b[64];
+    uint32_t at = 0, blob_st = 0, blob_fe = 0;
+    int h;
+    boot_base = boot_blob = boot_next = 0;
+    boot_locs = 0;
+    if(!session_armed || dos_no_patch || !rel) return;
+    if(load_base + imglen > RAM_SIZE) return;
+    base_up(dospath, b, sizeof(b));
+    if(_stricmp(b, rel->boot)) return;      /* only the boot program */
+    /* Scanning is over the whole loaded image, but the operands those
+     * instructions carry are CS-relative, so the data lives at the CS
+     * base.  Using the load base instead works only by coincidence on a
+     * build whose e_cs is 0. */
+    boot_base = cs_base;
+
+    h = scan_sig(load_base, imglen, st, stm, sizeof(st), &at);
+    if(h != 1){
+        trc("[fantasies] INT 65h stash site %s; direct-to-table off\n",
+            h ? "ambiguous" : "not found");
+        return;
+    }
+    blob_st = (uint32_t)ram[load_base+at+1] | ((uint32_t)ram[load_base+at+2] << 8);
+    h = scan_sig(load_base, imglen, fe, stm, sizeof(fe), &at);
+    if(h != 1){
+        trc("[fantasies] INT 65h fetch site %s; direct-to-table off\n",
+            h ? "ambiguous" : "not found");
+        return;
+    }
+    blob_fe = (uint32_t)ram[load_base+at+1] | ((uint32_t)ram[load_base+at+2] << 8);
+    if(blob_st != blob_fe){
+        trc("[fantasies] INT 65h stash CS:%04X and fetch CS:%04X disagree; "
+            "direct-to-table off\n", blob_st, blob_fe);
+        return;
+    }
+    h = scan_sig(load_base, imglen, nx, nxm, sizeof(nx), &at);
+    if(h != 1){
+        trc("[fantasies] INT 65h next-program site %s; direct-to-table off\n",
+            h ? "ambiguous" : "not found");
+        return;
+    }
+    boot_next = (uint32_t)ram[load_base+at+8] | ((uint32_t)ram[load_base+at+9] << 8);
+    boot_blob = blob_st;
+    boot_locs = 1;
+    trc("[fantasies] '%s' INT 65h: options blob CS:%04X, next program CS:%04X"
+        " (linear %05X/%05X)\n", b, boot_blob, boot_next,
+        boot_base + boot_blob, boot_base + boot_next);
+}
+
+int fantasies_direct_ready(void){ return boot_locs; }
+
+/* Skip the boot program's first EXEC of the intro, so its loop runs the
+ * wanted table in the slot that owns it.  The loop is:
+ *
+ *     again:  EXEC intro                  <- skipped, once
+ *             if(next == 0) exit
+ *             EXEC name_table[next]       <- our table lands here
+ *             goto again                  <- quit returns to the real intro
+ *
+ * Redirecting the intro EXEC to the table instead ran it twice: once in the
+ * intro slot, then again in the table slot because next still pointed at it,
+ * which is exactly what "quitting restarted the table" was.  Skipping leaves
+ * the game's own structure untouched, so the way out of a table is the way
+ * it has always been.
+ *
+ * Called from the INT 21h AH=4Bh handler for every EXEC, so the guards are
+ * strict: armed, a table actually requested, locators derived, not already
+ * done, and the name really is this release's intro. */
+int fantasies_exec_skip(const char *dospath){
+    char b[64];
+    uint32_t a;
+    int i;
+    if(!start_table || start_done || !session_armed || dos_no_patch) return 0;
+    if(!rel || !rel->layout) return 0;
+    base_up(dospath, b, sizeof(b));
+    if(prog_slot(b) != 0) return 0;             /* not the intro */
+    if(start_table >= rel->layout->n) return 0;
+    if(!boot_locs){
+        /* Refused rather than approximated: without the blob the table would
+         * run on its built-in defaults and silently ignore every launcher
+         * option, which is worse than starting at the menu. */
+        fprintf(stderr, "[fantasies] direct-to-table unavailable for '%s'"
+                        " (INT 65h layout not derived); starting at the menu\n",
+                rel->id);
+        start_table = 0;
+        return 0;
+    }
+    /* The options the intro would have stashed on its way out.  The tables
+     * read these through INT 65h AX=0200, never from PINBALL.CFG. */
+    if(!options_loaded) load_options_cache();
+    a = boot_base + boot_blob;
+    for(i = 0; i < 6; i++) mem_w8(a + (uint32_t)i, options_cache[i]);
+    /* ...and the choice the intro would have made. */
+    mem_w8(boot_base + boot_next, (uint8_t)start_table);
+    start_done = 1;
+    fprintf(stderr, "[fantasies] direct to table %d: intro skipped,"
+                    " options and next program set\n", start_table);
+    trc("[fantasies] options at %05X, next byte %05X = %02X\n",
+        a, boot_base + boot_next, ram[boot_base + boot_next]);
+    return 1;
+}
+
+/* Mid-table savestate (src/snapshot.c): the session gating, the resolved
+ * code locators (addresses, not bytes - the RAM image travels separately),
+ * the learned present window, and the ball/camera coherence scalars.
+ * trainer_enabled is always 0 here (saving with it on is refused); mat_*
+ * and the ballgap histograms are diagnostics and re-learn. */
+void fantasies_save_state(SnapW *w){
+    snap_w_u32(w, (uint32_t)session_armed);
+    snap_w_bytes(w, rel ? rel->id : "", rel ? strlen(rel->id)+1 : 1);
+    snap_w_u32(w, (uint32_t)fix_on);
+    snap_w_u32(w, cfg_buf);
+    snap_w_bytes(w, session_dir, sizeof(session_dir));
+    snap_w_u32(w, (uint32_t)table_num);
+    snap_w_u32(w, (uint32_t)spring_cheat_on);
+    snap_w_bytes(w, options_cache, sizeof(options_cache));
+    snap_w_u32(w, (uint32_t)options_loaded);
+    snap_w_bytes(w, pause_addr_pauseflag, sizeof(pause_addr_pauseflag));
+    snap_w_bytes(w, pause_addr_last_was_vb, sizeof(pause_addr_last_was_vb));
+    snap_w_bytes(w, pause_prev_flag, sizeof(pause_prev_flag));
+    snap_w_bytes(w, balls_addr, sizeof(balls_addr));
+    snap_w_bytes(w, balls_counter_val, sizeof(balls_counter_val));
+    snap_w_bytes(w, tilt_addr, sizeof(tilt_addr));
+    snap_w_bytes(w, tilt_orig, sizeof(tilt_orig));
+    snap_w_bytes(w, spring_valid_addr, sizeof(spring_valid_addr));
+    snap_w_bytes(w, jump_vel_addr, sizeof(jump_vel_addr));
+    snap_w_u32(w, balldbg_entry);
+    snap_w_u32(w, balldbg_exit);
+    snap_w_u32(w, balldbg_pos);
+    snap_w_bytes(w, pw_occ, sizeof(pw_occ));
+    snap_w_u32(w, pw_n);
+    snap_w_u32(w, (uint32_t)pw_vt);
+    snap_w_u32(w, (uint32_t)pw_valid);
+    snap_w_dbl(w, pw_lo);
+    snap_w_dbl(w, pw_hi);
+    snap_w_u32(w, bg_last_start);
+    snap_w_u32(w, (uint32_t)bg_have_start);
+    snap_w_dbl(w, bg_last_ball_t);
+    /* In-flight ball-draw span.  The entry hook sets bg_inside/bg_line0 and
+     * the position hook consumes them; a snapshot taken between the two
+     * dropped that pairing on load, losing exactly one pw_mark() sample and
+     * leaving the restored run one present-window observation behind a run
+     * that was never interrupted.  Render-path only - the guest never sees
+     * it - but it is real state, so it travels. */
+    snap_w_u32(w, (uint32_t)bg_inside);
+    snap_w_dbl(w, bg_t0);
+    snap_w_dbl(w, bg_line0);
+    snap_w_u32(w, (uint32_t)bg_vtotal);
+}
+int fantasies_load_state(SnapR *r){
+    char id[64];
+    size_t idl = 0;
+    session_armed = (int)snap_r_u32(r);
+    /* NUL-terminated rel id. */
+    while(idl + 1 < sizeof(id)){
+        id[idl] = (char)snap_r_u8(r);
+        if(r->err) return -1;
+        if(id[idl] == 0) break;
+        idl++;
+    }
+    if(id[idl] != 0) return -1;
+    rel = id[0] ? release_by_id(id) : NULL;
+    if(session_armed && id[0] && !rel) return -1;
+    fix_on = (int)snap_r_u32(r);
+    cfg_buf = snap_r_u32(r);
+    snap_r_bytes(r, session_dir, sizeof(session_dir));
+    if(r->err) return -1;
+    session_dir[sizeof(session_dir)-1] = 0;
+    table_num = (int)snap_r_u32(r);
+    spring_cheat_on = (int)snap_r_u32(r);
+    snap_r_bytes(r, options_cache, sizeof(options_cache));
+    options_loaded = (int)snap_r_u32(r);
+    snap_r_bytes(r, pause_addr_pauseflag, sizeof(pause_addr_pauseflag));
+    snap_r_bytes(r, pause_addr_last_was_vb, sizeof(pause_addr_last_was_vb));
+    snap_r_bytes(r, pause_prev_flag, sizeof(pause_prev_flag));
+    snap_r_bytes(r, balls_addr, sizeof(balls_addr));
+    snap_r_bytes(r, balls_counter_val, sizeof(balls_counter_val));
+    snap_r_bytes(r, tilt_addr, sizeof(tilt_addr));
+    snap_r_bytes(r, tilt_orig, sizeof(tilt_orig));
+    snap_r_bytes(r, spring_valid_addr, sizeof(spring_valid_addr));
+    snap_r_bytes(r, jump_vel_addr, sizeof(jump_vel_addr));
+    balldbg_entry = snap_r_u32(r);
+    balldbg_exit = snap_r_u32(r);
+    balldbg_pos = snap_r_u32(r);
+    snap_r_bytes(r, pw_occ, sizeof(pw_occ));
+    pw_n = snap_r_u32(r);
+    pw_vt = (int)snap_r_u32(r);
+    pw_valid = (int)snap_r_u32(r);
+    pw_lo = snap_r_dbl(r);
+    pw_hi = snap_r_dbl(r);
+    bg_last_start = snap_r_u32(r);
+    bg_have_start = (int)snap_r_u32(r);
+    bg_last_ball_t = snap_r_dbl(r);
+    bg_inside = (int)snap_r_u32(r);
+    bg_t0 = snap_r_dbl(r);
+    bg_line0 = snap_r_dbl(r);
+    bg_vtotal = (int)snap_r_u32(r);
+    return r->err ? -1 : 0;
 }

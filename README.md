@@ -125,6 +125,7 @@ controls:
 | `F5` | Game options menu |
 | `Alt+Enter` | Borderless fullscreen (also `-fullscreen` or the launcher option) |
 | `F11` | Save a PNG screenshot to `screenshots/` |
+| `F6` / `F8` | Save / load the snapshot slot (`savestates/`) |
 | `-` / `+` | Volume down / up in 5% steps |
 | `Keypad *` | Mute / restore |
 | `Scroll Lock` | Quit |
@@ -176,6 +177,21 @@ red `REC` badge appears while recording (green `PLAY` while replaying). The
 badge is drawn by the host and never reaches the game, the `.pfr` file, or any
 capture. [Replay](docs/REPLAY.md) has the full details.
 
+
+### Starting at a table
+
+The launcher's **Start at** box boots straight into a table, skipping the
+intro and the menu. `-table 1`-`-table 4` does the same from the command
+line. Quitting the table returns to the menu exactly as it normally would,
+and your game options still apply.
+
+This is not the same as `-p TABLE1.PRG`. The table programs cannot run on
+their own - they depend on services `PINBALL.EXE` installs and on its
+program loop being there when they exit. **Start at** leaves all of that
+running and only skips the intro, so nothing the table relies on is
+missing. Recording a session that began at a table replays correctly; the
+`.pfr` remembers where it started.
+
 ## Command line
 
 The launcher covers normal play. Flags are for alternate installs and
@@ -196,6 +212,10 @@ development.
 | `-ips N` | Emulated instructions per second (default 6,000,000) |
 | `-vol N` | Volume 0-100 for this run only |
 | `-record FILE` / `-replay FILE` | Record / replay a session |
+| `-load FILE` / `-snapsave FILE` | Boot from / write a snapshot |
+| `-untilemu SEC` | Stop at an emulated-time point (validation) |
+| `-table N` | Start at table N (1-4) instead of the intro |
+| `-freezetime` | Pin the guest DOS clock, so two runs are comparable (validation) |
 | `-secs N` | Run headless for N wall-clock seconds |
 | `-shot FILE` / `-shotevery N` | Save PPM screenshot(s) |
 | `-keys "t:sc:state,..."` | Feed timed keyboard events to the guest |

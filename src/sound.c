@@ -411,6 +411,8 @@ void plat_audio_init(int hz){
  * can be listened to (and measured) afterwards. */
 static FILE *wav_fp;
 static unsigned long wav_samples;
+static uint64_t wav_hash = 1469598103934665603ULL;
+static int wav_ok = 0;
 const char *wav_path;
 
 static void wav_open(int hz){
@@ -418,6 +420,7 @@ static void wav_open(int hz){
     if(!wav_path || wav_fp) return;
     wav_fp = fopen(wav_path, "wb");
     if(!wav_fp) return;
+    wav_ok = 1;
     memset(h, 0, sizeof(h));
     memcpy(h, "RIFF", 4); memcpy(h+8, "WAVEfmt ", 8);
     h[16] = 16; h[20] = 1; h[22] = 1;
@@ -444,7 +447,15 @@ void wav_close(void){
 void plat_audio_push(const int16_t *s, int n){
     WAVEHDR *h;
     int take, g;
-    if(wav_fp){ fwrite(s, 2, (size_t)n, wav_fp); wav_samples += (unsigned long)n; }
+    if(wav_fp){
+        const uint8_t *b = (const uint8_t*)s;
+        int i, m = n * 2;
+        fwrite(s, 2, (size_t)n, wav_fp); wav_samples += (unsigned long)n;
+        /* Running FNV-1a over the raw sample bytes (captured upstream of
+         * the host gain, so volume/mute never move it).  Queryable at any
+         * time, so record/replay footers don't depend on close order. */
+        for(i=0;i<m;i++){ wav_hash ^= b[i]; wav_hash *= 1099511628211ULL; }
+    }
     if(!hwo) return;
     g = audio_gain_q15();                          /* read once: -/+ can move it */
     while(n > 0){
@@ -469,4 +480,38 @@ void plat_audio_close(void){
     if(hwo){ waveOutReset(hwo); waveOutClose(hwo); hwo = NULL; }
 }
 
+/* Current -wav capture hash for the replay footer (src/replay.c).  "none"
+ * when no -wav file was requested or the open failed; otherwise FNV-1a
+ * over every sample byte written so far.  Safe to call before wav_close:
+ * no more pushes happen after the main loop, so record- and replay-end
+ * both observe the final value. */
+void wav_current_hash(char out[17], unsigned long *samples_out){
+    if(samples_out) *samples_out = wav_ok ? wav_samples : 0;
+    if(!wav_path || !wav_ok){ snprintf(out, 17, "none"); return; }
+    snprintf(out, 17, "%016llx", (unsigned long long)wav_hash);
+}
+
 void sound_init(void){ dma_reset(); sb_reset_dev(); }
+
+/* Mid-table savestate (src/snapshot.c): the DMA channels and the DSP's
+ * command/playout state, plus the AdLib register file and the pending PCM
+ * push buffer (host-side, but dropping it would click).  -wav capture and
+ * waveOut queue state are output-only and not stored. */
+void sound_save_state(SnapW *w){
+    snap_w_bytes(w, dma, sizeof(dma));
+    snap_w_u32(w, (uint32_t)dma_ff);
+    snap_w_bytes(w, &sb, sizeof(sb));
+    snap_w_bytes(w, opl_regs, sizeof(opl_regs));
+    snap_w_u32(w, (uint32_t)pcm_n);
+    snap_w_bytes(w, pcm, sizeof(pcm));
+}
+int sound_load_state(SnapR *r){
+    snap_r_bytes(r, dma, sizeof(dma));
+    dma_ff = (int)snap_r_u32(r);
+    snap_r_bytes(r, &sb, sizeof(sb));
+    snap_r_bytes(r, opl_regs, sizeof(opl_regs));
+    pcm_n = (int)snap_r_u32(r);
+    snap_r_bytes(r, pcm, sizeof(pcm));
+    if(r->err || pcm_n < 0 || pcm_n > SB_CHUNK) return -1;
+    return 0;
+}

@@ -77,6 +77,7 @@
 #define ID_MODE_REPLAY  117
 #define ID_REPLAY_PATH  118
 #define ID_BROWSE       119
+#define ID_TABLE        130   /* "Start at" combo; above ID_OPT_FIRST+5 */
 #define ID_OPT_FIRST 120   /* ID_OPT_FIRST + option index = combo control id */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
@@ -289,6 +290,16 @@ int read_sound_quality(const char *dir){
 static const uint8_t cfg_pinball_defaults[6] = {0,0,1,0,0,0};
 
 typedef struct { const char *label; const char *values[3]; int n; } OptDef;
+/* "Start at" choices.  Index is the program slot the boot loop EXECs,
+ * so 0 really is "the menu" and 1-4 line up with Table1-4.Prg. */
+static const char *table_labels[5] = {
+    "Menu (normal start)",
+    "Table 1 - Party Land",
+    "Table 2 - Speed Devils",
+    "Table 3 - Billion Dollar Gameshow",
+    "Table 4 - Stones 'N Bones",
+};
+
 static const OptDef opts[6] = {
     { "Balls:",        {"3","5",NULL},                 2 },
     { "Angle:",        {"High","Low",NULL},             2 },
@@ -415,6 +426,8 @@ typedef struct {
     HWND hSound, hOpt[6], hCheatEnable, hFullscreen;
     HWND hInstall, hDetected, hDetails;
     HWND hQuality, hVolume, hVolLabel;
+    HWND hTable;            /* "Start at": menu, or straight to a table */
+    int  start_table;       /* 0 = menu, 1-4 */
     HWND hModePlay, hModeRecord, hModeReplay, hPathLabel, hPath, hBrowse;
     HFONT hFont;
     /* Session record / replay (docs/REPLAY.md section 4).  mode is the
@@ -445,6 +458,63 @@ static const RelResult *cur_inst(const LaunchState *st){
 static const char *cur_game_dir(const LaunchState *st){
     const RelResult *r = cur_inst(st);
     return r ? r->dir : "";
+}
+
+/* "Start at" per install.  Host-only, like the volume and session files:
+ * the guest never sees it, and a release whose INT 65h layout cannot be
+ * derived just falls back to the menu at boot (src/fantasies.c). */
+static int read_table_cfg(const char *dir){
+    char path[600];
+    FILE *f;
+    int v = 0;
+    if(!dir || !dir[0]) return 0;
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_table.cfg", dir);
+    f = fopen(path, "rb");
+    if(!f) return 0;
+    if(fscanf(f, "%d", &v) != 1) v = 0;
+    fclose(f);
+    return (v >= 1 && v <= 4) ? v : 0;
+}
+static void write_table_cfg(const char *dir, int v){
+    char path[600], sub[600];
+    FILE *f;
+    if(!dir || !dir[0]) return;
+    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
+    CreateDirectoryA(sub, NULL);
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_table.cfg", dir);
+    f = fopen(path, "wb");
+    if(!f) return;
+    fprintf(f, "%d\n", v);
+    fclose(f);
+}
+
+/* Last-used session file per install (record target or replay source).
+ * Restored into the dialog so a replay file doesn't have to be re-picked
+ * every time; overwritten on each successful Launch in record/replay mode.
+ * Display/hint only - replay identity still comes from the file header. */
+static void read_session_path(const char *dir, char *dst, size_t n){
+    char path[600];
+    FILE *f;
+    dst[0] = 0;
+    if(!dir || !dir[0]) return;
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_session.cfg", dir);
+    f = fopen(path, "rb");
+    if(!f) return;
+    if(!fgets(dst, (int)n, f)) dst[0] = 0;
+    fclose(f);
+    dst[strcspn(dst, "\r\n")] = 0;
+}
+static void write_session_path(const char *dir, const char *p){
+    char path[600], sub[600];
+    FILE *f;
+    if(!dir || !dir[0] || !p || !p[0]) return;
+    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
+    CreateDirectoryA(sub, NULL);
+    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_session.cfg", dir);
+    f = fopen(path, "wb");
+    if(!f) return;
+    fprintf(f, "%s\n", p);
+    fclose(f);
 }
 
 /* Forward: replay_autorestore()/apply_mode_ui() below call these, which are
@@ -589,6 +659,28 @@ static void replay_load_file(HWND h, LaunchState *st){
     show_detection(h, st);
 }
 
+/* Fill the path field on mode entry: the install's last-used session file
+ * when there is one, else the default record target (record) or empty
+ * (replay).  Never clobbers a user-typed/picked path.  Install switches
+ * keep the current path, except record mode which re-targets to the new
+ * install (saved file or fresh default) - a record target naming another
+ * install would only confuse. */
+static void restore_session_path(HWND h, LaunchState *st, int install_switch){
+    char saved[512];
+    if(st->path_custom) return;
+    if(install_switch && st->mode == LAUNCH_REPLAY) return;
+    read_session_path(cur_game_dir(st), saved, sizeof(saved));
+    if(saved[0]) snprintf(st->replay_path, sizeof(st->replay_path), "%s", saved);
+    else if(st->mode == LAUNCH_RECORD) default_record_path(st);
+    else st->replay_path[0] = 0;
+    if(st->hPath){
+        st->updating_path = 1;
+        SetWindowTextA(st->hPath, st->replay_path);
+        st->updating_path = 0;
+    }
+    if(st->mode == LAUNCH_REPLAY) replay_load_file(h, st);
+}
+
 /* Mode switching: the trainer checkbox is greyed out in record and replay
  * modes (REPLAY.md 4), and entering those modes unchecks it - the trainer
  * is incompatible with both, and main() refuses to start either mode with
@@ -599,6 +691,9 @@ static void apply_mode_ui(HWND h, LaunchState *st){
     if(st->hModePlay) CheckDlgButton(h, ID_MODE_PLAY, st->mode==LAUNCH_PLAY?BST_CHECKED:BST_UNCHECKED);
     if(st->hModeRecord) CheckDlgButton(h, ID_MODE_RECORD, st->mode==LAUNCH_RECORD?BST_CHECKED:BST_UNCHECKED);
     if(st->hModeReplay) CheckDlgButton(h, ID_MODE_REPLAY, st->mode==LAUNCH_REPLAY?BST_CHECKED:BST_UNCHECKED);
+    /* The .pfr records how its session began - menu or a table - and
+     * that has to win, so replay owns this control. */
+    if(st->hTable) EnableWindow(st->hTable, st->mode != LAUNCH_REPLAY);
     if(st->hPath) EnableWindow(st->hPath, rec);
     if(st->hBrowse) EnableWindow(st->hBrowse, rec);
     if(st->hPathLabel) EnableWindow(st->hPathLabel, rec);
@@ -611,15 +706,7 @@ static void apply_mode_ui(HWND h, LaunchState *st){
          * mode owns it, so it goes off on commit (see ID_LAUNCH). */
         read_cheats_cfg(cur_game_dir(st), &balls, &spring);
         (void)balls; (void)spring;
-        if(st->mode == LAUNCH_RECORD && !st->path_custom){
-            default_record_path(st);
-            if(st->hPath){
-                st->updating_path = 1;
-                SetWindowTextA(st->hPath, st->replay_path);
-                st->updating_path = 0;
-            }
-        }
-        if(st->mode == LAUNCH_REPLAY) replay_load_file(h, st);
+        restore_session_path(h, st, 0);
     } else {
         int balls, spring;
         if(st->hCheatEnable) EnableWindow(st->hCheatEnable, TRUE);
@@ -715,14 +802,8 @@ static void reload_for_dir(HWND h, LaunchState *st){
         st->cheat_enable = 0;
         CheckDlgButton(h,ID_CHEAT_ENABLE,BST_UNCHECKED);
         if(st->hCheatEnable) EnableWindow(st->hCheatEnable, FALSE);
-        if(st->mode == LAUNCH_RECORD && !st->path_custom){
-            default_record_path(st);
-            if(st->hPath){
-                st->updating_path = 1;
-                SetWindowTextA(st->hPath, st->replay_path);
-                st->updating_path = 0;
-            }
-        }
+        if(st->mode == LAUNCH_RECORD && !st->path_custom)
+            restore_session_path(h, st, 1);
         /* Replay shows the FILE's session, not the install's current
          * settings: sound, quality, the six options and fullscreen are
          * what the run will use (quality/options/sound are verified and
@@ -736,6 +817,8 @@ static void reload_for_dir(HWND h, LaunchState *st){
             if(st->quality < 0) st->quality = 0;
             if(st->quality > 4) st->quality = 4;
             SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
+            st->start_table = read_table_cfg(cur_game_dir(st));
+            if(st->hTable) SendMessageA(st->hTable,CB_SETCURSEL,st->start_table,0);
             for(i=0;i<6;i++){
                 int v = st->rhdr.options[i];
                 if(v < 0) v = 0;
@@ -867,7 +950,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         }
         y += gh + 8;
         /* Extras: trainer and fullscreen side by side, one shared hint line. */
-        gy = y; gh = 60;
+        gy = y; gh = 86;
         c = CreateWindowExA(0,"BUTTON","Extras",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
                             12,gy,416,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
@@ -881,9 +964,24 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             218,gy+18,180,20,h,(HMENU)ID_FULLSCREEN,cs->hInstance,0);
         SendMessageA(st->hFullscreen,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
+        /* Start at: skip the intro and the menu and boot straight into a
+         * table.  The boot program still runs and stays resident, so
+         * quitting the table lands on the menu as usual - see
+         * docs/EMULATOR.md.  Greyed out in replay mode: the .pfr records how
+         * its session began and that has to win. */
+        c = CreateWindowExA(0,"STATIC","Start at:",WS_CHILD|WS_VISIBLE,
+                            24,gy+45,70,16,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hTable = CreateWindowExA(0,"COMBOBOX","",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
+                            100,gy+42,230,200,h,(HMENU)ID_TABLE,cs->hInstance,0);
+        SendMessageA(st->hTable,WM_SETFONT,(WPARAM)st->hFont,0);
+        for(i=0;i<5;i++)
+            SendMessageA(st->hTable,CB_ADDSTRING,0,(LPARAM)table_labels[i]);
+        SendMessageA(st->hTable,CB_SETCURSEL,st->start_table,0);
         c = CreateWindowExA(0,"STATIC",
                             "Trainer: '1'-'3' toggle, arrows / 'Z' move the ball. Alt+Enter toggles fullscreen.",
-                            WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,24,gy+40,374,14,h,0,cs->hInstance,0);
+                            WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,24,gy+66,374,14,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         y += gh + 8;
         /* Session record / replay (docs/REPLAY.md section 4): the group title
@@ -942,6 +1040,10 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         int id = LOWORD(w);
         if(id==ID_SOUND){
             st->sound = IsDlgButtonChecked(h,ID_SOUND)==BST_CHECKED;
+        } else if(id==ID_TABLE && HIWORD(w)==CBN_SELCHANGE){
+            LRESULT sel = SendMessageA(st->hTable,CB_GETCURSEL,0,0);
+            if(sel != CB_ERR) st->start_table = (int)sel;
+            return 0;
         } else if(id==ID_QUALITY && HIWORD(w)==CBN_SELCHANGE){
             LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
             if(sel != CB_ERR) st->quality = (int)sel;
@@ -1032,6 +1134,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                                 MB_OK|MB_ICONEXCLAMATION);
                     return 0;
                 }
+                write_session_path(cur_game_dir(st), st->replay_path);
                 st->ok = 1; st->done = 1;
                 DestroyWindow(h);
                 return 0;
@@ -1041,6 +1144,17 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                 MessageBoxA(h, "Pick a target .pfr file first.",
                             "pfemu - cannot record", MB_OK|MB_ICONEXCLAMATION);
                 return 0;
+            }
+            if(st->mode == LAUNCH_RECORD){
+                /* The save dialog already appends .pfr, but a typed path may
+                 * lack it - normalise so records stay findable/filterable. */
+                const char *base = strrchr(st->replay_path, '\\');
+                const char *base2 = strrchr(st->replay_path, '/');
+                if(base2 && (!base || base2 > base)) base = base2;
+                if(!base) base = st->replay_path;
+                if(!strchr(base, '.') &&
+                   strlen(st->replay_path) + 4 < sizeof(st->replay_path))
+                    strcat(st->replay_path, ".pfr");
             }
             dir = r->dir;
             { LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
@@ -1060,6 +1174,9 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             else
                 write_cheats_cfg(dir, st->cheat_enable, st->cheat_enable);
             write_fullscreen_cfg(dir, st->fullscreen);
+            write_table_cfg(dir, st->start_table);
+            if(st->mode == LAUNCH_RECORD)
+                write_session_path(dir, st->replay_path);
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -1085,7 +1202,7 @@ int show_launcher(LaunchChoice *out){
      * report text to put on the stack for a dialog that runs once. */
     static LaunchState st;
     int sw, sh;
-    int winw = 458, winh = 536;
+    int winw = 458, winh = 562;   /* Extras grew a row for "Start at" */
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -1123,7 +1240,8 @@ int show_launcher(LaunchChoice *out){
       read_pinball_cfg(dir, st.cfg);
       read_cheats_cfg(dir, &balls, &spring);
       st.cheat_enable = balls || spring;
-      st.fullscreen = read_fullscreen_cfg(dir); }
+      st.fullscreen = read_fullscreen_cfg(dir);
+      st.start_table = read_table_cfg(dir); }
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                            CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,
@@ -1150,6 +1268,7 @@ int show_launcher(LaunchChoice *out){
                  r->boot[0] ? r->boot : r->rel->boot);
     }
     out->fullscreen = st.fullscreen;
+    out->start_table = st.start_table;
     out->mode = st.mode;
     snprintf(out->replay_path, sizeof(out->replay_path), "%s", st.replay_path);
     return 1;

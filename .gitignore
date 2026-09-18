@@ -9,6 +9,8 @@ trainer
 DLXCD
 screenshots
 sessions
+savestates
+*.pfs
 FANTDEMO
 GAME
 *.bin

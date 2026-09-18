@@ -293,6 +293,9 @@ void osd_clear(void);
 #define AUDIO_VOLUME_DEFAULT 70
 extern int audio_volume;
 extern int audio_volume_dirty;   /* the -/+ keys moved it; save it on exit */
+void wav_current_hash(char out[17], unsigned long *samples_out);
+                                 /* running -wav capture hash ("none" when
+                                  * no capture), for the replay footer */
 
 /* ------------------------------------------------------------ launcher --- */
 /* Win32 installation picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
@@ -301,6 +304,7 @@ typedef enum { LAUNCH_PLAY = 0, LAUNCH_RECORD, LAUNCH_REPLAY } LaunchMode;
 typedef struct {
     char dir[512], prog[16];
     int fullscreen;
+    int start_table;      /* 0 = menu, 1-4 = start at that table */
     LaunchMode mode;            /* play | record | replay (docs/REPLAY.md section 4) */
     char replay_path[512];      /* -record target / -replay source, "" when play */
 } LaunchChoice;
@@ -314,8 +318,8 @@ void write_volume_cfg(const char *dir, int vol); /* keeps the stored quality */
 /* ------------------------------------------------- session record/replay */
 /* Deterministic input recording (docs/REPLAY.md).  v1 records from the boot
  * program including table-select, replays on emulated time, and never merges
- * live keys; direct-into-table replay is refused until the section 3.4
- * validation passes.  CLI (-record/-replay) and the launcher are thin
+ * live keys.  A session started with -table records and replays like any
+ * other: the .pfr carries start_table: and replay forces it.  CLI (-record/-replay) and the launcher are thin
  * frontends over the same emu-time injector (src/replay.c). */
 int  replay_is_recording(void);
 int  replay_is_replaying(void);
@@ -341,9 +345,16 @@ typedef struct {
     uint8_t options[6];
     int  fullscreen;
     int  trainer_off;
+    int  start_table;            /* 1-4 when the session began at a table */
     char overlay[32];
     char dir_hint[512];
     int  nevents;
+    char wav_hash[17];           /* footer capture hash: 16 hex or "none" */
+    unsigned long wav_samples;
+    int  have_wav;               /* a wav_hash: line was parsed */
+    double end_emu;              /* footer stop: emu seconds... */
+    unsigned long long end_cycles; /* ...and instruction count */
+    int  have_end;               /* footer end lines were parsed */
 } ReplayHeader;
 int  replay_read_header(const char *path, ReplayHeader *out);
 const char *replay_parse_error(void);   /* last parse failure, for fail_msg */
@@ -353,7 +364,7 @@ void replay_header_detail(const ReplayHeader *h, char *dst, size_t n);
 int  replay_begin_record(const char *path, const RelResult *rel, const char *prog,
                          double ips, int nopatch, int nolzexe,
                          int sound, int quality, const uint8_t options[6],
-                         int fullscreen);
+                         int fullscreen, int start_table);
 void replay_log_key(int scancode, int down);
 void replay_end_record(void);
 /* Replay side: parse (header + sorted event list), verify against the
@@ -375,6 +386,7 @@ int  replay_recorded_options(uint8_t out[6]);
 void replay_apply_config_to_overlay(void);
 double replay_forced_ips(int *have);    /* recorded ips, when replaying */
 double replay_forced_speed(int *have);  /* recorded speed, when replaying */
+int  replay_forced_start_table(int *have); /* recorded -table, when replaying */
 void replay_inject_due(void);           /* kbd_key() everything <= emu_now() */
 uint64_t replay_next_deadline(void);    /* cpu.cycles of next event, or ~0 */
 int  replay_events_pending(void);
@@ -398,6 +410,47 @@ void dos_set_time_frozen(int on);
 void dos_remap_writedir(const char *dir);
 void dos_close_all_handles(void);
 
+/* ------------------------------------------------- mid-table savestates --- */
+/* Single-slot deterministic snapshots (src/snapshot.c, per-subsystem
+ * save/load pairs in dev/vga/dos/sound/fantasies.c).  Play mode only:
+ * saving or loading while recording/replaying is refused, like the
+ * trainer.  Files are same-build only (magic-checked, FNV-sealed). */
+typedef struct { uint8_t *buf; size_t len, cap; } SnapW;
+typedef struct { const uint8_t *p; size_t n; size_t pos; int err; } SnapR;
+void snap_w_u8(SnapW *w, uint8_t v);
+void snap_w_u16(SnapW *w, uint16_t v);
+void snap_w_u32(SnapW *w, uint32_t v);
+void snap_w_u64(SnapW *w, uint64_t v);
+void snap_w_dbl(SnapW *w, double v);
+void snap_w_bytes(SnapW *w, const void *p, size_t n);
+uint8_t snap_r_u8(SnapR *r);
+uint16_t snap_r_u16(SnapR *r);
+uint32_t snap_r_u32(SnapR *r);
+uint64_t snap_r_u64(SnapR *r);
+double snap_r_dbl(SnapR *r);
+void snap_r_bytes(SnapR *r, void *dst, size_t n);
+void dev_save_state(SnapW *w);       int dev_load_state(SnapR *r);
+void vga_save_state(SnapW *w);       int vga_load_state(SnapR *r);
+void dos_save_state(SnapW *w);       int dos_load_state(SnapR *r);
+void dos_save_handles(SnapW *w);     /* open files by name+offset */
+int  dos_load_handles(SnapR *r);
+void sound_save_state(SnapW *w);     int sound_load_state(SnapR *r);
+void fantasies_save_state(SnapW *w); int fantasies_load_state(SnapR *r);
+
+/* --------------------------------------------------- direct-to-table --- */
+/* Start at a table instead of the intro, with the boot program left
+ * resident so its INT 65h API and EXEC loop survive - quitting the table
+ * returns to the menu exactly as usual (src/fantasies.c). */
+void fantasies_set_start_table(int n);      /* 1-4, or 0 for a normal boot */
+int  fantasies_start_table(void);
+int  fantasies_direct_ready(void);          /* INT 65h layout was derived */
+void fantasies_patch_boot(const char *dospath, uint32_t load_base,
+                          uint32_t imglen, uint32_t cs_base);
+int  fantasies_exec_skip(const char *dospath);
+int  snapshot_save(const char *path, const RelResult *rel);
+int  snapshot_load(const char *path, const RelResult *rel, char *why, size_t nwhy);
+const char *snapshot_error(void);
+void snapshot_slot_path(const char *dir, char *dst, size_t n);
 /* ------------------------------------------------------------- imaging --- */
 int save_png(const char *path, const uint32_t *pix, int w, int h); /* src/png.c */
 

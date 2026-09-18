@@ -980,3 +980,84 @@ void vga_state_dump(void){
         printf("\n");
     }
 }
+void vga_save_state(SnapW *w){
+    int i;
+    snap_w_bytes(w, sq, sizeof(sq));
+    snap_w_bytes(w, gc, sizeof(gc));
+    snap_w_bytes(w, cr, sizeof(cr));
+    snap_w_bytes(w, ar, sizeof(ar));
+    snap_w_u8(w, sq_idx); snap_w_u8(w, gc_idx);
+    snap_w_u8(w, cr_idx); snap_w_u8(w, ar_idx);
+    snap_w_u32(w, (uint32_t)ar_flipflop);
+    snap_w_u8(w, misc_out);
+    snap_w_bytes(w, dac, sizeof(dac));
+    snap_w_u8(w, dac_mask);
+    snap_w_u32(w, (uint32_t)dac_widx); snap_w_u32(w, (uint32_t)dac_ridx);
+    snap_w_u32(w, (uint32_t)dac_wcomp); snap_w_u32(w, (uint32_t)dac_rcomp);
+    snap_w_bytes(w, latch, sizeof(latch));
+    snap_w_u32(w, (uint32_t)bios_mode);
+    snap_w_bytes(w, pal_sw_val, sizeof(pal_sw_val));
+    snap_w_bytes(w, pal_sw_t, sizeof(pal_sw_t));
+    snap_w_u32(w, (uint32_t)pal_sw_n);
+    snap_w_u8(w, pal_sw_base);
+    snap_w_u32(w, (uint32_t)pal_split_line);
+    snap_w_u8(w, pal_split_hi); snap_w_u8(w, pal_split_lo);
+    snap_w_dbl(w, pal_split_t);
+    snap_w_u32(w, (uint32_t)timing_dirty);
+    snap_w_dbl(w, timing_per); snap_w_dbl(w, timing_hde);
+    snap_w_dbl(w, timing_inv_per);
+    snap_w_u32(w, (uint32_t)timing_vtotal);
+    snap_w_u32(w, (uint32_t)timing_vde);
+    snap_w_u32(w, (uint32_t)timing_vrs);
+    snap_w_u32(w, (uint32_t)timing_vre);
+    snap_w_dbl(w, vga_last_start_write);
+    snap_w_dbl(w, vga_last_start_line);
+    snap_w_u32(w, (uint32_t)vga_latch_start);
+    snap_w_u32(w, (uint32_t)vga_ballsync);
+    for(i=0;i<SA_HIST;i++){ snap_w_dbl(w, sa_hist[i].t); snap_w_u32(w, sa_hist[i].v); }
+    snap_w_u32(w, sa_n);
+    snap_w_u32(w, ball_start_v);
+    snap_w_dbl(w, ball_start_t);
+    /* pal[256] is derived from dac[] at render time - not stored. */
+}
+int vga_load_state(SnapR *r){
+    int i;
+    snap_r_bytes(r, sq, sizeof(sq));
+    snap_r_bytes(r, gc, sizeof(gc));
+    snap_r_bytes(r, cr, sizeof(cr));
+    snap_r_bytes(r, ar, sizeof(ar));
+    sq_idx = snap_r_u8(r); gc_idx = snap_r_u8(r);
+    cr_idx = snap_r_u8(r); ar_idx = snap_r_u8(r);
+    ar_flipflop = (int)snap_r_u32(r);
+    misc_out = snap_r_u8(r);
+    snap_r_bytes(r, dac, sizeof(dac));
+    dac_mask = snap_r_u8(r);
+    dac_widx = (int)snap_r_u32(r); dac_ridx = (int)snap_r_u32(r);
+    dac_wcomp = (int)snap_r_u32(r); dac_rcomp = (int)snap_r_u32(r);
+    snap_r_bytes(r, latch, sizeof(latch));
+    bios_mode = (int)snap_r_u32(r);
+    snap_r_bytes(r, pal_sw_val, sizeof(pal_sw_val));
+    snap_r_bytes(r, pal_sw_t, sizeof(pal_sw_t));
+    pal_sw_n = (int)snap_r_u32(r);
+    pal_sw_base = snap_r_u8(r);
+    pal_split_line = (int)snap_r_u32(r);
+    pal_split_hi = snap_r_u8(r); pal_split_lo = snap_r_u8(r);
+    pal_split_t = snap_r_dbl(r);
+    timing_dirty = (int)snap_r_u32(r);
+    timing_per = snap_r_dbl(r); timing_hde = snap_r_dbl(r);
+    timing_inv_per = snap_r_dbl(r);
+    timing_vtotal = (int)snap_r_u32(r);
+    timing_vde = (int)snap_r_u32(r);
+    timing_vrs = (int)snap_r_u32(r);
+    timing_vre = (int)snap_r_u32(r);
+    vga_last_start_write = snap_r_dbl(r);
+    vga_last_start_line = snap_r_dbl(r);
+    vga_latch_start = (int)snap_r_u32(r);
+    vga_ballsync = (int)snap_r_u32(r);
+    for(i=0;i<SA_HIST;i++){ sa_hist[i].t = snap_r_dbl(r); sa_hist[i].v = snap_r_u32(r); }
+    sa_n = snap_r_u32(r);
+    ball_start_v = snap_r_u32(r);
+    ball_start_t = snap_r_dbl(r);
+    vga_dirty = 1;
+    return r->err ? -1 : 0;
+}

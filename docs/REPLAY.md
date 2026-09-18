@@ -9,9 +9,11 @@ game sees. Implemented in `src/replay.c` (hooks in `main.c`, `dev.c`,
 ## How it works
 
 - **Records from the boot program**, including the table-select `F1`-`F4`
-  keys. There is no direct-to-table shortcut - booting the full
-  `PINBALL.EXE/PF.EXE -> INTRO.PRG -> TABLEn.PRG` chain is the only path, so
-  there is no second fidelity question.
+  keys. A session started with **Start at** records too: the boot program
+  runs either way, so the only difference is that its first intro EXEC was
+  skipped. The `.pfr` stores that as `start_table:` and replay forces it,
+  because the event stream assumes whichever way the session began - a
+  recorded table session replayed from the menu desyncs on the first key.
 - **Injection clock is emulated time** (`emu_time` / `cpu.cycles`), not wall
   time. The old wall-clock `-keys` path is replaced during replay; no live
   keyboard is merged in.
@@ -53,7 +55,8 @@ header:  magic + version, release_id, code hash vector, summary (display only),
          overlay hash/snapshot ref, source dir (hint only)
 events:  cycles, emu_time, scancode, down/up - sorted (cycles are the clock;
          integer-exact so a fast-counter RNG reads what it read on record)
-footer:  final emu_time + cpu.cycles, optional -wav hash,
+footer:  final emu_time + cpu.cycles, -wav capture hash (FNV-1a over the
+         sample bytes, "none" without -wav) + sample count,
          FNV-1a file hash (mismatch refused loudly)
 ```
 
@@ -61,11 +64,17 @@ footer:  final emu_time + cpu.cycles, optional -wav hash,
 
 `show_launcher()` owns every replay-relevant setting per install. A mode row
 (`Play` / `Record` / `Replay`) plus file field (default
-`sessions/<install>_<date>.pfr`, `Browse...` for replay) feeds the same
+`sessions/<install>_<date>.pfr`, `Browse...` for both modes - save dialog
+with overwrite confirm for record, open dialog for replay) feeds the same
 `{dir, prog, fullscreen, mode, path}` commit path as normal launch. The
-trainer checkbox is greyed out in record/replay mode; the volume slider stays
-enabled in all modes. CLI and launcher are thin frontends to the same
-injector.
+last-used session file per install is remembered in
+`PFEMU-STATE/pfemu_session.cfg` and restored into the field (a typed or
+picked path always wins; record re-targets on install switch, replay keeps
+the loaded file). A typed record path gains the `.pfr` extension when it
+has none. The trainer checkbox is greyed out in record/replay mode; the
+volume slider stays enabled in all modes. CLI and launcher are thin
+frontends to the same injector. Details in replay mode shows the recorded
+header (events, duration, wav hash) against the current install.
 
 ## Validation ("accurate" means)
 
@@ -78,5 +87,18 @@ injector.
 ## Not goals
 
 Local files only (no network/leaderboard), no cross-release replay (refused
-by design). Mid-table savestates and a replay scrubber are open polish ideas;
-direct-to-table replay was considered and dropped.
+by design). Mid-table savestates and direct-to-table have both landed (see
+EMULATOR.md).
+
+**No replay scrubber.** Pause, step, speed and seek were built and then
+removed. Seeking is the part that cannot work: fast-forward runs at the
+emulator's unthrottled ceiling of 22-32 MIPS against a 6 MIPS guest, so
+about 4-5x real time - and the viewer speed control already offered 4x, so
+a forward seek bought nothing over simply watching. Backward seeking was
+worse: with no keyframes it re-simulated from t=0, which meant tens of
+seconds of waiting to step back ten, over a window still painting the old
+frame while the restored sound hardware played the intro music. Keyframes
+would have bounded the backward case at roughly 1.3 MB per snapshot, but
+not the forward one, so the whole feature came out rather than half of it
+staying to disappoint. Lifting the ceiling means a dynarec, which
+Performance in EMULATOR.md rules out as a rewrite.

@@ -27,10 +27,10 @@
  * Pre-cycle files (three-field lines, no count) still replay on emu_time.
  *
  * Volume is deliberately absent: it is host sink gain only (src/sound.c) and
- * stays live in every mode.  The -wav hash is left out of the footer in v1;
- * validation compares external -wav/-shotevery artifacts instead (REPLAY.md
- * section 5).  v1 records from the boot program; anything else in program:
- * stays refused (REPLAY.md section 3.4).
+ * stays live in every mode.  The footer carries a running FNV-1a over the
+ * -wav capture bytes ("none" when no capture ran), so replay-twice checks
+ * are self-contained; -shotevery frames stay external.  v1 records from
+ * the boot program; anything else in program: stays refused.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -275,7 +275,7 @@ static int rec_events = 0;
 int replay_begin_record(const char *path, const RelResult *rel, const char *prog,
                         double ips, int nopatch, int nolzexe,
                         int sound, int quality, const uint8_t options[6],
-                        int fullscreen){
+                        int fullscreen, int start_table){
     char ov[32];
     int i;
     if(fantasies_trainer_enabled()){
@@ -302,6 +302,12 @@ int replay_begin_record(const char *path, const RelResult *rel, const char *prog
     fprintf(rec_fp, "boot: %s\n", rel->boot[0] ? rel->boot : prog);
     fprintf(rec_fp, "program: %s\n", prog);
     fprintf(rec_fp, "layout: %s\n", rel->rel->layout ? rel->rel->layout->id : "full");
+    /* Direct-to-table: 0 is a normal boot through the intro.  This has to
+     * travel, because the guest event stream depends on it - a session
+     * recorded at a table would replay from the menu and desync on the
+     * first key.  program: stays the boot program either way, so the
+     * cross-release refusal is unaffected. */
+    fprintf(rec_fp, "start_table: %d\n", start_table);
     for(i=0;i<rel->ncode;i++){
         if(rel->code_have[i]){
             char hx[65];
@@ -418,8 +424,13 @@ void replay_end_record(void){
     if(!mode_record) return;
     mode_record = 0;
     if(rec_fp){
+        char wh[17];
+        unsigned long ws = 0;
+        wav_current_hash(wh, &ws);
         fprintf(rec_fp, "end_emu: %.6f\n", emu_now());
         fprintf(rec_fp, "end_cycles: %llu\n", (unsigned long long)cpu.cycles);
+        fprintf(rec_fp, "wav_hash: %s\n", wh);
+        fprintf(rec_fp, "wav_samples: %lu\n", ws);
         fclose(rec_fp);
         rec_fp = NULL;
         append_file_hash(rec_path);
@@ -438,6 +449,9 @@ static Event *ev = NULL;
 static int nev = 0, ev_cap = 0, ev_idx = 0;
 static double end_emu = -1.0;
 static unsigned long long end_cycles = 0;
+static char end_wav_hash[17] = "";
+static unsigned long end_wav_samples = 0;
+static int have_end_wav = 0;
 
 static void header_defaults(ReplayHeader *o){
     memset(o, 0, sizeof(*o));
@@ -488,6 +502,7 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
             else if(!strncmp(s, "summary:", 8)) snprintf(h->summary, sizeof(h->summary), "%s", lstrip(s+8));
             else if(!strncmp(s, "boot:", 5)) snprintf(h->boot, sizeof(h->boot), "%s", lstrip(s+5));
             else if(!strncmp(s, "program:", 8)) snprintf(h->program, sizeof(h->program), "%s", lstrip(s+8));
+            else if(!strncmp(s, "start_table:", 12)) h->start_table = atoi(lstrip(s+12));
             else if(!strncmp(s, "layout:", 7)) snprintf(h->layout, sizeof(h->layout), "%s", lstrip(s+7));
             else if(!strncmp(s, "code:", 5)){
                 char nm[16], rest[128];
@@ -529,13 +544,36 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
             else if(!strncmp(s, "dir_hint:", 9)) snprintf(h->dir_hint, sizeof(h->dir_hint), "%s", lstrip(s+9));
             /* date:/time: are informational (the epoch is fixed); nevents is
              * advisory.  Unknown lines are ignored for forward compatibility. */
-        } else if(load_events){
+        } else {
             if(!strncmp(s, "file_hash:", 10)){
                 continue;   /* checked after the loop, over disk bytes */
             }
-            if(!strncmp(s, "end_emu:", 8)){ end_emu = atof(lstrip(s+8)); have_end_emu = 1; }
-            else if(!strncmp(s, "end_cycles:", 11)){ end_cycles = strtoull(lstrip(s+11), NULL, 10); have_end_cycles = 1; }
-            else {
+            if(!strncmp(s, "end_emu:", 8)){
+                h->end_emu = atof(lstrip(s+8)); h->have_end = 1;
+                if(load_events){ end_emu = h->end_emu; have_end_emu = 1; }
+                continue;
+            }
+            else if(!strncmp(s, "end_cycles:", 11)){
+                h->end_cycles = strtoull(lstrip(s+11), NULL, 10); h->have_end = 1;
+                if(load_events){ end_cycles = h->end_cycles; have_end_cycles = 1; }
+                continue;
+            }
+            else if(!strncmp(s, "wav_hash:", 9)){
+                snprintf(h->wav_hash, sizeof(h->wav_hash), "%s", lstrip(s+9));
+                h->have_wav = 1;
+                if(load_events){
+                    snprintf(end_wav_hash, sizeof(end_wav_hash), "%s", lstrip(s+9));
+                    have_end_wav = 1;
+                }
+                continue;
+            }
+            else if(!strncmp(s, "wav_samples:", 12)){
+                h->wav_samples = strtoul(lstrip(s+12), NULL, 10);
+                if(load_events) end_wav_samples = h->wav_samples;
+                continue;
+            }
+            if(!load_events){ h->nevents++; continue; }   /* display count only */
+            {
                 /* Cycle-exact ("<cycles> <time> <sc> <down>") or legacy
                  * ("<time> <sc> <down>"): the first token decides, since a
                  * count never contains a '.'.  %n rejects trailing garbage
@@ -623,7 +661,7 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
             break;
         }
     }
-    h->nevents = load_events ? nev : -1;
+    h->nevents = load_events ? nev : h->nevents;
     return 0;
 }
 
@@ -644,6 +682,19 @@ void replay_header_detail(const ReplayHeader *h, char *dst, size_t n){
         h->sound, h->quality, h->options[0], h->options[1], h->options[2],
         h->options[3], h->options[4], h->options[5], h->fullscreen,
         h->trainer_off, h->overlay, h->dir_hint);
+    if(h->have_wav && used+1<n)
+        used += (size_t)snprintf(dst+used, n-used, "wav: %s (%lu samples)\n",
+                                 h->wav_hash, h->wav_samples);
+    if(h->nevents > 0 && used+1<n){
+        if(h->have_end)
+            used += (size_t)snprintf(dst+used, n-used,
+                "events: %d, duration: %.1fs / %llu cycles\n",
+                h->nevents, h->end_emu, h->end_cycles);
+        else
+            used += (size_t)snprintf(dst+used, n-used, "events: %d\n", h->nevents);
+    }
+    if(used+1<n)
+        used += (size_t)snprintf(dst+used, n-used, "code vector:\n");
     for(k=0;k<h->ncode && used+1<n;k++){
         if(h->have[k]){
             char hx[65];
@@ -658,6 +709,7 @@ void replay_header_detail(const ReplayHeader *h, char *dst, size_t n){
 
 int replay_begin_replay(const char *path){
     nev = 0; ev_idx = 0; end_emu = -1.0; end_cycles = 0;
+    end_wav_hash[0] = 0; end_wav_samples = 0; have_end_wav = 0;
     if(parse_file(path, &rh, 1) != 0) return -1;
     rh_valid = 1;
     mode_replay = 1;
@@ -796,6 +848,11 @@ void replay_apply_config_to_overlay(void){
     fclose(f);
 }
 
+int replay_forced_start_table(int *have){
+    if(have) *have = rh_valid;
+    return rh.start_table;
+}
+
 double replay_forced_ips(int *have){
     if(have) *have = rh_valid;
     return rh.ips;
@@ -873,7 +930,39 @@ void replay_report(void){
     fprintf(stderr, "[replay] done: %d/%d events injected\n", ev_idx, nev);
     fprintf(stderr, "[replay] recorded end %.6fs / %llu cycles, actual %.6fs / %llu cycles\n",
             end_emu, end_cycles, emu_now(), (unsigned long long)cpu.cycles);
-    /* "Accurate" is defined by external artifacts (REPLAY.md section 5):
-     * replay twice and compare -wav hash + -shotevery frames + these two
-     * numbers.  Any mismatch is a nondeterminism bug. */
+    /* Self-contained audio check: the footer's running hash over the -wav
+     * capture bytes (upstream of the host gain, so volume never moves it).
+     * A mismatch warns only - audio-sink differences must never invalidate
+     * the input replay itself. */
+    {
+        char wh[17];
+        unsigned long ws = 0;
+        wav_current_hash(wh, &ws);
+        if(have_end_wav && !strcmp(end_wav_hash, "none") && !strcmp(wh, "none")){
+            fprintf(stderr, "[replay] wav: no capture on either run\n");
+        } else if(have_end_wav && !strcmp(end_wav_hash, "none")){
+            fprintf(stderr, "[replay] wav: recorded none, actual %s (%lu samples)"
+                            " (capture ran only now)\n", wh, ws);
+        } else if(!strcmp(wh, "none")){
+            if(have_end_wav)
+                fprintf(stderr, "[replay] wav: recorded %s (%lu samples), no capture"
+                                " this run (replay without -wav)\n",
+                        end_wav_hash, end_wav_samples);
+            else
+                fprintf(stderr, "[replay] wav: no capture this run"
+                                " (legacy file, no recorded hash)\n");
+        } else if(have_end_wav && !strcmp(end_wav_hash, wh)){
+            fprintf(stderr, "[replay] wav hash MATCH: %s (%lu samples)\n", wh, ws);
+        } else if(have_end_wav){
+            fprintf(stderr, "[replay] wav hash MISMATCH: recorded %s (%lu samples),"
+                            " actual %s (%lu samples) - nondeterminism bug\n",
+                    end_wav_hash, end_wav_samples, wh, ws);
+        } else {
+            fprintf(stderr, "[replay] wav: actual %s (%lu samples)"
+                            " (legacy file, no recorded hash)\n", wh, ws);
+        }
+    }
+    /* "Accurate" is defined by artifacts (REPLAY.md section 5): matching
+     * footer wav hashes + -shotevery frames + the two numbers above.
+     * Any mismatch is a nondeterminism bug. */
 }

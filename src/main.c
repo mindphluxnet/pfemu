@@ -40,6 +40,14 @@ static int win_w = 960, win_h = 600;
 static int integer_scale = 0;
 static int fullscreen = 0;
 static int screenshot_pending = 0;
+/* Snapshot slot (src/snapshot.c): pending flags are raised in wndproc (F6
+ * save / F8 load) and serviced in the main loop at an instruction
+ * boundary, like screenshots.  snap_dir/snap_rel capture the detected
+ * install for the slot path and the identity check. */
+static int snap_save_pending = 0, snap_load_pending = 0;
+static char snap_dir[512] = "";
+static RelResult snap_rel;
+static int snap_have_rel = 0;
 /* Mute state for the keypad-* toggle, kept out here because the exit path
  * needs it: see the volume keys in wndproc() and the save in main(). */
 static int vol_premute = -1, vol_muted = 0;
@@ -98,9 +106,16 @@ static void fail_msg(const char *fmt, ...){
 static char osd_text[48] = "";
 static double osd_until = 0;
 
+/* Lifetime is WALL time, not emu_time.  The OSD is host UI, and the things
+ * that most need to report themselves are exactly the ones that move the
+ * emulated clock: a seek advances emu_time past the deadline before a single
+ * frame is presented, so the message was retired before it was ever drawn,
+ * and a pause stops emu_time so it would hang on screen forever.  Neither is
+ * visible to the guest either way - the text is composed into the back
+ * buffer and kept out of captures. */
 void osd_show(const char *text){
     snprintf(osd_text, sizeof(osd_text), "%s", text);
-    osd_until = emu_time + 1.6;
+    osd_until = plat_time() + 1.6;
 }
 
 void osd_clear(void){
@@ -186,7 +201,7 @@ void osd_draw_screen(HDC dc){
     HFONT oldf;
     int oldbk;
     COLORREF oldtx;
-    if(!osd_text[0] || emu_time >= osd_until) return;
+    if(!osd_text[0] || plat_time() >= osd_until) return;
     badge_gdi_init();
     if(!badge_font || !badge_box) return;
     len = (int)strlen(osd_text);
@@ -233,6 +248,19 @@ static void set_fullscreen(int on){
 }
 
 void plat_set_fullscreen(int on){ set_fullscreen(on); }
+
+/* -untilemu SEC as a cycle deadline.  emu_now() and cpu.cycles are both
+ * deterministic functions of the run, so this target is too - which is
+ * what lets two runs stop on the same instruction.  Never returns
+ * cpu.cycles itself while the target is still ahead: a zero-length
+ * batch would stall the loop without ever reaching the stop. */
+static uint64_t until_cycles(double t){
+    double dt = t - emu_now();
+    uint64_t n;
+    if(dt <= 0.0) return cpu.cycles;
+    n = (uint64_t)(dt * emu_ips);
+    return cpu.cycles + (n ? n : 1);
+}
 
 extern void kbd_release_all(void);
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
@@ -308,6 +336,15 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
               else snprintf(msg, sizeof(msg), "VOLUME: %d%%", audio_volume);
               osd_show(msg); }
             fprintf(stderr, "[snd] volume %d%%\n", audio_volume);
+            return 0;
+        }
+        /* F6 saves / F8 loads the single-slot snapshot (Play mode only;
+         * serviced in the main loop, like F11 below).  F7 is reserved for
+         * the replay stepper.  Intercepted pre-guest: zero guest effect,
+         * nothing logged, whether or not the game reads these keys. */
+        if(m == WM_KEYDOWN && (w == VK_F6 || w == VK_F8) && !(l & (1<<30))){
+            if(w == VK_F6) snap_save_pending = 1;
+            else snap_load_pending = 1;
             return 0;
         }
         /* No live-keyboard merge on replay in v1 (docs/REPLAY.md section
@@ -555,24 +592,72 @@ static void take_screenshot(const uint32_t *pix, int w, int h){
 }
 
 /* "t:scancode:updown,..." - drive the keyboard from a script for testing */
-static void run_keyscript(const char *s, double now){
-    static int done[256];
+/* -keys "t:sc:state,...": scripted input, injected on the emulated clock.
+ *
+ * This used to fire from the outer loop against wall-derived time, once per
+ * frame-paced iteration, so a key landed on whatever instruction the host
+ * happened to have reached: two runs of the same script diverged and nothing
+ * downstream could be compared.  It now works exactly like replay injection
+ * (REPLAY.md 2.1) - the script is parsed once into a sorted list, due events
+ * fire on emu_now() before each batch, and the batch is clamped to the next
+ * event so the key lands on the instruction it is due on.  Same script, same
+ * cycle, every run.
+ *
+ * -keys is nulled during replay (above), so the two injectors never both
+ * drive the guest.
+ */
+typedef struct { double t; int sc, dn; } KeyEv;
+#define KEYEV_MAX 256
+static KeyEv keyev[KEYEV_MAX];
+static int keyev_n = 0, keyev_i = 0;
+
+static void keys_parse(const char *s){
     const char *p = s;
-    int idx = 0;
-    while(*p){
+    int i, j;
+    keyev_n = keyev_i = 0;
+    while(*p && keyev_n < KEYEV_MAX){
+        const char *c1 = strchr(p, ':');
         double t = atof(p);
-        const char *c1 = strchr(p,':');
         if(!c1) break;
         {
-            int sc = (int)strtol(c1+1,NULL,16);
-            const char *c2 = strchr(c1+1,':');
-            int dn = c2 ? atoi(c2+1) : 1;
-            if(now >= t && !done[idx&255]){ done[idx&255]=1; kbd_key(sc,dn); }
+            const char *c2 = strchr(c1+1, ':');
+            keyev[keyev_n].t  = t;
+            keyev[keyev_n].sc = (int)strtol(c1+1, NULL, 16);
+            keyev[keyev_n].dn = c2 ? atoi(c2+1) : 1;
+            keyev_n++;
         }
-        p = strchr(p,',');
+        p = strchr(p, ',');
         if(!p) break;
-        p++; idx++;
+        p++;
     }
+    /* Insertion sort, not qsort: the order of events sharing a timestamp
+     * has to survive, or a make/break pair written as "t:sc:1,t:sc:0"
+     * could come back inverted.  qsort gives no such guarantee; this does,
+     * and 256 entries make the cost irrelevant. */
+    for(i = 1; i < keyev_n; i++){
+        KeyEv k = keyev[i];
+        for(j = i - 1; j >= 0 && keyev[j].t > k.t; j--)
+            keyev[j+1] = keyev[j];
+        keyev[j+1] = k;
+    }
+    /* -load resumes mid-stream, so events already behind the restored
+     * clock must not all fire at once on the first batch.  At a normal
+     * boot emu_now() is 0 and nothing is skipped. */
+    while(keyev_i < keyev_n && keyev[keyev_i].t < emu_now()) keyev_i++;
+    fprintf(stderr, "[keys] %d scripted event%s", keyev_n, keyev_n == 1 ? "" : "s");
+    if(keyev_i) fprintf(stderr, ", %d already past (skipped)", keyev_i);
+    fprintf(stderr, "\n");
+}
+static void keys_inject_due(void){
+    double now = emu_now();
+    while(keyev_i < keyev_n && keyev[keyev_i].t <= now){
+        kbd_key(keyev[keyev_i].sc, keyev[keyev_i].dn);
+        keyev_i++;
+    }
+}
+static uint64_t keys_next_deadline(void){
+    if(keyev_i >= keyev_n) return ~(uint64_t)0;
+    return until_cycles(keyev[keyev_i].t);
 }
 
 static unsigned long irq_count[32];
@@ -592,6 +677,16 @@ int main(int argc, char **argv){
     int start_fullscreen = 0; /* -fullscreen, or the launcher's checkbox */
     const char *record_path = NULL; /* -record FILE / launcher record mode */
     const char *replay_path = NULL; /* -replay FILE / launcher replay mode */
+    const char *snap_load_path = NULL; /* -load FILE: boot from a snapshot */
+    const char *snap_save_path = NULL; /* -snapsave FILE: snapshot at exit */
+    int exit_code = 0;        /* nonzero when an exit-time step failed */
+    /* -freezetime: pin the guest-visible DOS clock to the same constants
+     * replay uses.  INT 21h AH=2Ah/2Ch are the only host-clock reads the
+     * guest can see (INT 1Ah runs off the emulated BDA tick), so this is
+     * what makes two play-mode runs byte-comparable - without it the game
+     * mixes the wall clock into its own state and every run differs. */
+    int freeze_time = 0;
+    int start_table = 0;      /* -table N / launcher: boot straight to a table */
     int ips_given = 0, speed_given = 0;
     /* Windows-subsystem binary: no console of its own, so double-clicking
      * shows only the UI.  When started from a console, reattach to it so
@@ -605,8 +700,8 @@ int main(int argc, char **argv){
               freopen("CONOUT$", "w", stderr);
           }
       } }
-    double t0, last_present = 0;
-    double max_secs = 0;
+    double t0, last_present = 0, wall_t0 = 0;
+    double max_secs = 0, until_emu = -1.0;
     const char *shotfile = NULL;
     const char *keyscript = NULL;
     double shot_every = 0, next_shot = 0;
@@ -628,8 +723,23 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-t")){ trace_level = 1; trace_fp = fopen("pfemu.log","w"); }
         else if(!strcmp(argv[i],"-record") && i+1<argc) record_path = argv[++i];
         else if(!strcmp(argv[i],"-replay") && i+1<argc) replay_path = argv[++i];
+        else if(!strcmp(argv[i],"-load") && i+1<argc) snap_load_path = argv[++i];
+        else if(!strcmp(argv[i],"-snapsave") && i+1<argc) snap_save_path = argv[++i];
         else if(!strcmp(argv[i],"-ips") && i+1<argc){ emu_ips = atof(argv[++i]); ips_given = 1; }
         else if(!strcmp(argv[i],"-secs") && i+1<argc) max_secs = atof(argv[++i]);
+        /* -untilemu SEC: stop when emulated time reaches SEC (validation:
+         * snapshot round-trips and replay seeks need cycle-exact stops,
+         * which wall-clock -secs cannot give). */
+        else if(!strcmp(argv[i],"-untilemu") && i+1<argc) until_emu = atof(argv[++i]);
+        /* -table N: start at table N (1-4) instead of the intro.  The
+         * boot program still runs and stays resident, so quitting the
+         * table returns to the menu (src/fantasies.c). */
+        else if(!strcmp(argv[i],"-table") && i+1<argc) start_table = atoi(argv[++i]);
+        else if(!strcmp(argv[i],"-freezetime")) freeze_time = 1;
+        /* -cfgscan: report the six-byte PINBALL.CFG transfer in every
+         * program that loads, not just the intro (src/fantasies.c). */
+        else if(!strcmp(argv[i],"-cfgscan")){ extern int fantasies_cfgscan;
+            fantasies_cfgscan = 1; }
         else if(!strcmp(argv[i],"-shot") && i+1<argc) shotfile = argv[++i];
         else if(!strcmp(argv[i],"-keys") && i+1<argc) keyscript = argv[++i];
         else if(!strcmp(argv[i],"-shotevery") && i+1<argc) shot_every = atof(argv[++i]);
@@ -713,6 +823,30 @@ int main(int argc, char **argv){
         fail_msg("cannot combine -p with -replay: replay boots the recorded program");
         return 1;
     }
+    /* Snapshots hold the whole machine, so there is nothing to record or
+     * replay, no program to boot, and no setup to run. */
+    if(snap_load_path && (record_path || replay_path || prog_opt || setup_opt)){
+        fail_msg("cannot combine -load with -record/-replay/-p/-setup");
+        return 1;
+    }
+    if(start_table && (start_table < 1 || start_table > 4)){
+        fail_msg("-table takes 1-4");
+        return 1;
+    }
+    /* -p/-setup name the program directly, so there is no boot program left
+     * to stay resident and redirect; -load already holds a whole machine. */
+    if(start_table && (prog_opt || setup_opt || snap_load_path)){
+        fail_msg("cannot combine -table with -p/-setup/-load");
+        return 1;
+    }
+    /* -load with -snapsave is allowed on purpose: resume a snapshot and
+     * re-freeze at a later point is the round-trip that validates the
+     * whole mechanism (EMULATOR.md, Savestates).  Only the modes that own
+     * the clock are refused. */
+    if(snap_save_path && (record_path || replay_path)){
+        fail_msg("cannot combine -snapsave with -record/-replay");
+        return 1;
+    }
     if(replay_path && replay_begin_replay(replay_path) != 0){
         const char *e = replay_parse_error();
         if(e) fail_msg("%s", e);
@@ -777,6 +911,7 @@ int main(int argc, char **argv){
         from_launcher = 1;
         dir = lc.dir; prog = lc.prog;
         if(lc.fullscreen) start_fullscreen = 1;
+        if(lc.start_table) start_table = lc.start_table;
         /* The launcher's record/replay mode is the same frontend as the
          * CLI flags above (docs/REPLAY.md section 4). */
         if(lc.mode == LAUNCH_RECORD) record_path = lc.replay_path;
@@ -900,7 +1035,7 @@ int main(int argc, char **argv){
         replay_read_options(dir, opts);
         if(replay_begin_record(record_path, &rel, prog, emu_ips,
                                dos_no_patch, dos_no_lzexe, sound, quality, opts,
-                               start_fullscreen) != 0){
+                               start_fullscreen, start_table) != 0){
             fail_msg("[record] cannot write '%s'", record_path);
             return 1;
         }
@@ -914,6 +1049,26 @@ int main(int argc, char **argv){
     dev_init();
     bios_init();
     dos_init(dir);
+    /* The snapshot slot + identity for F6/F8, captured once the install
+     * is known.  A snapshot always belongs to the install it was taken
+     * on: release id + code vector are verified on load. */
+    snprintf(snap_dir, sizeof(snap_dir), "%s", dir);
+    snap_rel = rel; snap_have_rel = 1;
+    /* Only ever set, never cleared: replay turns the same gate on for its
+     * own reasons and must keep it. */
+    if(freeze_time) dos_set_time_frozen(1);
+    /* A replay carries its own start_table and it wins: the recorded
+     * event stream assumes whichever way that session began, so
+     * replaying it the other way desyncs on the first key. */
+    if(replay_is_replaying()){
+        int th, t = replay_forced_start_table(&th);
+        if(th && t != start_table){
+            if(start_table) fprintf(stderr,
+                "[replay] ignoring -table %d, using recorded %d\n", start_table, t);
+            start_table = t;
+        }
+    }
+    if(start_table) fantasies_set_start_table(start_table);
     /* After dos_init (which points the overlay at the install) and before
      * dos_exec (which first touches it): replay works on a temp copy, so
      * the user's real PFEMU-STATE/ is never written (REPLAY.md 3.3). */
@@ -926,7 +1081,8 @@ int main(int argc, char **argv){
     plat_init("Pinball Fantasies - pfemu");
     if(start_fullscreen) plat_set_fullscreen(1);
 
-    /* Hand-built boot: park the CPU on a HLT in ROM, then EXEC the program. */
+    /* Hand-built boot: park the CPU on a HLT in ROM, then EXEC the program.
+     * -load skips the EXEC: the snapshot holds the whole machine already. */
     ram[0xFFFF0] = 0xF4;
     set_sreg(S_CS,0xF000); cpu.eip = 0xFFF0;
     set_sreg(S_SS,0x0050); REG16(R_ESP) = 0x0100;
@@ -941,27 +1097,40 @@ int main(int argc, char **argv){
         mem_w16(sp+2, 0xF000);
         mem_w16(sp+4, 0x0202);
     }
-    if(dos_exec(prog, 0, 0, 0, 0) != 0){
+    if(snap_load_path){
+        char why[512] = "";
+        if(snapshot_load(snap_load_path, &rel, why, sizeof(why)) != 0){
+            fail_msg("%s", why[0] ? why : "cannot load snapshot");
+            return 1;
+        }
+    } else if(dos_exec(prog, 0, 0, 0, 0) != 0){
         fail_msg("could not load %s from %s", prog, dir);
         return 1;
     }
 
     t0 = plat_time();
+    /* A snapshot resumes mid-stream: anchor the wall clock behind the
+     * restored emulated time, or `emu_time < real` never runs again.
+     * -secs still counts wall seconds from process start, on its own
+     * marker. */
+    wall_t0 = plat_time();
+    if(snap_load_path) t0 -= emu_now() / speed;
     { unsigned long long pres_last_frame = 0; int pending_present = 0;
     while(plat_pump() && !cpu.shutdown){
         double wall = plat_time() - t0;
         double real = wall * speed;
-        if(max_secs > 0 && wall > max_secs) break;
+        if(max_secs > 0 && plat_time() - wall_t0 > max_secs) break;
+        if(until_emu >= 0.0 && emu_now() >= until_emu) break;
         /* Reconcile reads live host key state: a leak on replay, where the
          * guest must see only the recorded list (REPLAY.md 2.4/3.3). */
         if(!replay_is_replaying()) kbd_reconcile_physical();
-        if(keyscript) run_keyscript(keyscript, real);
         int guard = 0;
         while(emu_time < real && !cpu.shutdown && guard < 10000){
             int n;
             /* Emu-time injection (REPLAY.md 2.1): due events fire on the
              * emulated clock before the next batch runs. */
             if(replay_is_replaying()) replay_inject_due();
+            if(keyscript) keys_inject_due();
             if(cpu.halted){
                 /* idle: jump the clock forward to the next scheduled event */
                 uint64_t step = (uint64_t)(emu_ips / 10000.0);
@@ -971,6 +1140,21 @@ int main(int argc, char **argv){
                     uint64_t rdl = replay_next_deadline();
                     if(rdl != ~(uint64_t)0 && rdl < cpu.cycles + step)
                         step = (rdl > cpu.cycles) ? (rdl - cpu.cycles) : 0;
+                }
+                /* Never jump an idle clock past a scripted key either -
+                 * the guest HLTs waiting for input, which is exactly when
+                 * the script is supposed to supply some. */
+                if(keyscript){
+                    uint64_t kdl = keys_next_deadline();
+                    if(kdl != ~(uint64_t)0 && kdl < cpu.cycles + step)
+                        step = (kdl > cpu.cycles) ? (kdl - cpu.cycles) : 0;
+                }
+                /* Same for the -untilemu stop: an idle jump must not carry
+                 * the clock an arbitrary distance past the target. */
+                if(until_emu >= 0.0){
+                    uint64_t udl = until_cycles(until_emu);
+                    if(udl < cpu.cycles + step)
+                        step = (udl > cpu.cycles) ? (udl - cpu.cycles) : 0;
                 }
                 cpu.cycles += step;
                 dev_tick();
@@ -990,6 +1174,14 @@ int main(int argc, char **argv){
                 if(replay_is_replaying()){
                     uint64_t rdl = replay_next_deadline();
                     if(rdl < dl) dl = rdl;
+                }
+                if(keyscript){
+                    uint64_t kdl = keys_next_deadline();
+                    if(kdl < dl) dl = kdl;
+                }
+                if(until_emu >= 0.0){
+                    uint64_t udl = until_cycles(until_emu);
+                    if(udl < dl) dl = udl;
                 }
                 /* A deadline that is already here (dl == cpu.cycles, because
                  * dev_next_deadline() truncates the remaining instruction
@@ -1082,6 +1274,13 @@ int main(int argc, char **argv){
                     }
                 }
             }
+            /* Batch-precision -untilemu stop, for the same reason as the
+             * replay footer below: the outer check is wall-clock paced, so
+             * it fires a variable distance past the target and two runs
+             * stop on different instructions - which is exactly what the
+             * flag exists to prevent.  The clamp above already ended this
+             * batch on the target cycle. */
+            if(until_emu >= 0.0 && emu_now() >= until_emu) break;
             /* Batch-precision replay stop: the outer check below only runs
              * once per (frame-paced) outer iteration, which lands the
              * footer up to a frame late.  Catch it here instead, on the
@@ -1093,8 +1292,43 @@ int main(int argc, char **argv){
         if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; }  /* fell behind */
         /* Replay end condition (REPLAY.md 3.3): the footer's emu_time, with
          * the event list exhausted.  ScrollLock / window close still end it
-         * early through plat_pump(), exactly as in normal play. */
+         * early through plat_pump(), exactly as in normal play.  Paused
+         * stays paused (resume to finish). */
         if(replay_is_replaying() && replay_should_stop()) break;
+        /* Snapshot slot (F6 save / F8 load): serviced here, at an
+         * instruction boundary between batches - cpu.c's decode residue
+         * only ever lives mid-cpu_step, so the saved state is exact. */
+        if(snap_save_pending || snap_load_pending){
+            char slot[512];
+            snapshot_slot_path(snap_dir, slot, sizeof(slot));
+            if(snap_save_pending){
+                snap_save_pending = 0;
+                if(snap_have_rel && snapshot_save(slot, &snap_rel) == 0)
+                    osd_show("Snapshot saved");
+                else osd_show(snapshot_error() ? snapshot_error()
+                                               : "Snapshot save failed");
+            } else {
+                char why[512] = "";
+                snap_load_pending = 0;
+                if(snap_have_rel && snapshot_load(slot, &snap_rel, why, sizeof(why)) == 0){
+                    /* Re-anchor the wall clock to the restored emulated one.
+                     * The loop only runs batches while emu_time < real, and a
+                     * load moves emu_time to either side of it: a snapshot
+                     * from a longer session than this one lands emu_time
+                     * AHEAD, so no batch ever runs again and the guest sits
+                     * there while the window keeps painting the restored
+                     * frame - indistinguishable from a freeze, and it would
+                     * last until wall time caught up (minutes).  The
+                     * fell-behind re-anchor below only covers the other
+                     * direction, which is why loading a state from earlier
+                     * in the same session always looked fine.  -load does
+                     * this already; F8 did not. */
+                    t0 = plat_time() - emu_now() / speed;
+                    osd_show("Snapshot loaded");
+                }
+                else osd_show(why[0] ? why : "Snapshot load failed");
+            }
+        }
 
         /* No duplicate presents: the game renders at 59.71 Hz but the wall
          * timer runs at 60 Hz, so every ~3.4 s a frame went out twice
@@ -1190,6 +1424,16 @@ int main(int argc, char **argv){
       printf("[pfemu] 3DA reads=%lu  bit0(blank)=%lu  bit3(vsync)=%lu\n",
              st1_calls, st1_bit0, st1_bit3); }
     { extern void st1_report(void); st1_report(); }
+    /* -snapsave: freeze the session at loop exit (a -secs point), for
+     * scripted save/load validation.  Interactive F6 serves the same call
+     * mid-session. */
+    /* A failed -snapsave has to reach the exit code: scripted validation
+     * reads that before it reads the logs, and a silent 0 here made a run
+     * that saved nothing look like a clean pass. */
+    if(snap_save_path && snapshot_save(snap_save_path, &rel) != 0){
+        fail_msg("%s", snapshot_error() ? snapshot_error() : "cannot save snapshot");
+        exit_code = 1;
+    }
     /* Close the recording with its footer before the exit reports below,
      * so the file is complete even though the session is over. */
     if(replay_is_recording()) replay_end_record();
@@ -1260,5 +1504,5 @@ int main(int argc, char **argv){
     dos_close_all_handles();
     replay_cleanup_overlay();
     if(trace_fp) fclose(trace_fp);
-    return 0;
+    return exit_code;
 }
