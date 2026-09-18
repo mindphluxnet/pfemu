@@ -69,25 +69,19 @@ static int is_table_prog(const char *base){
     return prog_slot(base) >= 1;
 }
 
-/* Host-only launcher toggle file (src/launch.c writes it, the "Enable
- * trainer" checkbox): 2 identical bytes (old layout, kept so a config saved
- * by an earlier build of the launcher - which had two separate checkboxes -
- * still reads as "enabled" if either was on).  Nonzero just ARMS the '1'/'2'
- * hotkeys in fantasies_key_event() below; it does not itself turn either
- * cheat on.  Every fresh table load is the game's own unpatched image (see
+/* The launcher's "Enable trainer" checkbox, from the install's settings file
+ * (PFEMU-STATE/pfemu.cfg, src/cfg.c).  On just ARMS the '1'/'2' hotkeys in
+ * fantasies_key_event() below; it does not itself turn either cheat on.
+ * Every fresh table load is the game's own unpatched image (see
  * fantasies_on_exec below - it no longer pre-applies anything), so with the
  * trainer enabled, the cheats still start OFF and stay off until the
- * player actually presses one of the hotkeys.  Kept out of the 6-byte
- * pfemu_options.cfg blob since that one specifically mirrors PINBALL.CFG's
+ * player actually presses one of the hotkeys.  Its own key rather than one
+ * of the six option bytes, since those specifically mirror PINBALL.CFG's
  * own layout. */
 static void load_cheat_cfg(const char *dir){
-    char path[600];
-    FILE *f;
-    uint8_t b[2] = {0,0};
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_cheats.cfg", dir);
-    f = fopen(path, "rb");
-    if(f){ if(fread(b,1,2,f) != 2){ b[0]=0; b[1]=0; } fclose(f); }
-    trainer_enabled = (b[0] != 0) || (b[1] != 0);
+    PfCfg c;
+    cfg_read(dir, &c);
+    trainer_enabled = c.trainer;
 }
 
 /* Called once at startup after dir/prog are final (launcher or CLI).
@@ -363,9 +357,7 @@ static uint8_t options_cache[6] = {0,0,1,0,0,0};
 static int options_loaded = 0;
 
 static void load_options_cache(void){
-    static const uint8_t defaults[6] = {0,0,1,0,0,0};
-    char path[600];
-    FILE *f;
+    PfCfg c;
     options_loaded = 1;
     /* On replay the session runs the recorded blob, not the install's
      * current file (docs/REPLAY.md section 3.1): the six bytes are game
@@ -376,12 +368,8 @@ static void load_options_cache(void){
             options_cache[3],options_cache[4],options_cache[5]);
         return;
     }
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", session_dir);
-    f = fopen(path, "rb");
-    if(!f) return;
-    if(fread(options_cache, 1, 6, f) != 6)
-        memcpy(options_cache, defaults, 6);
-    fclose(f);
+    cfg_read(session_dir, &c);
+    memcpy(options_cache, c.options, 6);
 }
 
 int fantasies_intercept_cfg_open(const char *fname){

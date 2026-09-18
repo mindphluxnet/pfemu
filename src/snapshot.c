@@ -152,7 +152,7 @@ int snapshot_save(const char *path, const RelResult *rel){
     }
     if(fantasies_trainer_enabled()){
         snprintf(snap_err, sizeof(snap_err),
-                 "[snapshot] refused: the trainer is on (PFEMU-STATE/pfemu_cheats.cfg).");
+                 "[snapshot] refused: the trainer is on (PFEMU-STATE/pfemu.cfg).");
         return -1;
     }
     if(!rel || !release_runnable(rel)){

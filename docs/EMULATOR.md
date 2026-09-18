@@ -204,8 +204,9 @@ The game writes to its own files (two sentinel bytes near the end of
 `Intro.Mod`, `.hi` scores, `PINBALL.CFG`, `SOUND.CFG`). Every write is
 redirected to a per-install `PFEMU-STATE/` copy-on-first-write overlay; reads
 prefer the copy once it exists. Installed files are never modified, and
-deleting `PFEMU-STATE/` resets state. Launcher options live separately and
-are applied in memory at boot.
+deleting `PFEMU-STATE/` resets state. Launcher options live separately, in
+`PFEMU-STATE/pfemu.cfg` (one key=value file per install, which the game never
+opens), and are applied in memory at boot.
 
 ## Starting at a table
 

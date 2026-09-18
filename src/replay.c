@@ -132,24 +132,13 @@ static int unhex32(const char *s, uint8_t out[32]){
     return 0;
 }
 
-/* The launcher's hardcoded default (src/launch.c cfg_pinball_defaults),
- * for installs that never opened the options page. */
-static const uint8_t default_options[6] = {0,0,1,0,0,0};
-
-static void read_options_file(const char *dir, uint8_t out[6]){
-    char path[600];
-    FILE *f;
-    size_t n = 0;
-    memcpy(out, default_options, 6);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", dir);
-    f = fopen(path, "rb");
-    if(f){ n = fread(out, 1, 6, f); fclose(f); }
-    if(n < 6) memcpy(out, default_options, 6);
-}
-
-/* The effective 6-byte options blob, for the record header (main.c). */
+/* The effective 6-byte options blob, for the record header (main.c): the
+ * install's settings file, or the game's own defaults for an install whose
+ * options page was never opened (src/cfg.c). */
 void replay_read_options(const char *dir, uint8_t out[6]){
-    read_options_file(dir, out);
+    PfCfg c;
+    cfg_read(dir, &c);
+    memcpy(out, c.options, 6);
 }
 
 /* ------------------------------------------------------- overlay hashing */
@@ -280,7 +269,7 @@ int replay_begin_record(const char *path, const RelResult *rel, const char *prog
     int i;
     if(fantasies_trainer_enabled()){
         fprintf(stderr, "[record] refused: the trainer is enabled for '%s'"
-                        " (PFEMU-STATE/pfemu_cheats.cfg). Recording needs it off.\n",
+                        " (PFEMU-STATE/pfemu.cfg). Recording needs it off.\n",
                 rel ? rel->dir : "?");
         return -1;
     }
@@ -457,7 +446,7 @@ static void header_defaults(ReplayHeader *o){
     memset(o, 0, sizeof(*o));
     o->ips = 6000000.0;
     o->speed = 1.0;
-    memcpy(o->options, default_options, 6);
+    memcpy(o->options, cfg_option_defaults, 6);
 }
 
 /* The last parse/load failure, in full sentences for fail_msg(): launcher

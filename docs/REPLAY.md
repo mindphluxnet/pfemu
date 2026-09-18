@@ -67,8 +67,8 @@ footer:  final emu_time + cpu.cycles, -wav capture hash (FNV-1a over the
 `sessions/<install>_<date>.pfr`, `Browse...` for both modes - save dialog
 with overwrite confirm for record, open dialog for replay) feeds the same
 `{dir, prog, fullscreen, mode, path}` commit path as normal launch. The
-last-used session file per install is remembered in
-`PFEMU-STATE/pfemu_session.cfg` and restored into the field (a typed or
+last-used session file per install is remembered as the `session` key in
+`PFEMU-STATE/pfemu.cfg` and restored into the field (a typed or
 picked path always wins; record re-targets on install switch, replay keeps
 the loaded file). A typed record path gains the `.pfr` extension when it
 has none. The trainer checkbox is greyed out in record/replay mode; the

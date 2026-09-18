@@ -4,7 +4,7 @@
  * directly by the game) and set every option from the game's own F5
  * in-game menu, without ever having to open that menu.  Unlike SOUND.CFG,
  * the options are NOT written to PINBALL.CFG for the game to read - see the
- * big comment above read_pinball_cfg() below for why, and src/fantasies.c
+ * big "launcher options I/O" comment below for why, and src/fantasies.c
  * for the other half (the boot-time interception that actually applies
  * them).  Short version: an existing PINBALL.CFG at boot can wedge the
  * sound driver's PLL calibration into a busy-wait that never terminates,
@@ -168,7 +168,8 @@ int read_sound_is_sb(const char *dir){
 
 /* ------------------------------------------------------------- audio I/O
  *
- * Two bytes in a host-only file: {volume 0-100, quality notch 0-4}.
+ * Two of the settings in the install's PFEMU-STATE/pfemu.cfg (src/cfg.c):
+ * volume 0-100 and the quality notch 0-4.
  *
  * Volume is host-only by nature.  The guest has nothing to configure: the
  * driver mixes at full scale, and the card's mixer registers are an SB Pro
@@ -180,54 +181,21 @@ int read_sound_is_sb(const char *dir){
  * again doesn't silently reset it: a NOSOUND.SDR config is 16 bytes long and
  * has no byte 0x14 to remember it in.  SOUND.CFG still wins when it has one,
  * so running the real SETSOUND (-setup) is still picked up here. */
-static void read_audio_cfg(const char *dir, int *vol, int *qual){
-    char path[600];
-    FILE *f;
-    uint8_t b[2];
-    size_t n;
-    *vol = AUDIO_VOLUME_DEFAULT;
-    *qual = 0;
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_audio.cfg", dir);
-    f = fopen(path, "rb");
-    if(!f) return;
-    n = fread(b, 1, 2, f);
-    fclose(f);
-    if(n >= 1 && b[0] <= 100) *vol = b[0];
-    if(n >= 2 && b[1] <= 4) *qual = b[1];
-}
-
-static void write_audio_cfg(const char *dir, int vol, int qual){
-    char path[600], sub[600];
-    FILE *f;
-    uint8_t b[2];
-    if(vol < 0) vol = 0;
-    if(vol > 100) vol = 100;
-    if(qual < 0) qual = 0;
-    if(qual > 4) qual = 4;
-    b[0] = (uint8_t)vol;
-    b[1] = (uint8_t)qual;
-    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
-    CreateDirectoryA(sub, NULL);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_audio.cfg", dir);
-    f = fopen(path, "wb");
-    if(!f) return;
-    fwrite(b, 1, 2, f);
-    fclose(f);
-}
-
 int read_volume_cfg(const char *dir){
-    int vol, qual;
-    read_audio_cfg(dir, &vol, &qual);
-    return vol;
+    PfCfg c;
+    cfg_read(dir, &c);
+    return c.volume;
 }
 
 /* Volume alone, for the in-window -/+ keys on their way out (src/main.c).
- * Reads first so the quality notch in byte 1 survives: the game window has no
- * way to change that, and clobbering it would silently undo the launcher. */
+ * Reads the whole file first so every other setting survives: the game
+ * window can change none of them, and clobbering one would silently undo
+ * the launcher. */
 void write_volume_cfg(const char *dir, int vol){
-    int cur, qual;
-    read_audio_cfg(dir, &cur, &qual);
-    write_audio_cfg(dir, vol, qual);
+    PfCfg c;
+    cfg_read(dir, &c);
+    c.volume = vol;
+    cfg_write(dir, &c);
 }
 
 /* Quality notch actually in force: the effective SOUND.CFG when it is an SB
@@ -237,8 +205,9 @@ int read_sound_quality(const char *dir){
     FILE *f;
     uint8_t buf[25];
     size_t n;
-    int i, vol, qual;
+    int i;
     char path[600];
+    PfCfg c;
     for(i=0;i<2;i++){
         snprintf(path, sizeof(path), i==0 ? "%s/PFEMU-STATE/SOUND.CFG" : "%s/SOUND.CFG", dir);
         f = fopen(path, "rb");
@@ -248,8 +217,8 @@ int read_sound_quality(const char *dir){
         if(n > 0x14 && buf[0x14] <= 4) return buf[0x14];
         break;
     }
-    read_audio_cfg(dir, &vol, &qual);
-    return qual;
+    cfg_read(dir, &c);
+    return c.quality;
 }
 
 /* --------------------------------------------------- launcher options I/O
@@ -269,11 +238,12 @@ int read_sound_quality(const char *dir){
  * worse than doing nothing - it was tripping on legitimate PIT activity
  * unrelated to the calibration and destabilising boots that would have
  * converged fine on their own, so it was removed rather than tuned
- * further.)  So the launcher writes these bytes to a host-only file DOS
- * never opens; src/fantasies.c makes every boot-time PINBALL.CFG open fail
- * like a fresh install always has, and pokes these bytes into INTRO.PRG's
- * own buffer at that exact moment instead - zero extra guest instructions,
- * so boot timing stays identical to the one case already proven reliable.
+ * further.)  So the launcher writes these bytes to PFEMU-STATE/pfemu.cfg, a
+ * host-only settings file DOS never opens; src/fantasies.c makes every
+ * boot-time PINBALL.CFG open fail like a fresh install always has, and
+ * pokes these bytes into INTRO.PRG's own buffer at that moment instead -
+ * zero extra guest instructions, so boot timing stays identical to the one
+ * case already proven reliable.
  *
  * Byte order and values confirmed empirically, one option at a time, by
  * dumping the live in-memory buffer (DS:49A3 in INTRO.PRG, so linear 062E3)
@@ -287,8 +257,8 @@ int read_sound_quality(const char *dir){
  *   5  Color Mode     0 = Color      1 = Mono
  *
  * This is also the game's own hardcoded default (a fresh install with no
- * PINBALL.CFG on disk boots with the buffer already at 00 00 01 00 00 00). */
-static const uint8_t cfg_pinball_defaults[6] = {0,0,1,0,0,0};
+ * PINBALL.CFG on disk boots with the buffer already at 00 00 01 00 00 00) -
+ * cfg_option_defaults in src/cfg.c, which every reader of the file shares. */
 
 typedef struct { const char *label; const char *values[3]; int n; } OptDef;
 /* "Start at" choices.  Index is the program slot the boot loop EXECs,
@@ -310,93 +280,22 @@ static const OptDef opts[6] = {
     { "Color Mode:",   {"Color","Mono",NULL},            2 },
 };
 
-/* Host-only staging file: read by src/fantasies.c's boot-time interception,
- * never opened by the guest. */
-static void read_pinball_cfg(const char *dir, uint8_t out[6]){
-    char path[600];
-    FILE *f;
-    size_t n = 0;
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", dir);
-    f = fopen(path, "rb");
-    if(f){ n = fread(out, 1, 6, f); fclose(f); }
-    if(n < 6) memcpy(out, cfg_pinball_defaults, 6);
-}
-
-static void write_pinball_cfg(const char *dir, const uint8_t in[6]){
-    char path[600], sub[600];
-    FILE *f;
-    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
-    CreateDirectoryA(sub, NULL);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_options.cfg", dir);
-    f = fopen(path, "wb");
-    if(!f) return;
-    fwrite(in, 1, 6, f);
-    fclose(f);
-}
-
 /* Trainer cheats, ported from trainer/PINTRN.COM and trainer/TRAINER.EXE
  * (see src/fantasies.c for the reverse-engineering writeup and the actual
- * patch logic).  Separate 2-byte file from pfemu_options.cfg above since
- * these aren't part of PINBALL.CFG's own layout - just a starting state
- * that src/fantasies.c applies the moment a table loads.  One checkbox in
- * the UI ("Enable trainer") drives both bytes together - infinite balls,
+ * patch logic).  Its own `trainer` key rather than part of the six option
+ * bytes above, since it is not part of PINBALL.CFG's layout - just a
+ * starting state that src/fantasies.c applies the moment a table loads.
+ * One checkbox in the UI ("Enable trainer") drives the lot: infinite balls,
  * ball control and infinite tilts are still three independent patches
  * underneath (and the '1'-'3' hotkeys still toggle them independently
- * in-game), but there's no real reason to make the user tick two boxes
- * to turn "the trainer" on, so both get written identically here.  Reading them back separately (rather than
- * assuming they match) means a config saved by an older build of this
- * launcher, with only one of the two set, still shows the checkbox checked
- * instead of silently discarding half of it. */
-static void read_cheats_cfg(const char *dir, int *balls, int *spring){
-    char path[600];
-    FILE *f;
-    uint8_t b[2] = {0,0};
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_cheats.cfg", dir);
-    f = fopen(path, "rb");
-    if(f){ if(fread(b,1,2,f) != 2){ b[0]=0; b[1]=0; } fclose(f); }
-    *balls = b[0] != 0;
-    *spring = b[1] != 0;
-}
-
-static void write_cheats_cfg(const char *dir, int balls, int spring){
-    char path[600], sub[600];
-    FILE *f;
-    uint8_t b[2];
-    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
-    CreateDirectoryA(sub, NULL);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_cheats.cfg", dir);
-    f = fopen(path, "wb");
-    if(!f) return;
-    b[0] = (uint8_t)(balls ? 1 : 0);
-    b[1] = (uint8_t)(spring ? 1 : 0);
-    fwrite(b, 1, 2, f);
-    fclose(f);
-}
-
-/* Host-only, one byte: whether to start the game window fullscreen. Alt+Enter
- * still toggles it live once running (src/main.c); this just picks the
- * starting state so it doesn't have to be flipped by hand every launch. */
-static int read_fullscreen_cfg(const char *dir){
-    char path[600];
-    FILE *f;
-    uint8_t b = 0;
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_display.cfg", dir);
-    f = fopen(path, "rb");
-    if(f){ if(fread(&b,1,1,f) != 1) b = 0; fclose(f); }
-    return b != 0;
-}
-
-static void write_fullscreen_cfg(const char *dir, int on){
-    char path[600], sub[600];
-    FILE *f;
-    uint8_t b = (uint8_t)(on ? 1 : 0);
-    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
-    CreateDirectoryA(sub, NULL);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_display.cfg", dir);
-    f = fopen(path, "wb");
-    if(!f) return;
-    fwrite(&b, 1, 1, f);
-    fclose(f);
+ * in-game), but there is no reason to make the user tick three boxes to
+ * turn "the trainer" on.  (Older builds stored two bytes for what were
+ * once two checkboxes; src/cfg.c folds either of them being set into this
+ * one flag when it imports such an install.) */
+static int read_trainer_cfg(const char *dir){
+    PfCfg c;
+    cfg_read(dir, &c);
+    return c.trainer;
 }
 
 /* ------------------------------------------------------------------ UI */
@@ -461,32 +360,13 @@ static const char *cur_game_dir(const LaunchState *st){
     return r ? r->dir : "";
 }
 
-/* "Start at" per install.  Host-only, like the volume and session files:
+/* "Start at" per install.  Host-only, like everything else in pfemu.cfg:
  * the guest never sees it, and a release whose INT 65h layout cannot be
  * derived just falls back to the menu at boot (src/fantasies.c). */
 static int read_table_cfg(const char *dir){
-    char path[600];
-    FILE *f;
-    int v = 0;
-    if(!dir || !dir[0]) return 0;
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_table.cfg", dir);
-    f = fopen(path, "rb");
-    if(!f) return 0;
-    if(fscanf(f, "%d", &v) != 1) v = 0;
-    fclose(f);
-    return (v >= 1 && v <= 4) ? v : 0;
-}
-static void write_table_cfg(const char *dir, int v){
-    char path[600], sub[600];
-    FILE *f;
-    if(!dir || !dir[0]) return;
-    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
-    CreateDirectoryA(sub, NULL);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_table.cfg", dir);
-    f = fopen(path, "wb");
-    if(!f) return;
-    fprintf(f, "%d\n", v);
-    fclose(f);
+    PfCfg c;
+    cfg_read(dir, &c);
+    return c.start_table;
 }
 
 /* Last-used session file per install (record target or replay source).
@@ -494,28 +374,17 @@ static void write_table_cfg(const char *dir, int v){
  * every time; overwritten on each successful Launch in record/replay mode.
  * Display/hint only - replay identity still comes from the file header. */
 static void read_session_path(const char *dir, char *dst, size_t n){
-    char path[600];
-    FILE *f;
-    dst[0] = 0;
-    if(!dir || !dir[0]) return;
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_session.cfg", dir);
-    f = fopen(path, "rb");
-    if(!f) return;
-    if(!fgets(dst, (int)n, f)) dst[0] = 0;
-    fclose(f);
-    dst[strcspn(dst, "\r\n")] = 0;
+    PfCfg c;
+    cfg_read(dir, &c);
+    snprintf(dst, n, "%s", c.session);
 }
+
 static void write_session_path(const char *dir, const char *p){
-    char path[600], sub[600];
-    FILE *f;
+    PfCfg c;
     if(!dir || !dir[0] || !p || !p[0]) return;
-    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
-    CreateDirectoryA(sub, NULL);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/pfemu_session.cfg", dir);
-    f = fopen(path, "wb");
-    if(!f) return;
-    fprintf(f, "%s\n", p);
-    fclose(f);
+    cfg_read(dir, &c);
+    snprintf(c.session, sizeof(c.session), "%s", p);
+    cfg_write(dir, &c);
 }
 
 /* Forward: replay_autorestore()/apply_mode_ui() below call these, which are
@@ -594,13 +463,9 @@ static int replay_selection_ok(LaunchState *st, char *why, size_t n){
                          " (direct-table replay is v2).", st->rhdr.program);
         return 0;
     }
-    {
-        int balls, spring;
-        read_cheats_cfg(r->dir, &balls, &spring);
-        if(balls || spring){
-            if(why) snprintf(why, n, "Trainer is enabled for '%s' - replay needs it off.", r->dir);
-            return 0;
-        }
+    if(read_trainer_cfg(r->dir)){
+        if(why) snprintf(why, n, "Trainer is enabled for '%s' - replay needs it off.", r->dir);
+        return 0;
     }
     return 1;
 }
@@ -699,22 +564,17 @@ static void apply_mode_ui(HWND h, LaunchState *st){
     if(st->hBrowse) EnableWindow(st->hBrowse, rec);
     if(st->hPathLabel) EnableWindow(st->hPathLabel, rec);
     if(rec){
-        int balls, spring;
         st->cheat_enable = 0;
         CheckDlgButton(h, ID_CHEAT_ENABLE, BST_UNCHECKED);
         if(st->hCheatEnable) EnableWindow(st->hCheatEnable, FALSE);
         /* A saved trainer-on must not survive into the session either: the
          * mode owns it, so it goes off on commit (see ID_LAUNCH). */
-        read_cheats_cfg(cur_game_dir(st), &balls, &spring);
-        (void)balls; (void)spring;
         restore_session_path(h, st, 0);
     } else {
-        int balls, spring;
         if(st->hCheatEnable) EnableWindow(st->hCheatEnable, TRUE);
         /* Leaving record/replay restores the saved trainer state into the
          * checkbox; play mode neither forces nor forbids it. */
-        read_cheats_cfg(cur_game_dir(st), &balls, &spring);
-        st->cheat_enable = balls || spring;
+        st->cheat_enable = read_trainer_cfg(cur_game_dir(st));
         CheckDlgButton(h, ID_CHEAT_ENABLE, st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
     }
     show_detection(h, st);
@@ -780,14 +640,15 @@ static void show_detection(HWND h, LaunchState *st){
  * leaves one install's checkbox state applied to another's. */
 static void reload_for_dir(HWND h, LaunchState *st){
     const char *dir = cur_game_dir(st);
-    int i, balls, spring;
+    PfCfg c;
+    int i;
+    cfg_read(dir, &c);
     st->sound = read_sound_is_sb(dir);
-    st->quality = read_sound_quality(dir);
-    st->volume = read_volume_cfg(dir);
-    read_pinball_cfg(dir, st->cfg);
-    read_cheats_cfg(dir, &balls, &spring);
-    st->cheat_enable = balls || spring;
-    st->fullscreen = read_fullscreen_cfg(dir);
+    st->quality = read_sound_quality(dir);   /* SOUND.CFG wins over c.quality */
+    st->volume = c.volume;
+    memcpy(st->cfg, c.options, 6);
+    st->cheat_enable = c.trainer;
+    st->fullscreen = c.fullscreen;
     if(st->hSound){
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
         SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
@@ -1504,23 +1365,28 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             { LRESULT sel = SendMessageA(st->hQuality,CB_GETCURSEL,0,0);
               if(sel != CB_ERR) st->quality = (int)sel; }
             write_sound_cfg(dir, st->sound, st->quality);
-            write_audio_cfg(dir, st->volume, st->quality);
             for(i=0;i<6;i++){
                 LRESULT sel = SendMessageA(st->hOpt[i],CB_GETCURSEL,0,0);
-                st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_pinball_defaults[i] : sel);
+                st->cfg[i] = (uint8_t)(sel==CB_ERR ? cfg_option_defaults[i] : sel);
             }
-            write_pinball_cfg(dir, st->cfg);
-            if(st->mode == LAUNCH_RECORD)
-                /* The trainer is incompatible with recording: the checkbox
-                 * was unchecked and greyed on mode entry, and main()
-                 * refuses as a backstop.  The session runs with it off. */
-                write_cheats_cfg(dir, 0, 0);
-            else
-                write_cheats_cfg(dir, st->cheat_enable, st->cheat_enable);
-            write_fullscreen_cfg(dir, st->fullscreen);
-            write_table_cfg(dir, st->start_table);
-            if(st->mode == LAUNCH_RECORD)
-                write_session_path(dir, st->replay_path);
+            /* Everything the dialog owns lands in one file, in one write
+             * (src/cfg.c).  Read first so a key this dialog does not show
+             * survives, and because that is what imports an install still
+             * carrying the old per-setting files. */
+            { PfCfg c;
+              cfg_read(dir, &c);
+              c.volume = st->volume;
+              c.quality = st->quality;
+              memcpy(c.options, st->cfg, 6);
+              /* The trainer is incompatible with recording: the checkbox
+               * was unchecked and greyed on mode entry, and main() refuses
+               * as a backstop.  The session runs with it off. */
+              c.trainer = (st->mode == LAUNCH_RECORD) ? 0 : (st->cheat_enable != 0);
+              c.fullscreen = st->fullscreen != 0;
+              c.start_table = st->start_table;
+              if(st->mode == LAUNCH_RECORD && st->replay_path[0])
+                  snprintf(c.session, sizeof(c.session), "%s", st->replay_path);
+              cfg_write(dir, &c); }
             st->ok = 1; st->done = 1;
             DestroyWindow(h);
         } else if(id==ID_QUIT){
@@ -1589,15 +1455,15 @@ int show_launcher(LaunchChoice *out){
           if(!_stricmp(st.inst[i].dir, last_dir)){ st.sel = i; break; } }
     if(st.ninst > 1) winh += 24;
     { const char *dir = cur_game_dir(&st);
-      int balls, spring;
+      PfCfg c;
+      cfg_read(dir, &c);
       st.sound = read_sound_is_sb(dir);
       st.quality = read_sound_quality(dir);
-      st.volume = read_volume_cfg(dir);
-      read_pinball_cfg(dir, st.cfg);
-      read_cheats_cfg(dir, &balls, &spring);
-      st.cheat_enable = balls || spring;
-      st.fullscreen = read_fullscreen_cfg(dir);
-      st.start_table = read_table_cfg(dir); }
+      st.volume = c.volume;
+      memcpy(st.cfg, c.options, 6);
+      st.cheat_enable = c.trainer;
+      st.fullscreen = c.fullscreen;
+      st.start_table = c.start_table; }
     hwnd = CreateWindowExA(0,"pfemu-launcher","pfemu launcher",
                            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                            CW_USEDEFAULT,CW_USEDEFAULT,winw,winh,

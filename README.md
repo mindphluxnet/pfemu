@@ -117,10 +117,11 @@ If an installation is not recognised, **Launch** stays disabled. Each release
 stores its options at a different address in memory, so applying one release's
 layout to another would corrupt it. pfemu refuses to guess.
 
-Your choices are saved in `PFEMU-STATE/` inside the selected install's folder,
-along with high scores and game state. Deleting that folder resets everything
-pfemu saved, while the original files stay untouched. pfemu never writes to
-the installed game files.
+Your choices are saved in `PFEMU-STATE/pfemu.cfg` inside the selected
+install's folder - one plain-text file per install, next to the high scores
+and game state. Deleting that folder resets everything pfemu saved, while
+the original files stay untouched. pfemu never writes to the installed game
+files.
 
 ### Controls
 

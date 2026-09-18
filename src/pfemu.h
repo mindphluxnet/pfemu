@@ -297,6 +297,27 @@ void wav_current_hash(char out[17], unsigned long *samples_out);
                                  /* running -wav capture hash ("none" when
                                   * no capture), for the replay footer */
 
+/* ------------------------------------------------------------- settings --- */
+/* Everything the launcher remembers for one install, in one host-only file:
+ * PFEMU-STATE/pfemu.cfg (src/cfg.c).  The guest never reads it - the option
+ * bytes reach the game by being poked into INTRO.PRG's own buffer at boot
+ * (src/fantasies.c).  cfg_read() fills in defaults for anything missing and
+ * imports the older per-setting files when pfemu.cfg is not there yet;
+ * cfg_write() rewrites the whole file, so change what you need on a struct
+ * you just read rather than building one from scratch. */
+typedef struct {
+    int volume;             /* host output gain, 0-100 */
+    int quality;            /* SOUND.CFG quality notch mirror, 0-4 */
+    uint8_t options[6];     /* PINBALL.CFG option bytes (src/launch.c) */
+    int trainer;            /* trainer armed for this install */
+    int fullscreen;         /* start the game window fullscreen */
+    int start_table;        /* 0 = menu, 1-4 = boot straight to that table */
+    char session[512];      /* last record target / replay source */
+} PfCfg;
+extern const uint8_t cfg_option_defaults[6];
+void cfg_read(const char *dir, PfCfg *c);
+void cfg_write(const char *dir, const PfCfg *c);
+
 /* ------------------------------------------------------------ launcher --- */
 /* Win32 installation picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
  * into the game's PFEMU-STATE/ overlay so installed files stay pristine. */
