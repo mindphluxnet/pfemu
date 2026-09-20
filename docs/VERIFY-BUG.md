@@ -154,16 +154,22 @@ buffer with the logical score in a different way.
 5. Re-run `tools/scorescan.py FANTASY FANTASYA FANTASYDX` and extend its static
    checks for any new clear/restore locators across all ranked binaries.
 
-## Post-game restart is expected
+## Post-game restart after high-score entry is expected
 
 The attempt opened 8 ms after attempt 1 enters attract mode is not evidence of
-another verifier bug. After a complete game over, the game automatically
-resets to ball 1, player 1. The player may then use the F-keys again to increase
-the player count before launching the first ball.
+another verifier bug. The recording's final inputs are the three high-score
+initials followed by Enter. After a complete game over, entering the allowed
+three characters alone returns the game to attract mode; pressing Enter after
+the name instead starts a new round directly at ball 1, player 1.
 
-The verifier should therefore leave this automatically opened attempt in its
-ordinary open/unlocked state. Its initial `players=1` is provisional: player
-count must still be sampled and fixed at the first launch, as it is for the
-first attempt. If the recording ends before that launch, reporting the trailing
-attempt as unfinished is correct and must not retroactively invalidate an
-earlier clean, rankable attempt.
+The verifier should therefore leave this Enter-triggered attempt in its
+ordinary open/unlocked state. Its initial `players=1` is provisional: the
+player may still use the F-keys to increase the player count, so the count must
+be sampled and fixed at the first launch, as it is for the first attempt. If
+the recording ends before that launch, reporting the trailing attempt as
+unfinished is correct and must not retroactively invalidate an earlier clean,
+rankable attempt.
+
+A segmentation regression test should cover both high-score exit paths: three
+initials without Enter must return to attract mode without opening another
+attempt, while three initials followed by Enter must open a new attempt.
