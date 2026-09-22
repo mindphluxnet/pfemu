@@ -353,10 +353,16 @@ the traps are specific:
 - **Strict aliasing.** MSVC is effectively no-strict-aliasing; gcc `-O2` is
   not, and this codebase type-puns over guest RAM constantly. Build with
   `-fno-strict-aliasing`.
-- **Latent UB.** Shift counts >= width, signed overflow and friends in
-  `cpu.c` - x86 masks shift counts, C does not define them. One UBSan run on
-  the Linux build will surface these, and fixing them improves the Windows
-  build too.
+- **Latent UB.** Measured, and the prediction below was aimed at the wrong
+  file. UBSan on Debian/gcc 14 reported 32 sites, every one an unaligned
+  guest-RAM access in `dos.c` or `bios.c` - `*(uint16_t*)&ram[a]`, where about
+  half of the guest's addresses are odd - and **none in `cpu.c`**, whose hot
+  path assembles bytes by hand in `cpu_ld16` and was already clean. Fixed with
+  `memcpy`-based `ld16u`/`st16u` in `pfemu.h`, which compile to the same
+  unaligned `mov`. What was predicted here - shift counts >= width and signed
+  overflow in `cpu.c`, since x86 masks shift counts and C does not define them
+  - is neither confirmed nor refuted: one vector instruments only the opcodes
+  it runs.
 - **libm is already gone** from every guest-visible path: dev.c:439 removed
   `fmod()`/`floor()` deliberately. There are no transcendentals anywhere the
   guest can observe. The single most encouraging fact in the file.
@@ -372,7 +378,11 @@ makes it the most sensitive vector in the suite.
 
 **Started: `tests/golden/`.** One vector so far - the human-played Deluxe
 Table 3 session above - plus `run.sh`, which checks the footer, the wav hash
-and eleven frame hashes, and passes on the headless build. The vectors are
+and eleven frame hashes, and passes on the headless build - under
+Windows/MSVC, and on a Debian server with gcc 14.2 at `-O2`, which reproduced
+the MSVC-recorded wav hash `575858f2a652fce2` and all eleven frame hashes
+exactly, 1.2 billion cycles in. The cross-platform claim is tested now rather
+than assumed. The vectors are
 marked `-text` in `.gitattributes`, because a `.pfr` is hashed over its own
 raw disk bytes and end-of-line conversion on checkout refuses it; that is not
 hypothetical, the first commit of the vector was normalised on the way in and
@@ -731,8 +741,10 @@ cheap; nothing else should start until both come back green.
     precaution rather than a demonstrated necessity, and it means the suite
     still needs a vector that does reach the PIT and VGA phase math hard
     enough to tell.
-  - **UBSan has not been run.** `make ubsan` exists; nothing has been through
-    it yet.
+  - **UBSan has now been run**, on the Deluxe Table 3 vector: 32 unaligned
+    guest-RAM accesses in `dos.c` and `bios.c`, since fixed, after which that
+    vector reports nothing. See the latent-UB bullet above - the file it named
+    was not the file at fault.
 
   And one thing it raised that is larger than the spike. Batch structure is
   guest-observable - that is what the `-shotevery` mistake proved. Replay

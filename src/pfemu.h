@@ -46,6 +46,28 @@ extern uint8_t *ram;
 #define REG16(i)  (*(uint16_t*)&cpu.regs[i])
 #define REG8(i)   (*((uint8_t*)&cpu.regs[(i)&3] + (((i)>>2)&1)))
 
+/* Unaligned little-endian access to guest memory.  A guest address is the
+ * guest's business, so about half of these land on an odd byte: punning a
+ * wider pointer at &ram[a] is undefined even on the architectures we build
+ * for, which tolerate it only in the instruction they happen to emit.  The
+ * ubsan build on Debian/gcc 14 reported every such site in dos.c and bios.c.
+ *
+ * memcpy of 2 or 4 bytes is the defined spelling of the same thing, and at
+ * -O2 both gcc and MSVC turn it into the single unaligned mov the pun was
+ * already getting - so this costs nothing, and the determinism flags in the
+ * Makefile are unaffected.
+ *
+ * These are host-endian, exactly like the puns they replace: the guest is
+ * little-endian and so is every host we build for.  Making that explicit is a
+ * separate job, and not one the golden vector can check.
+ *
+ * cpu.c deliberately does not use these.  Its hot path assembles bytes by
+ * hand (cpu_ld16) for speed, and was already free of this. */
+static inline uint16_t ld16u(const void *p){ uint16_t v; memcpy(&v, p, 2); return v; }
+static inline uint32_t ld32u(const void *p){ uint32_t v; memcpy(&v, p, 4); return v; }
+static inline void st16u(void *p, uint16_t v){ memcpy(p, &v, 2); }
+static inline void st32u(void *p, uint32_t v){ memcpy(p, &v, 4); }
+
 void cpu_reset(void);
 void cpu_step(void);
 void cpu_run(int cycles);

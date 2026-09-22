@@ -25,10 +25,15 @@
 #
 # Targets:
 #   make              the headless binary
-#   make ubsan        the same, instrumented - surfaces the latent UB in
-#                     cpu.c (shift counts >= width, signed overflow) that the
-#                     determinism section expects to find.  Fixing what this
-#                     reports improves the Windows build too.
+#   make ubsan        the same, instrumented.  Run on Debian/gcc 14 against
+#                     tests/golden: 32 unaligned guest-RAM accesses in dos.c
+#                     and bios.c, every one a wider pointer punned at &ram[a],
+#                     and none in cpu.c - whose hot path assembles bytes by
+#                     hand and was already clean.  Fixed via ld16u/st16u in
+#                     pfemu.h; that vector now reports nothing.  The shift
+#                     counts >= width the determinism section predicts are
+#                     still unproven either way - one vector instruments only
+#                     the opcodes it happens to execute.
 #   make clean
 
 CC      ?= cc

@@ -37,8 +37,8 @@ static char gamedir[512];
 static void mcb_init(void){
     uint32_t a = MEM_FIRST*16;
     ram[a] = 'Z';
-    *(uint16_t*)&ram[a+1] = 0;
-    *(uint16_t*)&ram[a+3] = (uint16_t)(MEM_LAST - MEM_FIRST - 1);
+    st16u(&ram[a+1], 0);
+    st16u(&ram[a+3], (uint16_t)(MEM_LAST - MEM_FIRST - 1));
     memset(&ram[a+8], 0, 8);
 }
 /* DOS allocation strategy (INT 21h AH=58h): 0 first fit, 1 best fit,
@@ -56,8 +56,8 @@ static uint16_t mcb_alloc(uint16_t paras, uint16_t owner, uint16_t *largest){
     for(;;){
         uint32_t a = (uint32_t)seg*16;
         uint8_t sig = ram[a];
-        uint16_t own = *(uint16_t*)&ram[a+1];
-        uint16_t sz  = *(uint16_t*)&ram[a+3];
+        uint16_t own = ld16u(&ram[a+1]);
+        uint16_t sz  = ld16u(&ram[a+3]);
         if(sig!='M' && sig!='Z') return 0;
         if(own==0){
             if(sz > *largest) *largest = sz;
@@ -81,24 +81,24 @@ static uint16_t mcb_alloc(uint16_t paras, uint16_t owner, uint16_t *largest){
             uint16_t nseg = (uint16_t)(chosen + (sz - paras - 1) + 1);
             uint32_t na = (uint32_t)nseg*16;
             ram[na] = sig;
-            *(uint16_t*)&ram[na+1] = owner;
-            *(uint16_t*)&ram[na+3] = paras;
+            st16u(&ram[na+1], owner);
+            st16u(&ram[na+3], paras);
             memset(&ram[na+8],0,8);
             ram[a] = 'M';
-            *(uint16_t*)&ram[a+3] = (uint16_t)(sz - paras - 1);
+            st16u(&ram[a+3], (uint16_t)(sz - paras - 1));
             return (uint16_t)(nseg + 1);
         }
         if(sz > paras + 1){
             uint16_t nseg = (uint16_t)(chosen + paras + 1);
             uint32_t na = (uint32_t)nseg*16;
             ram[na] = sig;
-            *(uint16_t*)&ram[na+1] = 0;
-            *(uint16_t*)&ram[na+3] = (uint16_t)(sz - paras - 1);
+            st16u(&ram[na+1], 0);
+            st16u(&ram[na+3], (uint16_t)(sz - paras - 1));
             memset(&ram[na+8],0,8);
             ram[a] = 'M';
-            *(uint16_t*)&ram[a+3] = paras;
+            st16u(&ram[a+3], paras);
         }
-        *(uint16_t*)&ram[a+1] = owner;
+        st16u(&ram[a+1], owner);
         return (uint16_t)(chosen+1);
     }
 }
@@ -107,14 +107,14 @@ static void mcb_coalesce(void){
     for(;;){
         uint32_t a = (uint32_t)seg*16;
         uint8_t sig = ram[a];
-        uint16_t own = *(uint16_t*)&ram[a+1];
-        uint16_t sz  = *(uint16_t*)&ram[a+3];
+        uint16_t own = ld16u(&ram[a+1]);
+        uint16_t sz  = ld16u(&ram[a+3]);
         if(sig=='Z') break;
         if(own==0){
             uint16_t nseg = (uint16_t)(seg + sz + 1);
             uint32_t na = (uint32_t)nseg*16;
-            if((ram[na]=='M'||ram[na]=='Z') && *(uint16_t*)&ram[na+1]==0){
-                *(uint16_t*)&ram[a+3] = (uint16_t)(sz + *(uint16_t*)&ram[na+3] + 1);
+            if((ram[na]=='M'||ram[na]=='Z') && ld16u(&ram[na+1])==0){
+                st16u(&ram[a+3], (uint16_t)(sz + ld16u(&ram[na+3]) + 1));
                 ram[a] = ram[na];
                 continue;
             }
@@ -134,7 +134,7 @@ static int mcb_free(uint16_t seg){
     if(!mcb_valid(seg)) return 0;
     a = (uint32_t)(seg-1)*16;
     if(ram[a]!='M' && ram[a]!='Z') return 0;
-    *(uint16_t*)&ram[a+1] = 0;
+    st16u(&ram[a+1], 0);
     mcb_coalesce();
     return 1;
 }
@@ -144,17 +144,17 @@ static int mcb_resize(uint16_t seg, uint16_t paras, uint16_t *avail){
     uint8_t sig;
     if(!mcb_valid(seg)){ if(avail) *avail = 0; return 0; }
     a = (uint32_t)(seg-1)*16;
-    sz = *(uint16_t*)&ram[a+3];
+    sz = ld16u(&ram[a+3]);
     sig = ram[a];
     if(paras <= sz){
         if(sz > paras){
             uint16_t nseg = (uint16_t)(seg + paras);
             uint32_t na = (uint32_t)nseg*16;
             ram[na] = sig;
-            *(uint16_t*)&ram[na+1] = 0;
-            *(uint16_t*)&ram[na+3] = (uint16_t)(sz - paras - 1);
+            st16u(&ram[na+1], 0);
+            st16u(&ram[na+3], (uint16_t)(sz - paras - 1));
             ram[a] = 'M';
-            *(uint16_t*)&ram[a+3] = paras;
+            st16u(&ram[a+3], paras);
             mcb_coalesce();
         }
         *avail = paras; return 1;
@@ -162,11 +162,11 @@ static int mcb_resize(uint16_t seg, uint16_t paras, uint16_t *avail){
     {   /* try to grow into the following free block */
         uint16_t nseg = (uint16_t)(seg + sz);
         uint32_t na = (uint32_t)nseg*16;
-        if(sig=='M' && (ram[na]=='M'||ram[na]=='Z') && *(uint16_t*)&ram[na+1]==0){
-            uint16_t total = (uint16_t)(sz + *(uint16_t*)&ram[na+3] + 1);
+        if(sig=='M' && (ram[na]=='M'||ram[na]=='Z') && ld16u(&ram[na+1])==0){
+            uint16_t total = (uint16_t)(sz + ld16u(&ram[na+3]) + 1);
             if(total >= paras){
                 ram[a] = ram[na];
-                *(uint16_t*)&ram[a+3] = total;
+                st16u(&ram[a+3], total);
                 return mcb_resize(seg, paras, avail);
             }
             *avail = total; return 0;
@@ -224,16 +224,16 @@ static void mcb_free_children(uint16_t parent){
     for(;;){
         uint32_t a = (uint32_t)seg*16;
         uint8_t sig = ram[a];
-        uint16_t own = *(uint16_t*)&ram[a+1];
-        uint16_t sz  = *(uint16_t*)&ram[a+3];
+        uint16_t own = ld16u(&ram[a+1]);
+        uint16_t sz  = ld16u(&ram[a+3]);
         if(sig!='M' && sig!='Z') break;
         if(own && own != 8 && own != parent){
             /* owner is a PSP: does its parent field point at us? */
-            uint16_t its_parent = *(uint16_t*)&ram[(uint32_t)own*16 + 0x16];
+            uint16_t its_parent = ld16u(&ram[(uint32_t)own*16 + 0x16]);
             if(its_parent == parent){
                 trc("[dos] releasing resident child %04X of %04X\n", own, parent);
                 ivt_unhook_range((uint16_t)(seg+1), (uint16_t)(seg+sz));
-                *(uint16_t*)&ram[a+1] = 0;
+                st16u(&ram[a+1], 0);
             }
         }
         if(sig=='Z') break;
@@ -250,8 +250,8 @@ static void mcb_dump(const char *why){
     for(;;){
         uint32_t a = (uint32_t)seg*16;
         uint8_t sig = ram[a];
-        uint16_t own = *(uint16_t*)&ram[a+1];
-        uint16_t sz  = *(uint16_t*)&ram[a+3];
+        uint16_t own = ld16u(&ram[a+1]);
+        uint16_t sz  = ld16u(&ram[a+3]);
         if(sig!='M' && sig!='Z'){ trc(" BAD@%04X", seg); break; }
         trc(" [%c %04X..%04X own=%04X %uK]", sig, (unsigned)(seg+1),
             (unsigned)(seg+sz), own, (unsigned)(sz/64));
@@ -385,16 +385,16 @@ static void make_psp(uint16_t seg, uint16_t memtop, uint16_t parent, uint16_t en
     int i;
     memset(&ram[a], 0, 256);
     ram[a+0]=0xCD; ram[a+1]=0x20;
-    *(uint16_t*)&ram[a+2] = memtop;
+    st16u(&ram[a+2], memtop);
     ram[a+5]=0xCD; ram[a+6]=0x21; ram[a+7]=0xCB;
-    *(uint32_t*)&ram[a+0x0A] = mem_r32(0x22*4);
-    *(uint32_t*)&ram[a+0x0E] = mem_r32(0x23*4);
-    *(uint32_t*)&ram[a+0x12] = mem_r32(0x24*4);
-    *(uint16_t*)&ram[a+0x16] = parent;
+    st32u(&ram[a+0x0A], mem_r32(0x22*4));
+    st32u(&ram[a+0x0E], mem_r32(0x23*4));
+    st32u(&ram[a+0x12], mem_r32(0x24*4));
+    st16u(&ram[a+0x16], parent);
     for(i=0;i<20;i++) ram[a+0x18+i] = (i<5)?(uint8_t)i:0xFF;
-    *(uint16_t*)&ram[a+0x2C] = env;
-    *(uint16_t*)&ram[a+0x32] = 20;
-    *(uint32_t*)&ram[a+0x34] = ((uint32_t)seg<<16) | 0x18;
+    st16u(&ram[a+0x2C], env);
+    st16u(&ram[a+0x32], 20);
+    st32u(&ram[a+0x34], ((uint32_t)seg<<16) | 0x18);
     ram[a+0x50]=0xCD; ram[a+0x51]=0x21; ram[a+0x52]=0xCB;
     memset(&ram[a+0x5C], 0, 36);
     ram[a+0x5C]=0; ram[a+0x6C]=0;
@@ -413,7 +413,7 @@ static uint16_t make_env(const char *progpath){
     uint16_t paras, seg, largest;
     for(i=0;vars[i];i++){ int l=(int)strlen(vars[i]); memcpy(buf+n, vars[i], (size_t)l+1); n += l+1; }
     buf[n++] = 0;
-    *(uint16_t*)&buf[n] = 1; n += 2;
+    st16u(&buf[n], 1); n += 2;
     { int l=(int)strlen(progpath); memcpy(buf+n, progpath, (size_t)l+1); n += l+1; }
     paras = (uint16_t)((n + 15)/16);
     seg = mcb_alloc(paras, 8, &largest);
@@ -442,9 +442,9 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         seg = mcb_alloc(0xFFFF, 0, &lg);
         if(!seg) seg = mcb_alloc(lg, 0, &lg);
         if(!seg){ fclose(f); return 8; }
-        paras = *(uint16_t*)&ram[(uint32_t)(seg-1)*16 + 3];
+        paras = ld16u(&ram[(uint32_t)(seg-1)*16 + 3]);
         psp = seg;
-        *(uint16_t*)&ram[(uint32_t)(seg-1)*16 + 1] = psp;
+        st16u(&ram[(uint32_t)(seg-1)*16 + 1], psp);
         make_psp(psp, (uint16_t)(psp + paras), cur_psp ? cur_psp : psp, env, tail);
         if(fsize > 0xFF00) fsize = 0xFF00;
         if(fread(&ram[(uint32_t)psp*16 + 0x100], 1, (size_t)fsize, f) != (size_t)fsize){ }
@@ -456,12 +456,12 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         return 0;
     }
     {
-        uint16_t cblp = *(uint16_t*)&hdr[2], cp = *(uint16_t*)&hdr[4];
-        uint16_t crlc = *(uint16_t*)&hdr[6], cparhdr = *(uint16_t*)&hdr[8];
-        uint16_t minalloc = *(uint16_t*)&hdr[10], maxalloc = *(uint16_t*)&hdr[12];
-        uint16_t ss = *(uint16_t*)&hdr[14], sp = *(uint16_t*)&hdr[16];
-        uint16_t ip = *(uint16_t*)&hdr[20], cs = *(uint16_t*)&hdr[22];
-        uint16_t lfarlc = *(uint16_t*)&hdr[24];
+        uint16_t cblp = ld16u(&hdr[2]), cp = ld16u(&hdr[4]);
+        uint16_t crlc = ld16u(&hdr[6]), cparhdr = ld16u(&hdr[8]);
+        uint16_t minalloc = ld16u(&hdr[10]), maxalloc = ld16u(&hdr[12]);
+        uint16_t ss = ld16u(&hdr[14]), sp = ld16u(&hdr[16]);
+        uint16_t ip = ld16u(&hdr[20]), cs = ld16u(&hdr[22]);
+        uint16_t lfarlc = ld16u(&hdr[24]);
         uint32_t need;
         LzexeImage lz;
         int unpacked = 0;
@@ -503,7 +503,7 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         }
         psp = seg;
         load = (uint16_t)(seg + 16);
-        *(uint16_t*)&ram[(uint32_t)(seg-1)*16 + 1] = psp;
+        st16u(&ram[(uint32_t)(seg-1)*16 + 1], psp);
         make_psp(psp, (uint16_t)(psp + paras), cur_psp ? cur_psp : psp, env, tail);
 
         if(unpacked){
@@ -515,7 +515,7 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
             for(k=0;k<lz.nrel;k++){
                 uint32_t a = (uint32_t)(load + (lz.rel[k] >> 16))*16 +
                              (lz.rel[k] & 0xFFFFu);
-                *(uint16_t*)&ram[a] = (uint16_t)(*(uint16_t*)&ram[a] + load);
+                st16u(&ram[a], (uint16_t)(ld16u(&ram[a]) + load));
             }
             lzexe_free(&lz);
         } else {
@@ -528,7 +528,7 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
                 if(fread(rb,1,4,f)!=4) break;
                 ro = (uint16_t)(rb[0]|(rb[1]<<8)); rs = (uint16_t)(rb[2]|(rb[3]<<8));
                 a = (uint32_t)(load + rs)*16 + ro;
-                *(uint16_t*)&ram[a] = (uint16_t)(*(uint16_t*)&ram[a] + load);
+                st16u(&ram[a], (uint16_t)(ld16u(&ram[a]) + load));
             }
         }
         fclose(f);
@@ -653,9 +653,9 @@ static void dos_terminate2(uint16_t code, int keep_paras){
         uint32_t a = (uint32_t)p->psp*16;
         /* restore the vectors the PSP saved */
         if(keep_paras < 0){
-            *(uint32_t*)&ram[0x22*4] = *(uint32_t*)&ram[a+0x0A];
-            *(uint32_t*)&ram[0x23*4] = *(uint32_t*)&ram[a+0x0E];
-            *(uint32_t*)&ram[0x24*4] = *(uint32_t*)&ram[a+0x12];
+            st32u(&ram[0x22*4], ld32u(&ram[a+0x0A]));
+            st32u(&ram[0x23*4], ld32u(&ram[a+0x0E]));
+            st32u(&ram[0x24*4], ld32u(&ram[a+0x12]));
             if(p->env) mcb_free(p->env);
             mcb_free(p->psp);
             mcb_free_children(p->psp);
@@ -804,7 +804,7 @@ void dos_int21(void){
     case 0x0E: cur_drive = DL; AL = 26; break;
     case 0x19: AL = cur_drive; break;
     case 0x1A: dta_seg = cpu.sreg[S_DS]; dta_off = DX; break;
-    case 0x25: *(uint32_t*)&ram[(uint32_t)AL*4] = ((uint32_t)cpu.sreg[S_DS]<<16) | DX; break;
+    case 0x25: st32u(&ram[(uint32_t)AL*4], ((uint32_t)cpu.sreg[S_DS]<<16) | DX); break;
     case 0x29: {
         /* Parse filename into FCB.  DS:SI source text, ES:DI 12-byte FCB
          * (drive + 8 + 3 used), AL control flags: bit 0 skip leading
@@ -898,7 +898,7 @@ void dos_int21(void){
     case 0x2F: set_sreg(S_ES, dta_seg); BX = dta_off; break;
     case 0x30: AL = 5; AH = 0; BH = 0xFF; BL = 0; CX = 0; break;
     case 0x33: if(AL==0) DL=0; break;
-    case 0x35: { uint32_t v = *(uint32_t*)&ram[(uint32_t)AL*4];
+    case 0x35: { uint32_t v = ld32u(&ram[(uint32_t)AL*4]);
         set_sreg(S_ES, (uint16_t)(v>>16)); BX = (uint16_t)v; break; }
     case 0x36: AX = 4; BX = 20000; CX = 512; DX = 30000; break;
     case 0x38: bios_set_cf(0); break;

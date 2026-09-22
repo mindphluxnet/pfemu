@@ -24,7 +24,8 @@ extern uint8_t vga_vram[256*1024];
 #define BH REG8(7)
 
 #define BDA8(o)   ram[0x400+(o)]
-#define BDA16(o)  (*(uint16_t*)&ram[0x400+(o)])
+#define BDA16(o)  ld16u(&ram[0x400+(o)])
+#define BDA16_SET(o,v)  st16u(&ram[0x400+(o)], (uint16_t)(v))
 
 /* ------------------------------------------------------------ scancodes */
 static const uint8_t sc2asc_lo[128] = {
@@ -50,22 +51,22 @@ static void kbuf_put(uint16_t v){
     uint16_t tail = BDA16(0x1C), next = (uint16_t)(tail + 2);
     if(next >= BDA16(0x82)) next = BDA16(0x80);
     if(next == BDA16(0x1A)) return;               /* full */
-    *(uint16_t*)&ram[0x400 + tail] = v;
-    BDA16(0x1C) = next;
+    st16u(&ram[0x400 + tail], v);
+    BDA16_SET(0x1C, next);
 }
 static int kbuf_get(uint16_t *out){
     uint16_t head = BDA16(0x1A);
     if(head == BDA16(0x1C)) return 0;
-    *out = *(uint16_t*)&ram[0x400 + head];
+    *out = ld16u(&ram[0x400 + head]);
     head = (uint16_t)(head + 2);
     if(head >= BDA16(0x82)) head = BDA16(0x80);
-    BDA16(0x1A) = head;
+    BDA16_SET(0x1A, head);
     return 1;
 }
 static int kbuf_peek(uint16_t *out){
     uint16_t head = BDA16(0x1A);
     if(head == BDA16(0x1C)) return 0;
-    *out = *(uint16_t*)&ram[0x400 + head];
+    *out = ld16u(&ram[0x400 + head]);
     return 1;
 }
 /* DOS buffered input (INT 21h AH=0Ah) consumes the same type-ahead queue. */
@@ -116,15 +117,15 @@ static void putch_tty(uint8_t c, uint8_t attr){
         for(i=0;i<cols;i++){ uint32_t o=(uint32_t)(24*cols+i); vga_vram[o*4+0]=' '; vga_vram[o*4+1]=attr; }
         row = 24;
     }
-    BDA16(0x50) = (uint16_t)((row<<8)|col);
+    BDA16_SET(0x50, (uint16_t)((row<<8)|col));
     vga_dirty = 1;
 }
 
 static void bios_int10(void){
     switch(AH){
-    case 0x00: vga_set_mode_bios(AL & 0x7F); BDA8(0x49)=AL&0x7F; BDA16(0x4A)=80; BDA16(0x50)=0; break;
-    case 0x01: BDA16(0x60) = CX; break;
-    case 0x02: BDA16(0x50 + (BH&7)*2) = DX; break;
+    case 0x00: vga_set_mode_bios(AL & 0x7F); BDA8(0x49)=AL&0x7F; BDA16_SET(0x4A, 80); BDA16_SET(0x50, 0); break;
+    case 0x01: BDA16_SET(0x60, CX); break;
+    case 0x02: BDA16_SET(0x50 + (BH&7)*2, DX); break;
     case 0x03: DX = BDA16(0x50 + (BH&7)*2); CX = BDA16(0x60); break;
     case 0x05: BDA8(0x62) = AL; break;
     case 0x06: case 0x07: {
@@ -195,7 +196,7 @@ static void bios_int10(void){
         else if(BL==0x36){ AL=0x12; }
         break;
     case 0x13: { int i; uint32_t p = cpu.sbase[S_ES] + REG16(R_EBP);
-        BDA16(0x50) = DX;
+        BDA16_SET(0x50, DX);
         for(i=0;i<CX;i++){
             uint8_t c  = mem_r8(p + ((AL&2)?(uint32_t)i*2:(uint32_t)i));
             uint8_t at = (AL&2) ? mem_r8(p + (uint32_t)i*2 + 1) : BL;
@@ -243,7 +244,7 @@ static void bios_int1a(void){
     switch(AH){
     case 0x00: { uint32_t t = BDA16(0x6C) | ((uint32_t)BDA16(0x6E)<<16);
         CX = (uint16_t)(t>>16); DX = (uint16_t)t; AL = 0; break; }
-    case 0x01: BDA16(0x6C)= DX; BDA16(0x6E)=CX; break;
+    case 0x01: BDA16_SET(0x6C, DX); BDA16_SET(0x6E, CX); break;
     case 0x02: CH=0x12; CL=0x00; DH=0x00; cpu.cf=0; break;
     case 0x04: CH=0x19; CL=0x93; DH=0x01; DL=0x01; cpu.cf=0; break;
     default: cpu.cf = 1; break;
@@ -293,7 +294,7 @@ static void put_stub(int intno, uint16_t off){
     ram[0xF0000 + off + 1] = 0xFF;
     ram[0xF0000 + off + 2] = (uint8_t)intno;
     ram[0xF0000 + off + 3] = 0xCF;
-    *(uint32_t*)&ram[intno*4] = ((uint32_t)0xF000<<16) | off;
+    st32u(&ram[intno*4], ((uint32_t)0xF000<<16) | off);
 }
 
 void bios_init(void){
@@ -315,21 +316,21 @@ void bios_init(void){
     };
 
     memset(&ram[0x400], 0, 0x100);
-    BDA16(0x10) = 0x0021;          /* equipment: 80x25 colour, 1 floppy, FPU  */
-    BDA16(0x13) = 640;             /* KB of conventional memory               */
+    BDA16_SET(0x10, 0x0021);       /* equipment: 80x25 colour, 1 floppy, FPU */
+    BDA16_SET(0x13, 640);          /* KB of conventional memory              */
     BDA8(0x49)  = 0x03;
-    BDA16(0x4A) = 80;
-    BDA16(0x4C) = 4096;
+    BDA16_SET(0x4A, 80);
+    BDA16_SET(0x4C, 4096);
     BDA8(0x62)  = 0;
-    BDA16(0x63) = 0x03D4;
+    BDA16_SET(0x63, 0x03D4);
     BDA8(0x84)  = 24;
-    BDA16(0x85) = 16;
+    BDA16_SET(0x85, 16);
     BDA8(0x87)  = 0x60;
     BDA8(0x88)  = 0x09;
-    BDA16(0x1A) = 0x001E;
-    BDA16(0x1C) = 0x001E;
-    BDA16(0x80) = 0x001E;
-    BDA16(0x82) = 0x003E;
+    BDA16_SET(0x1A, 0x001E);
+    BDA16_SET(0x1C, 0x001E);
+    BDA16_SET(0x80, 0x001E);
+    BDA16_SET(0x82, 0x003E);
 
     for(i=0;i<256;i++) cb_table[i] = bios_stub;
 
@@ -349,11 +350,11 @@ void bios_init(void){
 
     /* real machine code for the timer tick so hooks can chain into INT 1Ch */
     memcpy(&ram[0xF0000 + 0x0E00], int8code, sizeof(int8code));
-    *(uint32_t*)&ram[0x08*4] = ((uint32_t)0xF000<<16) | 0x0E00;
+    st32u(&ram[0x08*4], ((uint32_t)0xF000<<16) | 0x0E00);
 
     /* INT 1Ch, 1Dh..1Fh: plain IRETs / table pointers */
     ram[0xF0000 + 0x0E80] = 0xCF;
-    *(uint32_t*)&ram[0x1C*4] = ((uint32_t)0xF000<<16) | 0x0E80;
+    st32u(&ram[0x1C*4], ((uint32_t)0xF000<<16) | 0x0E80);
 
     /* ROM identification */
     memcpy(&ram[0xFE000], "PFEMU BIOS (c) 2026 - not IBM", 29);
