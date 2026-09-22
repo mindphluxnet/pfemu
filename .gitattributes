@@ -1,0 +1,5 @@
+# A .pfr carries an FNV-1a over its own raw disk bytes (append_file_hash(),
+# src/replay.c), and a mismatch refuses the file rather than replaying
+# something nobody recorded.  End-of-line conversion would change those bytes
+# and break every committed vector on checkout, so these are handled verbatim.
+tests/golden/*.pfr -text

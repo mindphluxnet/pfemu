@@ -22,3 +22,10 @@ GAME
 *.o
 *.d
 /pfemu-headless
+
+# Capture and session artifacts left in the working directory.
+# tests/golden/*.pfr is a committed vector and is re-included below.
+*.wav
+/probe.pfr
+/*.pfr
+!tests/golden/*.pfr

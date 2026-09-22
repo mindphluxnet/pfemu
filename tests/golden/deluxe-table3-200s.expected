@@ -1,0 +1,24 @@
+# Golden vector: Deluxe, Table 3, 200 emulated seconds, human-played.
+#
+# Recorded on Windows (MSVC) by a person actually playing; the .pfr footer
+# carries the -wav hash from that session, so a replay checks itself against
+# what the original run produced rather than against another replay.
+release      deluxe
+program      PINBALL.EXE
+events       255
+end_emu      200.167547
+end_cycles   1201005284
+wav_hash     575858f2a652fce2
+wav_samples  4184064
+# -shotevery 20, md5 of each seqNNN.ppm
+frame 000 53858aa07b2e462eac7998c4465531d1
+frame 001 6ff42c2d60d452dea1fc2af6184513c2
+frame 002 23d3074b6db2cea5960e6c18b058d5b6
+frame 003 00dfa3a9b905cbce6ddc00e4b5f9ea1c
+frame 004 3cd1730977e84b0c0f0ee3a733cf619d
+frame 005 75bf61c3f4832af416d283a8450b761c
+frame 006 372a30d386502bfb7676469922a78973
+frame 007 b71121f76af4ceaa1e2f6bf0dbbca0e1
+frame 008 d3b45a9184a1584d35dd331a5ffbf1cf
+frame 009 644c80a76114530c1c1f1ea66ce0cc33
+frame 010 2bbbc5bdaf796c91e9a431ed77ba91e6
