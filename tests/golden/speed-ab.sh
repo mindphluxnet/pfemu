@@ -99,10 +99,22 @@ else
 fi
 
 wa=$(cat "$work/paced/wall"); wb=$(cat "$work/fast/wall")
-[ "$wb" -gt 0 ] || wb=1
 echo
-echo "speedup: ${wa}s -> ${wb}s  (~$((wa / wb))x)"
-grep -h '^\[pfemu\] pace:' "$work/fast/run.log" | sed 's/^/fast /'
+echo "wall: ${wa}s paced -> ${wb}s unthrottled"
+# The ratio that matters for sizing is emulated seconds per wall second,
+# taken from the emulator's own pace line rather than from date(1): whole
+# seconds and shell integer division round a 3.7x down to "3x", and this
+# number is a capacity input (docs/VERIFY.md, "Capacity").
+pace=$(grep -h '^\[pfemu\] pace:' "$work/fast/run.log" | tail -1)
+echo "$pace" | sed 's/^/fast /'
+echo "$pace" | awk '{
+    for (i = 1; i <= NF; i++) {
+        if ($i ~ /^wall=/) { w = substr($i, 6); sub(/s$/, "", w) }
+        if ($i ~ /^emu=/)  { e = substr($i, 5); sub(/s$/, "", e) }
+    }
+    if (w > 0) printf "real-time factor: %.2fx  (one gameplay-hour = %.0f min of one core)
+", e/w, 60*w/e
+}'
 
 echo
 if [ "$bad" -eq 0 ]; then
