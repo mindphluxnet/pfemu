@@ -49,6 +49,11 @@ refuses a file with no `file_hash:` line and one carrying pre-cycle
 events, both of which ordinary play still accepts so that a player's own
 older recordings keep working.
 
+`-verify FILE` is the other half of the same story, at the other end of
+the run: one JSON object saying whether this replay reproduced its
+recording, and what score - if any - is eligible. A service reads that
+and nothing else the emulator prints. See [Verification](VERIFY.md).
+
 `tests/fuzz/` is the test for all of it - `-selftest` for the fixed cases,
 a mutation driver for the rest. Its README explains why the harness has to
 recompute the FNV-1a after mutating, which is also why that hash is not a

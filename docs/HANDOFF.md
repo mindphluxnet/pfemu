@@ -1,6 +1,6 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `fb4f59a`.
+State as of 2026-09-22, `main` at `26b7a25` plus the verdict work below.
 
 Read this with the determinism section of `VERIFY.md`, which is the document
 this work serves. This file is the short version plus what to do next.
@@ -41,7 +41,17 @@ documents now say what was actually found.
 | A replay can run faster than real time | **Verified** - 3.7x on the server, 3.3x under WSL. It could not before `-unthrottle`: `-speed` is discarded during replay by design |
 | The `.pfr` parser refuses hostile input | **Verified** for the cases in `tests/fuzz` - 22 of them, 14 of which the previous parser accepted. `-selftest` is the regression test |
 | The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. 1,000,004 mutation cases under ASan+UBSan across four seeds, ~1.8% of them accepted deep into the parser. No crash, no assertion. A gcc mutation driver is still not a coverage-guided campaign |
+| The verdict object is stable | **Verified** for its own logic. `tests/verify/` drives 17 cases through `src/verify.c` against stubs under ASan+UBSan: field names, the three statuses, the exit codes, the eligibility rule, JSON escaping, write-once. Every emitted object was also parsed with a real JSON parser |
+| The verdict matches the report | **Verified** as a mechanism, not yet on a machine. `run.sh` now rides `-verify` along on the `-scoredbg` replay and cross-checks `best` against the `[RANKABLE]` lines the same run printed. Both shell extractors were tested against real emitter output; the suite itself has not been run since |
 | Big-endian correctness | **Untested.** The new helpers are host-endian, exactly like the puns they replaced. No regression, but no progress either |
+
+The verifier's **output** is done too, which was the last thing between
+here and writing the service. `-verify FILE` emits one JSON object -
+status, the recorded-vs-actual comparison, every scored attempt, and
+`best`, the highest score that satisfies the eligibility rule - and sets
+the exit code from the verdict. The rule is enforced inside the emulator
+rather than left to each caller, which is the whole reason the field is
+there. See the verdict section of VERIFY.md.
 
 The parser hardening that used to head this list is done (`8da135b`).
 What it settled: the specific holes are closed and regression-tested, and
@@ -73,11 +83,28 @@ reason item 1 below matters.
    what lands, and if a match fires in one of them, that vector is the
    valuable one.
 
-2. **CI: the free half is done, the other half needs a decision.**
+2. **Re-run the golden suite, and regenerate the one vector's `.expected`.**
+   Two things, one replay each, both on the user's side.
+
+   The suite gained a `verdict` check and has not been run since, so that
+   check is written and reasoned about but not observed. Both shell
+   extractors were tested against real emitter output, which is not the
+   same as the gate being green.
+
+   Separately: `deluxe-table1-partyon-295s.expected` carries a SEVEN-token
+   attempt line, from before the `rankable` column existed.
+   `mkexpected.sh` emits eight now, and `run.sh` truncates its own side to
+   seven to keep the older file passing - so the one vector that pins a
+   score does **not** pin its rankability, which is the thing `fb4f59a`
+   set out to pin. Regenerating it closes that, and it is one
+   `mkexpected.sh` run. It was not done here because an `.expected` is
+   generated from a measured replay, never typed in.
+
+3. **CI: the free half is done, the other half needs a decision.**
    `.github/workflows/ci.yml` runs on every push on `ubuntu-latest`:
    `make`, the 22-case parser regression suite, a 50k-case fuzz run over
-   the committed vector, and `make ubsan` as a compile check. None of it
-   needs an installation.
+   the committed vector, the 17-case verdict suite, and `make ubsan` as a
+   compile check. None of it needs an installation.
 
    *Still open:* running the golden suite in CI at all. `run.sh` needs an
    installation, and the game files are deliberately not in this
@@ -92,12 +119,12 @@ reason item 1 below matters.
    change made on the POSIX side can sit broken until release time -
    the mirror image of the risk the Linux job just closed.
 
-3. **A vector that reaches the PIT and VGA phase math hard.** That is what
+4. **A vector that reaches the PIT and VGA phase math hard.** That is what
    would turn `-ffp-contract=off` from a precaution into a demonstrated
    necessity, or reveal it as unnecessary. Lower priority than 1-3 because
    the flag stays either way.
 
-4. **Optional, low priority:** make the new helpers explicitly little-endian
+5. **Optional, low priority:** make the new helpers explicitly little-endian
    instead of host-endian. Correct in principle, unobservable on any host we
    build for, and not something the golden vector can check - so it buys
    nothing measurable today.
@@ -110,6 +137,7 @@ device. From the repo root under Git Bash:
     wsl make && wsl sh tests/golden/run.sh          # the gate, a few minutes
     wsl sh tests/golden/speed-ab.sh                 # pacing A/B, ~4 minutes
     wsl make fuzz && wsl ./pfemu-fuzz-pfr -selftest # parser, milliseconds
+    wsl make verify-test && wsl ./pfemu-verify-test # verdict, milliseconds
     cmd //c ".\build.bat"                            # MSVC; note //c, Git Bash eats /c
 
 The ubsan pass has its own script, because it must **not** go through
@@ -144,10 +172,13 @@ follow-up `make clean` is needed.
   over its own raw disk bytes, so end-of-line conversion on checkout refuses
   the file. The first commit of the vector was normalised on the way in and
   was already broken.
-- **Line endings are mixed in this repo** and `core.autocrlf` is `true`: the C
-  sources are CRLF in the working tree, `Makefile` and `docs/*.md` are LF.
-  Scripted edits must preserve each file's own endings or the diff becomes the
-  whole file.
+- **Line endings are mixed in this repo** and `core.autocrlf` is `true`, and
+  not along the line you would guess. The C sources are CRLF. `Makefile`,
+  `docs/VERIFY.md`, `docs/REPLAY.md` and this file are LF. `README.md` and
+  `docs/EMULATOR.md` are **CRLF** - so "the docs are LF" is wrong, and a
+  patch script written on that assumption fails to match anything, which is
+  the good outcome. Check each file with `file` before editing it; a
+  scripted edit that gets this wrong turns the whole file into the diff.
 - **Running the golden suite needs the game files.** `run.sh` takes an
   installation path, or reads `PFEMU_INSTALL`.
 - **A wall of undefined `__ubsan_handle_*` at link time is a stale-object

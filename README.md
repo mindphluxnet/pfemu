@@ -241,6 +241,7 @@ development.
 | `-speed X` | Run at X times normal speed |
 | `-unthrottle` | Drop the wall-clock pacer entirely; host pacing only, so it overrides nothing a replay carries |
 | `-strict` | Verification-grade input policy: refuse a replay with no integrity line, or with pre-cycle events |
+| `-verify FILE` | Write the machine-readable verdict (one JSON object) for a replay: status, footer/capture comparison, every scored attempt, and the best **rankable** score. Implies `-scoredbg`, and sets the exit code from the verdict. This is the output a verification service reads - see [Verification](docs/VERIFY.md) |
 | `-ips N` | Emulated instructions per second (default 6,000,000; 12,000,000 when Resolution is High unless `-ips` or a replay overrides) |
 | `-vol N` | Volume 0-100 for this run only |
 | `-record FILE` / `-replay FILE` | Record / replay a session |

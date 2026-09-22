@@ -75,6 +75,11 @@ static void fail_msg(const char *fmt, ...){
     va_end(ap);
     fprintf(stderr, "%s\n", buf);
     plat_fail_msg(buf);
+    /* -verify: every refusal in this file already funnels through here, so
+     * the verdict object gets written from one place instead of from the
+     * twenty `return 1` sites below.  It writes at most once (src/verify.c),
+     * and does nothing at all without the flag. */
+    verify_fail(buf);
 }
 
 /* -untilemu SEC as a cycle deadline.  emu_now() and cpu.cycles are both
@@ -328,6 +333,12 @@ int emu_main(int argc, char **argv){
         else if(!strcmp(argv[i],"-speed") && i+1<argc){ speed = atof(argv[++i]); speed_given = 1; }
         else if(!strcmp(argv[i],"-unthrottle")) unthrottle = 1;
         else if(!strcmp(argv[i],"-strict")) replay_set_strict(1);
+        /* -verify FILE: the machine-readable verdict (src/verify.c).  It is
+         * the one output a service is meant to read, it goes to a file of
+         * its own because stdout and stderr are both full of diagnostics by
+         * exit time, and it implies -scoredbg because a verdict without a
+         * score is not one. */
+        else if(!strcmp(argv[i],"-verify") && i+1<argc) verify_arm(argv[++i]);
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
         else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
@@ -397,6 +408,7 @@ int emu_main(int argc, char **argv){
     }
     if(replay_path && replay_begin_replay(replay_path) != 0){
         const char *e = replay_parse_error();
+        verify_code("bad_replay_file");
         if(e) fail_msg("%s", e);
         else fail_msg("cannot replay '%s'", replay_path);
         return 1;
@@ -666,6 +678,7 @@ relaunch:
      * have any identity to store, and replay boots the recorded program in
      * the recorded environment - verified before anything runs. */
     if((record_path || replay_path) && fantasies_trainer_enabled()){
+        verify_code("trainer_enabled");
         fail_msg("[replay] refused: the trainer is enabled for '%s'."
                  " Recording and replay need it off.", dir);
         if(from_launcher) goto relaunch;
@@ -699,6 +712,7 @@ relaunch:
                         break;
                     }
             }
+            verify_code("install_mismatch");
             fail_msg("%s%s", why, hint);
             if(from_launcher) goto relaunch;
             return 1;
@@ -1227,6 +1241,11 @@ relaunch:
     fantasies_ballgap_report();
     fantasies_matrix_report();
     fantasies_score_report();
+    /* Last of the reports, and deliberately so: it reformats what the three
+     * above just printed rather than recomputing any of it, so a verdict can
+     * never say something the stderr log does not. */
+    verify_report();
+    if(verify_on) exit_code = verify_exit_code();
     { extern unsigned long vsync_edges;
       printf("[pfemu] vsync edges seen = %lu (%.1f/s)\n",
              vsync_edges, vsync_edges/(emu_time>0?emu_time:1)); }

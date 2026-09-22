@@ -17,8 +17,10 @@ under this configuration, produce this score* - measured rather than argued,
 across two compilers and two operating systems.
 
 Neither spike found a reason to stop, so everything after them is plumbing:
-the golden-vector CI, eligibility enforcement, and the service itself. None
-of that exists yet.
+the golden-vector CI, eligibility enforcement, and the service itself.
+The verifier's output now exists - `-verify FILE` writes the object below,
+and the eligibility rule is enforced inside it rather than left to each
+caller. The service itself does not.
 
 The idea: a player uploads a `.pfr`, a headless Linux build re-simulates it,
 and the server derives the score itself. The client's emulator is never
@@ -642,6 +644,71 @@ The server needs its own copies of each supported release. Uploads are fine
 (a `.pfr` carries hashes, not code), but the operator has to hold the game
 binaries, and every newly identified release is a new verification target.
 
+## The verdict
+
+`-verify FILE` writes exactly one JSON object and nothing else. That file
+is the interface. Everything else the emulator prints is for a person -
+`-scoredbg` lays out a column table, `run.c` dumps registers and a hex
+window, `replay_report()` writes prose - and a service should not be
+reading any of it.
+
+The argument is not hypothetical. The `-scoredbg` attempt line has already
+changed shape once inside this project: it grew an `ended` field, and
+`tests/golden/run.sh` had to learn to accept both widths. That was a test
+script under the same roof as the change. A service in another repository,
+maintained by somebody else, would have found out in production. Diagnostic
+text stays free to change; this object does not.
+
+A file rather than a stream, for two reasons. By exit time both stdout and
+stderr carry several hundred lines of diagnostics, so neither is clean. And
+a file gives the caller an unambiguous crash signal: if the emulator dies
+mid-run the file is simply absent, which no amount of partial stdout can be
+distinguished from a short run.
+
+`status` is one of three, and the process exit code follows it, so a caller
+that only wants the verdict never has to open the file:
+
+| `status` | exit | meaning |
+| --- | --- | --- |
+| `refused` | 1 | Nothing ran. Bad `.pfr`, wrong install, trainer armed. `error` carries a code, `message` the sentence a human would have read |
+| `mismatch` | 2 | It ran, and the artifacts disagree with the recording. A nondeterminism bug or a doctored file - from out here those are indistinguishable, and both mean do not trust it |
+| `verified` | 0 | It ran and reproduced the recording: footer cycles, every injected event, and the capture hash |
+
+Exit codes are untouched when `-verify` is absent, so nothing that exists
+today moves.
+
+**`best` is the answer, not `score`.** It is the highest-scoring attempt
+satisfying every condition in `sc_close()` - attract-mode end, first launch
+seen, trainer off, exactly one player, no out-of-range BCD digit, score
+never decreased - and it is `null` when the run contains no such attempt,
+most often because it ended mid-table. Deriving that here rather than in
+each caller is the point of the field: the rule lives next to the evidence
+for it, and a client that reimplements it can only get it wrong. `attempts`
+still lists everything, each with a `reason` token saying why it is or is
+not rankable. A `mismatch` never reports a `best`, whatever the attempts
+say.
+
+`-verify` implies `-scoredbg`, because a verdict without a score is not one
+and making the caller remember a second flag is the footgun the capture
+hash used to have - a run without `-wav` silently produced nothing to
+compare against.
+
+`warnings` is advisory and does not change the status. `ball_counter_rewound`
+means a ball came back by a route the segmenter does not model, so every
+attempt boundary after that point is suspect; `no_recorded_wav_hash` means
+the file predates the footer hash, which `-strict` turns into a `mismatch`.
+
+Two tests hold it. `tests/verify/` links `src/verify.c` against stubs and
+drives 17 cases - the field names, the three statuses, the exit codes, the
+eligibility rule, JSON escaping, and that the object is written exactly
+once. It needs no installation, so unlike `tests/golden` it runs on a stock
+CI runner. That leaves one thing it cannot see: whether the accessors feed
+it the right numbers. So `run.sh` rides `-verify` along on the `-scoredbg`
+replay it already pays for, and checks the object against the report the
+same run printed. If those two ever disagree, the number a human reads out
+of the log is not the number the service published, which is the worst
+shape this failure could take.
+
 ## Capacity
 
 Gameplay runs at 32 MIPS host against a 6 MIPS guest (EMULATOR.md,
@@ -969,6 +1036,9 @@ cheap; nothing else should start until both come back green.
   compare the wav hash and the frame hashes, not just the footer, and include
   a session in which the end-of-game match fires.
 
-The headless host split and portability hardening are done. Then, in order:
-the golden-vector CI; eligibility enforcement and verifier output; the service.
-Chunked parallel verification only if capacity ever demands it.
+The headless host split and portability hardening are done, and so are
+eligibility enforcement and verifier output - the rule is decided, pinned by
+a golden vector, and enforced inside the object `-verify` emits. What is
+left, in order: the golden-vector CI (blocked on the game files, see
+HANDOFF.md); the service. Chunked parallel verification only if capacity
+ever demands it.

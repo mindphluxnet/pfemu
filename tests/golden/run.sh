@@ -89,7 +89,7 @@ for pfr in "$here"/*.pfr; do
     # nothing.
     if grep -q '^attempt ' "$exp"; then
         ( cd "$d" && "$BIN" -d "$INSTALL" -freezetime -replay "$pfr" \
-             -scoredbg >score.log 2>&1 )
+             -scoredbg -verify verdict.json >score.log 2>&1 )
         got=$(awk '/^\[score\] attempt /{t="";s="";b="";l="";e="";for(i=1;i<=NF;i++){if($i ~ /^table=/)t=substr($i,7);else if($i ~ /^score=/)s=substr($i,7);else if($i ~ /^ball_reached=/)b=substr($i,14);else if($i ~ /^launches=/)l=substr($i,10);else if($i ~ /^ended=/)e=substr($i,7)}r=(index($0,"[RANKABLE]")>0)?"yes":"no";printf "attempt %s %s %s %s %s %s %s\n",$3,t,s,b,l,e,r}' "$d/score.log")
         want=$(grep '^attempt ' "$exp")
         # .expected files written before rankable was pinned carry one value
@@ -109,6 +109,36 @@ for pfr in "$here"/*.pfr; do
             echo "   score    FAIL"
             echo "$want" | sed 's/^/     want /'
             echo "$got"  | sed 's/^/     got  /'
+            bad=1
+        fi
+        # The -verify verdict (src/verify.c), which is what a service reads.
+        # Checked against the report the SAME run just printed, not against
+        # .expected, and deliberately so: .expected already pins the score
+        # above, and a second copy of the same number would only pin it
+        # twice. What is unchecked until here is whether the JSON path and
+        # the text path agree - two readers of the same state, one of them
+        # new. If they ever disagree, the number a human reads out of the
+        # log is not the number the service published, which is the worst
+        # shape this failure could take.
+        #
+        # It costs no extra replay: -verify rides along on the -scoredbg
+        # one, writes a file at exit, and changes nothing the guest sees.
+        if [ -f "$d/verdict.json" ]; then
+            vstat=$(sed -n 's/.*"status": "\([a-z_]*\)".*/\1/p' "$d/verdict.json" | head -1)
+            # "best" is an object on the line after the key, or the literal
+            # null - in which case the next line has no score and this is
+            # empty, which is what the log side produces too.
+            vbest=$(awk '/"best":/{getline;if(match($0,/"score": [0-9]+/))print substr($0,RSTART+9,RLENGTH-9);exit}' "$d/verdict.json")
+            sbest=$(awk '/^\[score\] attempt /&&index($0,"[RANKABLE]")>0{for(i=1;i<=NF;i++)if($i ~ /^score=/){v=substr($i,7)+0;if(v>m)m=v}}END{if(m)print m}' "$d/score.log")
+            if [ "$vstat" = verified ] && [ "$vbest" = "$sbest" ]; then
+                echo "   verdict  ok    ${vbest:-verified, nothing rankable}"
+            else
+                echo "   verdict  FAIL  status=$vstat best=${vbest:-null}" \
+                     "but score.log's best rankable is ${sbest:-none}"
+                bad=1
+            fi
+        else
+            echo "   verdict  FAIL  -verify wrote no file"
             bad=1
         fi
         # The watchdog added with the ball-return invariant: if it fires,

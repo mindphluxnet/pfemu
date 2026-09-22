@@ -1104,3 +1104,31 @@ void replay_report(void){
      * footer wav hashes + -shotevery frames + the two numbers above.
      * Any mismatch is a nondeterminism bug. */
 }
+
+/* The same numbers replay_report() just printed, handed to src/verify.c as
+ * data instead of prose.  Read-only and side-effect free: it must be safe to
+ * call after the report, and it must not be able to change the verdict a
+ * human reading stderr would reach. */
+void replay_verify_state(ReplayVerify *out){
+    unsigned long ws = 0;
+    if(!out) return;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->act_wav, sizeof(out->act_wav), "none");
+    snprintf(out->rec_wav, sizeof(out->rec_wav), "none");
+    if(!mode_replay || !rh_valid) return;
+    out->valid           = 1;
+    out->release         = rh.release_id;
+    out->events_total    = nev;
+    out->events_injected = ev_idx;
+    out->rec_emu         = end_emu;
+    out->rec_cycles      = end_cycles;
+    out->act_emu         = emu_now();
+    out->act_cycles      = (unsigned long long)cpu.cycles;
+    out->have_rec_wav    = have_end_wav;
+    if(have_end_wav){
+        snprintf(out->rec_wav, sizeof(out->rec_wav), "%s", end_wav_hash);
+        out->rec_wav_samples = end_wav_samples;
+    }
+    wav_current_hash(out->act_wav, &ws);
+    out->act_wav_samples = ws;
+}

@@ -2358,16 +2358,40 @@ static int sc_byte(const uint32_t *tab){
     return (a && a < RAM_SIZE) ? ram[a] : -1;
 }
 
+/* Why an attempt is or is not rankable, as one token.  The six conditions in
+ * sc_close() are a conjunction, so a failing attempt usually fails several at
+ * once; this reports the first in a fixed order, which makes it stable across
+ * runs and across the two renderings below.
+ *
+ * This exists because -verify has to hand the reason to a service, and the
+ * human sentence and the machine token must not be able to disagree: both are
+ * now derived here, so there is one decision tree instead of two. */
+static const char *sc_reason(const ScAttempt *a){
+    if(a->rankable)               return "rankable";
+    if(strcmp(a->how,"attract"))  return "no_clean_end";
+    if(a->trainer)                return "trainer_enabled";
+    if(!a->locked)                return "first_launch_unseen";
+    if(a->players != 1)           return "player_count_not_1";
+    if(a->bad_digits)             return "score_digits_out_of_range";
+    if(a->decreased)              return "score_decreased";
+    return "unknown";
+}
+
+/* The stderr spelling of the above.  Byte for byte what it printed before the
+ * split - tests/golden/run.sh reads these lines. */
+static const char *sc_reason_text(const char *code){
+    if(!strcmp(code, "rankable"))                  return "  [RANKABLE]";
+    if(!strcmp(code, "no_clean_end"))              return "  [not rankable: no clean end]";
+    if(!strcmp(code, "trainer_enabled"))           return "  [not rankable: trainer enabled]";
+    if(!strcmp(code, "first_launch_unseen"))       return "  [not rankable: first launch never seen]";
+    if(!strcmp(code, "player_count_not_1"))        return "  [not rankable: player count is not 1]";
+    if(!strcmp(code, "score_digits_out_of_range")) return "  [not rankable: score digits out of range]";
+    if(!strcmp(code, "score_decreased"))           return "  [not rankable: score decreased]";
+    return "  [not rankable]";
+}
+
 static void sc_print(const ScAttempt *a){
-    const char *why =
-        a->rankable              ? "  [RANKABLE]" :
-        strcmp(a->how,"attract") ? "  [not rankable: no clean end]" :
-        a->trainer               ? "  [not rankable: trainer enabled]" :
-        !a->locked               ? "  [not rankable: first launch never seen]" :
-        a->players != 1          ? "  [not rankable: player count is not 1]" :
-        a->bad_digits            ? "  [not rankable: score digits out of range]" :
-        a->decreased             ? "  [not rankable: score decreased]" :
-                                   "  [not rankable]";
+    const char *why = sc_reason_text(sc_reason(a));
     fprintf(stderr,
         "[score] attempt %d table=%d start_cyc=%llu end_cyc=%llu"
         " start_emu=%.3f end_emu=%.3f score=%llu players=%d balls=%d"
@@ -2669,6 +2693,40 @@ void fantasies_score_tick(void){
     }
     sc_last_score = v;
 }
+
+/* -verify's window onto the log (src/verify.c).  A flattened copy rather than
+ * a pointer into sc_log: ScAttempt carries bookkeeping that is nobody else's
+ * business (locked, bad_digits, resets), and the verdict's field names are a
+ * published contract while these are free to change. */
+int fantasies_score_count(void){ return sc_nlog; }
+
+int fantasies_score_get(int i, ScoreAttempt *out){
+    const ScAttempt *a;
+    if(!out || i < 0 || i >= sc_nlog) return 0;
+    a = &sc_log[i];
+    out->index        = a->index;
+    out->table        = a->table;
+    out->players      = a->players;
+    out->balls        = a->nballs;
+    out->ball_reached = a->ball_reached;
+    out->launches     = a->launches;
+    out->springflips  = a->springflips;
+    out->score        = (unsigned long long)a->score;
+    out->ended        = a->how;
+    out->reason       = sc_reason(a);
+    out->rankable     = a->rankable;
+    out->start_emu    = a->start_emu;
+    out->end_emu      = a->end_emu;
+    out->start_cycles = a->start_cycles;
+    out->end_cycles   = a->end_cycles;
+    return 1;
+}
+
+/* The ball counter only ever counts up.  If it did not, a ball came back by a
+ * route this does not model and every attempt boundary after that point is
+ * suspect - so the verdict carries it rather than leaving it in a stderr line
+ * nobody parses. */
+int fantasies_score_rewound(void){ return sc_rewind_warned; }
 
 /* Exit summary: the table a verifier would hand to the database.  Printed for
  * every -scoredbg run, including the ones with nothing in it - "no attempts"

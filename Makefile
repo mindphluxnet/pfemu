@@ -62,7 +62,7 @@ LDLIBS  += -lm
 # are excluded, which is the whole point of the split.
 SRC := src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c \
        src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c \
-       src/replay.c src/snapshot.c src/run.c src/vgafont.c \
+       src/replay.c src/snapshot.c src/verify.c src/run.c src/vgafont.c \
        src/host_null.c src/posix.c
 
 OBJ := $(SRC:.c=.o)
@@ -119,6 +119,19 @@ fuzz:
 	$(CC) $(FUZZFLAGS) -o $(FUZZBIN) $(FUZZSRC) -lm
 	@echo "built $(FUZZBIN); see tests/fuzz/README.md"
 
+# The -verify verdict (src/verify.c), against stubs rather than the emulator.
+# The JSON object is an interface a service parses, so it gets a regression
+# test for the same reason the .pfr parser does.  Sanitized like the fuzz
+# harness, and for the same reason: it is cheap here and the object is built
+# by hand with fprintf.  Needs no installation, so unlike tests/golden it can
+# run on a stock CI runner.
+VERSRC := tests/verify/verify_selftest.c src/verify.c
+VERBIN := pfemu-verify-test
+
+verify-test:
+	$(CC) $(FUZZFLAGS) -o $(VERBIN) $(VERSRC) -lm
+	@echo "built $(VERBIN); run it with ./$(VERBIN)"
+
 # LLVMFuzzerTestOneInput instead of main().  CC=clang is not a default
 # because the rest of this Makefile is deliberately gcc-shaped.
 fuzz-clang:
@@ -127,8 +140,8 @@ fuzz-clang:
 	@echo "built $(FUZZBIN)-libfuzzer; run it with tests/fuzz/corpus/"
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer
+	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer $(VERBIN)
 
 -include $(DEP)
 
-.PHONY: all clean ubsan fuzz fuzz-clang
+.PHONY: all clean ubsan fuzz fuzz-clang verify-test

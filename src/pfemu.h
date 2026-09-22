@@ -548,6 +548,48 @@ void dos_set_time_frozen(int on);
 void dos_remap_writedir(const char *dir);
 void dos_close_all_handles(void);
 
+/* ---------------------------------------------- machine-readable verdict --- */
+/* -verify FILE (src/verify.c): one JSON object, written to a file of its
+ * own, for the service in docs/VERIFY.md.  Nothing else the emulator prints
+ * is an interface - -scoredbg's table is a human report and has already
+ * changed shape once - so a server reads this and only this.  -verify
+ * implies -scoredbg, and sets the exit code from the verdict
+ * (0 verified, 2 mismatch, 1 refused).  Exit codes are unchanged without it. */
+extern int verify_on;
+void verify_arm(const char *path);      /* -verify FILE */
+void verify_code(const char *code);     /* error code for the next refusal */
+void verify_fail(const char *msg);      /* refusal object; run.c's fail_msg */
+void verify_report(void);               /* exit verdict */
+int  verify_exit_code(void);            /* 0 verified, 2 mismatch, 1 refused */
+/* What the verdict needs from replay.c: recorded vs actual, side by side.
+ * These are the same numbers replay_report() prints, never recomputed. */
+typedef struct {
+    int   valid;                  /* a .pfr was loaded and replayed */
+    const char *release;          /* release id carried in the file */
+    int   events_total, events_injected;
+    double rec_emu, act_emu;
+    unsigned long long rec_cycles, act_cycles;
+    int   have_rec_wav;           /* the footer carried a wav_hash: line */
+    char  rec_wav[17], act_wav[17];
+    unsigned long rec_wav_samples, act_wav_samples;
+} ReplayVerify;
+void replay_verify_state(ReplayVerify *out);
+/* One scored attempt, flattened out of fantasies.c's private ScAttempt.
+ * This is the shape that leaves the process, so these field names are part
+ * of the JSON contract - renaming one breaks every caller. */
+typedef struct {
+    int index, table, players, balls, ball_reached, launches, springflips;
+    unsigned long long score;
+    const char *ended;            /* attract | abandoned | unfinished | ... */
+    const char *reason;           /* rankable | no_clean_end | ... */
+    int rankable;
+    double start_emu, end_emu;
+    unsigned long long start_cycles, end_cycles;
+} ScoreAttempt;
+int  fantasies_score_count(void);
+int  fantasies_score_get(int i, ScoreAttempt *out);  /* 1 when i is in range */
+int  fantasies_score_rewound(void);   /* the ball-counter watchdog fired */
+
 /* ------------------------------------------------- mid-table savestates --- */
 /* Single-slot deterministic snapshots (src/snapshot.c, per-subsystem
  * save/load pairs in dev/vga/dos/sound/fantasies.c).  Play mode only:

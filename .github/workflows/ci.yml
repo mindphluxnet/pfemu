@@ -44,6 +44,15 @@ jobs:
       - name: Fuzz the .pfr parser
         run: ./pfemu-fuzz-pfr -n 50000 tests/golden/deluxe-table3-200s.pfr
 
+      # The -verify JSON object, against stubs.  It is what the service
+      # parses, which makes it an interface, and the argument for having it
+      # at all was that the human-readable output kept moving underneath its
+      # readers.  17 cases, no installation, milliseconds.
+      - name: Verdict regression suite
+        run: |
+          make verify-test
+          ./pfemu-verify-test
+
       # Last, because `make ubsan` starts by cleaning.  This only proves the
       # instrumented build compiles and links - the finding-bugs part needs a
       # vector to execute, which needs an install.
