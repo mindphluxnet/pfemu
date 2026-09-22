@@ -137,6 +137,15 @@ status.
     emulated clock. It used to ride the present path, which is paced by the
     wall clock, so two runs of one replay on one machine already produced
     different files.
+  - **A capture observes the run; it must never alter it.** The first attempt
+    at the fix above clamped the instruction batch to the capture deadline,
+    the way the replay, `-keys` and `-untilemu` deadlines are clamped. That
+    made taking a picture change the sound: the same replay gave wav
+    `dd938f6bd1540842` with `-shotevery` and `dfb1427eef9a2239` without. The
+    clamp is right for an injection - a key has to land on the instruction it
+    is due on - and wrong for an observation. Frames are now taken at the
+    first batch boundary at or after each due time, which two runs already
+    agree on, and no batch is moved.
   - **The footer is the weakest of the three.** A replay stops on the
     recorded cycle, so `emu_time/cycles` agree by construction. A run that
     failed to open a file, never started the game and sat in text mode for

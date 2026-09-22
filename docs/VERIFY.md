@@ -684,7 +684,7 @@ cheap; nothing else should start until both come back green.
   | | |
   | --- | --- |
   | `end_emu` / `end_cycles` | `121.707901s` / `730247408` - identical |
-  | `-wav` FNV-1a | `dd938f6bd1540842`, 2521088 samples - identical |
+  | `-wav` FNV-1a | `dfb1427eef9a2239`, 2521088 samples - identical |
   | the `-wav` file itself | 5042220 bytes, byte-identical |
   | `-shotevery` frames | 13 of 13, byte-identical |
   | exit counters | 3DA reads 9240475, bit0 1891121, bit3 21262, page flips 1503, final mode 13h - all identical |
@@ -692,6 +692,15 @@ cheap; nothing else should start until both come back green.
   730 million instructions of x86, a 2.5 million sample mix and thirteen
   framebuffers, bit for bit, across two compilers and two operating systems.
   The entire log diff was one line of null-host noise.
+
+  The `-wav` hash above is also what a run with no `-shotevery` at all
+  produces, on both platforms. That is a stronger statement than the table:
+  the capture is an observation the run cannot feel, so a golden vector's
+  frames and its audio describe the same execution rather than the one the
+  measurement created. It took a wrong turn to get there - see the note under
+  `-shotevery` in REPLAY.md - and it was a user watching the game window who
+  caught it, not any comparison in this repo. Windows and Linux were being
+  perturbed identically and agreed with each other perfectly the whole time.
 
   **Read the footer match carefully, though: it is the weakest of the three.**
   A replay stops on the recorded cycle, so `end_cycles` agrees *by
@@ -712,6 +721,16 @@ cheap; nothing else should start until both come back green.
     enough to tell.
   - **UBSan has not been run.** `make ubsan` exists; nothing has been through
     it yet.
+
+  And one thing it raised that is larger than the spike. Batch structure is
+  guest-observable - that is what the `-shotevery` mistake proved. Replay
+  clamps every batch to the next recorded event so a key lands on the
+  instruction it is due on; record has no such clamp. So **a replay's batch
+  structure is not the recorded session's**, and whether a replay reproduces
+  the session it recorded has never been measured end to end. Everything here
+  rests on it. It is now testable without a human in the loop, because `-keys`
+  works again: record a scripted session, replay the `.pfr`, compare the
+  audio.
 
   The gate this argues for is unchanged, but its contents are now specific:
   compare the wav hash and the frame hashes, not just the footer, and include
