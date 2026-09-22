@@ -2447,6 +2447,16 @@ void fantasies_score_exec(uint32_t lin){
                             (unsigned long long)sc_last_score,
                             (unsigned long long)v);
                 }
+                /* A checkpoint per ball, printed even though the running
+                 * lines are throttled.  The end-of-ball bonus usually lands
+                 * inside this window, so without it the trace jumps from the
+                 * score before the bonus to the first increment of the next
+                 * ball, and a screenshot taken in between looks like it
+                 * disagrees with a number the log simply never printed. */
+                if(v != sc_last_score)
+                    fprintf(stderr, "[score] t=%.3f new-ball restore: score=%llu"
+                            " (was %llu)\n", emu_time, (unsigned long long)v,
+                            (unsigned long long)sc_last_score);
                 sc_last_score = v;
             }
         }

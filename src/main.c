@@ -608,14 +608,28 @@ int plat_pump(void){
 #define PRESENT_PHASE_HI 0.379   /* line 200/527 */
 int present_phaselock = 1;       /* -nophaselock reverts to the wall timer */
 
-void plat_present(const uint32_t *pix, int w, int h){
+/* Where the picture lands inside the window: aspect-corrected and centred,
+ * with black bars on whichever axis is left over.  Shared with F11 so a
+ * screenshot is the size the picture is on screen rather than the size the
+ * guest happens to render at - the two drifted apart once the window stopped
+ * being a fixed multiple of 320x240. */
+void plat_present_rect(int w, int h, int *dw_o, int *dh_o, int *dx_o, int *dy_o){
     int dw = win_w, dh = win_h, dx = 0, dy = 0;
     double ar = (double)w / (double)h * (w==320 && h==200 ? 1.2 : 1.0);
+    if(dw <= 0 || dh <= 0){ dw = w; dh = h; }        /* no window yet */
+    else if((double)dw/dh > ar){ dw = (int)(dh*ar); dx = (win_w-dw)/2; }
+    else { dh = (int)(dw/ar); dy = (win_h-dh)/2; }
+    if(dw < 1) dw = 1;
+    if(dh < 1) dh = 1;
+    *dw_o = dw; *dh_o = dh; *dx_o = dx; *dy_o = dy;
+}
+
+void plat_present(const uint32_t *pix, int w, int h){
+    int dw, dh, dx, dy;
     HDC dst;
     bmi.bmiHeader.biWidth = w;
     bmi.bmiHeader.biHeight = -h;
-    if((double)dw/dh > ar){ dw = (int)(dh*ar); dx = (win_w-dw)/2; }
-    else { dh = (int)(dw/ar); dy = (win_h-dh)/2; }
+    plat_present_rect(w, h, &dw, &dh, &dx, &dy);
     if(integer_scale){ }
     /* Compose off-screen: bars, picture and badges land in the back buffer
      * and reach the window in one BitBlt, so the compositor never catches
@@ -664,11 +678,30 @@ static void save_ppm(const char *path, const uint32_t *pix, int w, int h){
     fclose(f);
 }
 
-/* F11 screenshots: timestamped filename, written via save_png() (src/png.c). */
+/* F11 screenshots: timestamped filename, written via save_png() (src/png.c).
+ *
+ * Saved at the size the picture occupies on screen, not at the guest's own
+ * resolution.  Those used to be the same thing; they are not any more, and a
+ * 320x240 PNG out of a fullscreen session reads as a bug even though it is
+ * exactly what the guest drew.  The scale is nearest-neighbour from the
+ * emulated framebuffer - the same pixels StretchDIBits puts on screen under
+ * COLORONCOLOR - so nothing is invented, and for 320x200 modes it also picks
+ * up the 1.2 aspect correction that makes the picture look right.  Black bars
+ * are left out: they are window furniture, not picture.
+ *
+ * Deliberately NOT what `-shot`/`-shotevery` do.  Those are validation
+ * artifacts and stay at the guest's exact resolution, because tools that
+ * measure pixels (tools/dmdpanel.py) want the framebuffer, not a resampling
+ * of it.  Two captures with two different jobs.
+ *
+ * The PNG encoder writes stored (uncompressed) deflate blocks, so a
+ * fullscreen shot is a few MB. */
 static void take_screenshot(const uint32_t *pix, int w, int h){
     SYSTEMTIME st;
     char path[96];
     int n;
+    int dw, dh, dx, dy;
+    uint32_t *scaled = NULL;
     CreateDirectoryA("screenshots", NULL); /* ok if it already exists */
     GetLocalTime(&st);
     for(n=0; n<100; n++){
@@ -680,8 +713,22 @@ static void take_screenshot(const uint32_t *pix, int w, int h){
                     st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, n);
         if(GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) break;
     }
-    if(save_png(path, pix, w, h)) fprintf(stderr, "[pfemu] screenshot saved: %s\n", path);
+    plat_present_rect(w, h, &dw, &dh, &dx, &dy);
+    if((dw != w || dh != h) && (double)dw*dh < 64e6)
+        scaled = (uint32_t*)malloc((size_t)dw * (size_t)dh * sizeof(uint32_t));
+    if(scaled){
+        int y, x;
+        for(y = 0; y < dh; y++){
+            const uint32_t *src = pix + (size_t)(y * h / dh) * w;
+            uint32_t *out = scaled + (size_t)y * dw;
+            for(x = 0; x < dw; x++) out[x] = src[x * w / dw];
+        }
+    }
+    if(save_png(path, scaled ? scaled : pix, scaled ? dw : w, scaled ? dh : h))
+        fprintf(stderr, "[pfemu] screenshot saved: %s (%dx%d)\n",
+                path, scaled ? dw : w, scaled ? dh : h);
     else fprintf(stderr, "[pfemu] screenshot failed: %s\n", path);
+    free(scaled);
 }
 
 /* "t:scancode:updown,..." - drive the keyboard from a script for testing */

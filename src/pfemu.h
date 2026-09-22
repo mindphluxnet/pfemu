@@ -288,6 +288,9 @@ void plat_init(const char *title);
 void plat_save_window_pos(void); /* persist game-window position globally */
 int  plat_pump(void);                 /* returns 0 when the user closes the window */
 void plat_present(const uint32_t *pix, int w, int h);
+/* Where that picture lands in the window: aspect-corrected, centred,
+ * letterboxed.  F11 uses it so a screenshot matches the screen. */
+void plat_present_rect(int w, int h, int *dw, int *dh, int *dx, int *dy);
 double plat_time(void);
 void plat_sleep_ms(int ms);
 void plat_audio_init(int hz);

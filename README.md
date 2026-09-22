@@ -137,7 +137,7 @@ controls:
 | `Space` | Nudge |
 | `F5` | Game options menu |
 | `Alt+Enter` | Borderless fullscreen (also `-fullscreen` or the launcher option) |
-| `F11` | Save a PNG screenshot to `screenshots/` |
+| `F11` | Save a PNG screenshot to `screenshots/`, at the size the picture is on screen |
 | `F6` / `F8` | Save / load the snapshot slot (`savestates/`) |
 | `-` / `+` | Volume down / up in 5% steps |
 | `Keypad *` | Mute / restore |

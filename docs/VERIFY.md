@@ -1,8 +1,9 @@
 # Server-side replay verification (design note)
 
-**Status: Spike A is built, the rest is not.** `-scoredbg` (src/fantasies.c)
-locates the score and prints the per-attempt table described below; nothing
-else here exists. Two spikes decide whether any of the rest gets built
+**Status: Spike A is green, the rest is not built.** `-scoredbg`
+(src/fantasies.c) locates the score and prints the per-attempt table
+described below, and has been validated on every table of every ranked
+release; nothing else here exists. Two spikes decide whether any of the rest gets built
 (see [Phasing](#phasing)); everything after them is plumbing.
 
 The idea: a player uploads a `.pfr`, a headless Linux build re-simulates it,
@@ -473,9 +474,10 @@ reconstructed source alone:
 Two independent spikes gate everything. Either can be done first; both are
 cheap; nothing else should start until both come back green.
 
-- **Spike A - score and segmentation. Built; two games played and confirmed
-  against the game's own display; three bugs found and fixed; two tables and
-  the multi-player path still unplayed.** `-scoredbg` prints the
+- **Spike A - score and segmentation. GREEN.** Every table played end to end
+  on every ranked release, the score confirmed against the game's own dot
+  matrix, the multi-player rejection demonstrated on a real game, and three
+  bugs found and fixed along the way. `-scoredbg` prints the
   per-attempt table the verifier would emit, and every locator it rests on
   was confirmed unique by static byte-scan across all twelve `TABLE1-4.PRG`
   of the three ranked releases before it was written.
@@ -574,12 +576,30 @@ cheap; nothing else should start until both come back green.
   crop to the score field, which on the 320x240 table view is the right-hand
   end of the bottom strip.
 
-  What is left is coverage, not method. Two tables have been played end to
-  end - floppy Table 1 and Deluxe Table 3, both to a clean attract-mode
-  finish including a match ball - and every locator is confirmed statically
-  in all twelve programs. But **tables 2 and 4 have never been run at all**,
-  Power Pack has never been run, and no two-player game has ever been played,
-  so the early-abort path is still pure theory. Each of those is one game:
+  Coverage is now complete. Every table has been played end to end and every
+  ranked release has been exercised:
+
+  | Release | Table | Result |
+  | --- | --- | --- |
+  | floppy | 1 | `[RANKABLE]` 15,339,660, match ball |
+  | Power Pack | 2 | `[RANKABLE]` 2,554,470 |
+  | Deluxe | 3 | `[RANKABLE]` 8,826,490, match ball, panel-confirmed |
+  | Deluxe | 4 | `[RANKABLE]` 3,757,650, panel-confirmed |
+
+  A two-player game on Deluxe Table 1 locked at `players=2` **16 seconds into
+  the session**, at the first launch, and the run was abandoned there - the
+  early abort working on a real game rather than in theory.
+
+  The panel check was repeated on the new runs from F11 screenshots. Table 4
+  is an exact hit: the panel reads `1359060` and the log has
+  `score=1359060` at t=52.234. Table 2's shot reads `706870` between a logged
+  506,870 and the next logged 716,890 - the end-of-ball bonus had landed
+  inside the new-ball transaction, where the running lines are deliberately
+  silent. `716890 = 706870 + 10020`, one Table 2 increment, so the panel value
+  is the live one; `-scoredbg` now prints a checkpoint line at the restore
+  bracket so that stretch is no longer a gap in the trace.
+
+  The remaining commands, for a release or table added later:
 
   ```
   pfemu.exe -d FANTASYDX -scoredbg > score.log 2>&1
