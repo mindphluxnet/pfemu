@@ -486,6 +486,12 @@ typedef struct {
     int  have_end;               /* footer end lines were parsed */
 } ReplayHeader;
 int  replay_read_header(const char *path, ReplayHeader *out);
+/* -strict: verification-grade input policy.  Refuses the tolerances
+ * ordinary play keeps - a file with no integrity line, and pre-cycle
+ * events that replay on emu_time.  The bounds checks are always on. */
+void replay_set_strict(int on);
+int  replay_is_strict(void);
+uint64_t replay_last_event_cycle(void);  /* test hook, tests/fuzz */
 const char *replay_parse_error(void);   /* last parse failure, for fail_msg */
 const char *replay_wanted_release(void); /* release id in the loaded file */
 const char *replay_overlay_path(void);   /* isolated copy, NULL if none */

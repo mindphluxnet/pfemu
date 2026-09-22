@@ -327,6 +327,7 @@ int emu_main(int argc, char **argv){
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-speed") && i+1<argc){ speed = atof(argv[++i]); speed_given = 1; }
         else if(!strcmp(argv[i],"-unthrottle")) unthrottle = 1;
+        else if(!strcmp(argv[i],"-strict")) replay_set_strict(1);
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
         else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;

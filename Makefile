@@ -34,6 +34,15 @@
 #                     shift counts >= width the determinism section predicts
 #                     are still unproven either way - one vector instruments
 #                     only the opcodes it happens to execute.
+#   make fuzz         pfemu-fuzz-pfr, the .pfr parser under ASan+UBSan with a
+#                     standalone mutation driver (tests/fuzz/README.md).
+#                     docs/VERIFY.md gates the verification service on this:
+#                     the parser is C eating attacker-controlled text and is
+#                     a larger attack surface than the emulator behind it.
+#   make fuzz-clang   the same target built as a libFuzzer harness, when a
+#                     clang is available.  Coverage guided, so it reaches
+#                     much further; the gcc driver exists because this
+#                     repository does not otherwise need clang.
 #   make clean
 
 CC      ?= cc
@@ -84,9 +93,39 @@ ubsan:
 	rm -f $(OBJ) $(DEP)
 	@echo "built $(UBBIN); objects removed so a later 'make' recompiles clean"
 
+# ---------------------------------------------------------------- fuzzing
+# The parser is linked against stubs, not against the emulator, so a case is
+# a parse and nothing else - thousands a second, and exactly the surface a
+# verifier exposes before it decides to simulate anything.
+#
+# Built straight from sources with no intermediate objects on purpose: the
+# sanitizer flags here must not leave instrumented .o files in src/ for a
+# later plain `make` to relink, which is the stale-object trap the ubsan
+# target above had to be restructured to avoid.
+#
+# -fno-sanitize-recover=all makes a UBSan finding exit non-zero instead of
+# printing and continuing, so a CI job can believe the status.
+FUZZSRC := tests/fuzz/fuzz_pfr.c src/replay.c src/posix.c
+FUZZBIN := pfemu-fuzz-pfr
+FUZZFLAGS := -O1 -g $(CSTD) $(WARN) $(DETERM) \
+             -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+             -fsanitize=address,undefined -fno-sanitize-recover=all \
+             -fno-omit-frame-pointer
+
+fuzz:
+	$(CC) $(FUZZFLAGS) -o $(FUZZBIN) $(FUZZSRC) -lm
+	@echo "built $(FUZZBIN); see tests/fuzz/README.md"
+
+# LLVMFuzzerTestOneInput instead of main().  CC=clang is not a default
+# because the rest of this Makefile is deliberately gcc-shaped.
+fuzz-clang:
+	clang $(FUZZFLAGS) -DFUZZ_LIBFUZZER -fsanitize=fuzzer \
+	      -o $(FUZZBIN)-libfuzzer $(FUZZSRC) -lm
+	@echo "built $(FUZZBIN)-libfuzzer; run it with tests/fuzz/corpus/"
+
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan
+	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer
 
 -include $(DEP)
 
-.PHONY: all clean ubsan
+.PHONY: all clean ubsan fuzz fuzz-clang

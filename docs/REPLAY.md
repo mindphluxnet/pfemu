@@ -32,6 +32,28 @@ game sees. Implemented in `src/replay.c` (hooks in `main.c`, `dev.c`,
   focus-loss releases, and `Alt+Enter`/screenshot keys are disabled or routed
   around the guest during replay.
 
+## Hostile input
+
+Everything above is about a file this program wrote. A verification
+service takes files it did not write, so `parse_file()` bounds every
+number it will act on: `ips` and `speed` (NaN-safe, because a NaN walks
+through every `<= 0` clamp downstream), the quality notch, `start_table`,
+the footer, and the event count. Events must be sorted, must not mix the
+cycle-stamped and legacy forms, and must not be stamped past the footer -
+that last one is not cosmetic: `replay_should_stop()` returns 0 while
+`ev_idx < nev`, so an event that never comes due means a replay that never
+ends.
+
+`-strict` adds the policy half, for a verifier rather than a player: it
+refuses a file with no `file_hash:` line and one carrying pre-cycle
+events, both of which ordinary play still accepts so that a player's own
+older recordings keep working.
+
+`tests/fuzz/` is the test for all of it - `-selftest` for the fixed cases,
+a mutation driver for the rest. Its README explains why the harness has to
+recompute the FNV-1a after mutating, which is also why that hash is not a
+security property.
+
 Two rules keep replays honest:
 
 - **Trainer is incompatible.** Recording or replaying with it enabled is

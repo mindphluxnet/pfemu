@@ -69,6 +69,18 @@ void replay_frozen_dos_dt(uint16_t *dosdate, uint16_t *dostime){
 }
 
 static int mode_record = 0, mode_replay = 0;
+
+/* Verification-grade input policy (-strict).  Off for ordinary play,
+ * where a player's own older recordings are worth keeping playable; on
+ * for a verifier, which has no reason to accept anything but a current
+ * file it can check.  It refuses the two tolerances parse_file()
+ * otherwise grants: a file with no file_hash: line, and pre-cycle
+ * (three-field) events that replay on emu_time instead of cpu.cycles.
+ * The second is the one that matters - emu_time is a double, and the
+ * header comment above says exactly where "almost" stops holding. */
+static int strict_mode = 0;
+void replay_set_strict(int on){ strict_mode = on; }
+int replay_is_strict(void){ return strict_mode; }
 int replay_is_recording(void){ return mode_record; }
 int replay_is_replaying(void){ return mode_replay; }
 
@@ -466,6 +478,122 @@ const char *replay_wanted_release(void){ return rh_valid ? rh.release_id : NULL;
 #define PARSE_FAIL(...) do { snprintf(parse_err, sizeof(parse_err), __VA_ARGS__); \
     fprintf(stderr, "%s\n", parse_err); fclose(f); return -1; } while(0)
 
+/* ----------------------------------------------------- input validation */
+/* Everything a .pfr carries is attacker-controlled the moment one can be
+ * uploaded rather than recorded locally, which is the whole premise of
+ * docs/VERIFY.md.  Its pipeline names this as tier 0 ("header only") and
+ * tier 1 ("event stream sanity, monotonic cycles, bounded rates"); this
+ * is that, done where every caller gets it rather than in a server.
+ *
+ * Two of these are not hypothetical, and both end as the same symptom -
+ * a process that never exits:
+ *
+ *   - An event stamped past the footer makes replay_should_stop()
+ *     unreachable.  It returns 0 while ev_idx < nev, so an event that
+ *     never comes due keeps the list non-empty and the footer stop is
+ *     never consulted.  At 6 MIPS a stamp of 2^63 is ~48 million years.
+ *   - ips: nan walks straight through run.c's `emu_ips <= 0.0` clamp,
+ *     because every comparison against NaN is false.  emu_inv_ips goes
+ *     NaN, emu_now() returns NaN, and every deadline test is false.
+ *
+ * The bounds are deliberately far looser than any real session - the job
+ * is to bound the run, not to second-guess a player.  For scale, the
+ * 200-second golden vector uses 255 events and 1.2e9 cycles. */
+#define LIM_IPS_MIN     1000.0
+#define LIM_IPS_MAX     1.0e9
+#define LIM_SPEED_MIN   0.001
+#define LIM_SPEED_MAX   1000.0
+#define LIM_EVENTS      1000000             /* ~10/s for 24 emulated hours */
+#define LIM_END_EMU     86400.0             /* 24 emulated hours */
+#define LIM_END_CYCLES  1000000000000ULL    /* 1e12: ~46 h at 6 MIPS */
+
+/* NaN-safe range test.  Every comparison against NaN is false, so writing
+ * it this way round rejects NaN and both infinities without naming any of
+ * them - and without isnan(), which C99 has but which a fast-math flag
+ * can compile away.  This build never uses one; the habit is still right. */
+static int in_range(double v, double lo, double hi){ return v >= lo && v <= hi; }
+
+/* Sets parse_err and returns -1, for the checks that run after fclose(). */
+#define VFAIL(...) do { snprintf(parse_err, sizeof(parse_err), __VA_ARGS__); \
+    fprintf(stderr, "%s\n", parse_err); return -1; } while(0)
+
+static int validate_header(const char *path, const ReplayHeader *h){
+    if(!in_range(h->ips, LIM_IPS_MIN, LIM_IPS_MAX))
+        VFAIL("[replay] '%s': ips out of range (%g); expected %g to %g",
+              path, h->ips, LIM_IPS_MIN, LIM_IPS_MAX);
+    if(!in_range(h->speed, LIM_SPEED_MIN, LIM_SPEED_MAX))
+        VFAIL("[replay] '%s': speed out of range (%g); expected %g to %g",
+              path, h->speed, LIM_SPEED_MIN, LIM_SPEED_MAX);
+    /* The notch is 0-4 everywhere it is produced (read_sound_quality(),
+     * cfg_read() and cfg_write() all clamp), so anything else was not
+     * written by this program.  Refused rather than clamped: the overlay
+     * patch casts to uint8_t, where 260 would silently become 4. */
+    if(h->quality < 0 || h->quality > 4)
+        VFAIL("[replay] '%s': sound quality %d out of range 0-4",
+              path, h->quality);
+    if(h->start_table < 0 || h->start_table > 4)
+        VFAIL("[replay] '%s': start_table %d out of range 0-4",
+              path, h->start_table);
+    if(h->have_end){
+        if(!in_range(h->end_emu, 0.0, LIM_END_EMU))
+            VFAIL("[replay] '%s': end_emu %g out of range 0 to %g seconds",
+                  path, h->end_emu, LIM_END_EMU);
+        if(h->end_cycles > LIM_END_CYCLES)
+            VFAIL("[replay] '%s': end_cycles %llu exceeds the %llu cap",
+                  path, (unsigned long long)h->end_cycles,
+                  (unsigned long long)LIM_END_CYCLES);
+    }
+    return 0;
+}
+
+/* The event list, once end_emu/end_cycles are known - which is why this
+ * cannot happen inside the parse loop: the footer comes after the events. */
+static int validate_events(const char *path){
+    int i, ncyc = 0, nold = 0;
+    for(i=0;i<nev;i++){
+        if(ev[i].have_cyc) ncyc++; else nold++;
+        if(!in_range(ev[i].t, 0.0, LIM_END_EMU))
+            VFAIL("[replay] '%s': event %d has time %g, outside 0 to %g",
+                  path, i, ev[i].t, LIM_END_EMU);
+        if(i > 0){
+            /* Sorted is what the recorder writes and what the injector
+             * assumes: replay_inject_due() walks the list once and never
+             * looks back, so an out-of-order stamp is injected late or
+             * not at all.  Equal stamps are fine - a make and a break on
+             * the same instruction is ordinary. */
+            if(ev[i].have_cyc && ev[i-1].have_cyc && ev[i].cyc < ev[i-1].cyc)
+                VFAIL("[replay] '%s': event %d goes back in time"
+                      " (cycle %llu after %llu)", path, i,
+                      (unsigned long long)ev[i].cyc,
+                      (unsigned long long)ev[i-1].cyc);
+            if(!ev[i].have_cyc && ev[i].t < ev[i-1].t)
+                VFAIL("[replay] '%s': event %d goes back in time"
+                      " (%g after %g)", path, i, ev[i].t, ev[i-1].t);
+        }
+        /* The hang.  An event due after the footer is never injected, so
+         * ev_idx never reaches nev and replay_should_stop() never fires. */
+        if(ev[i].have_cyc && end_cycles > 0 && ev[i].cyc > end_cycles)
+            VFAIL("[replay] '%s': event %d is due at cycle %llu, past the"
+                  " footer's %llu - it could never be injected", path, i,
+                  (unsigned long long)ev[i].cyc,
+                  (unsigned long long)end_cycles);
+        if(!ev[i].have_cyc && end_emu >= 0.0 && ev[i].t > end_emu)
+            VFAIL("[replay] '%s': event %d is due at %gs, past the footer's"
+                  " %gs - it could never be injected", path, i,
+                  ev[i].t, end_emu);
+    }
+    /* One file, one clock.  Mixing the two forms leaves the ordering check
+     * above comparing stamps that are not on the same scale, and nothing
+     * this program writes ever mixes them. */
+    if(ncyc && nold)
+        VFAIL("[replay] '%s': mixes cycle-stamped (%d) and legacy (%d)"
+              " events", path, ncyc, nold);
+    if(strict_mode && nold)
+        VFAIL("[replay] '%s': -strict refuses legacy events, which replay"
+              " on emu_time rather than cpu.cycles", path);
+    return 0;
+}
+
 static int parse_file(const char *path, ReplayHeader *h, int load_events){
     char line[1024];
     FILE *f = fopen(path, "r");
@@ -587,6 +715,9 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
                     int nn = -1;
                     if(sscanf(s, "%llu %lf %x %u %15s%n", &cyc, &t, &sc, &dn,
                               extra, &nn) == 4 && nn < 0){
+                        if(nev >= LIM_EVENTS)
+                            PARSE_FAIL("[replay] '%s' line %d: more than %d events",
+                                       path, lineno, LIM_EVENTS);
                         if(nev >= ev_cap){
                             int ncap = ev_cap ? ev_cap*2 : 1024;
                             Event *n = (Event*)realloc(ev, (size_t)ncap * sizeof(Event));
@@ -609,6 +740,9 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
                     int nn = -1;
                     if(sscanf(s, "%lf %x %u %15s%n", &t, &sc, &dn,
                               extra, &nn) == 3 && nn < 0){
+                        if(nev >= LIM_EVENTS)
+                            PARSE_FAIL("[replay] '%s' line %d: more than %d events",
+                                       path, lineno, LIM_EVENTS);
                         if(nev >= ev_cap){
                             int ncap = ev_cap ? ev_cap*2 : 1024;
                             Event *n = (Event*)realloc(ev, (size_t)ncap * sizeof(Event));
@@ -635,6 +769,7 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
         fprintf(stderr, "%s\n", parse_err);
         return -1;
     }
+    if(validate_header(path, h) != 0) return -1;
     if(load_events){
         /* A complete record always ends in a footer.  Without one the file
          * was truncated (crash, copy, edit) - and without an end the
@@ -653,16 +788,27 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
             return -1;
         case -1:
             /* Legacy files predate the hash line: warned about once here,
-             * still played.  Anything WITH the line but wrong fails above. */
+             * still played.  Anything WITH the line but wrong fails above.
+             * A verifier has no such files, and refuses instead. */
+            if(strict_mode)
+                VFAIL("[replay] '%s': -strict refuses a file with no"
+                      " integrity line", path);
             fprintf(stderr, "[replay] '%s': no integrity line (legacy file)\n", path);
             break;
         default:
             break;
         }
     }
+    if(load_events && validate_events(path) != 0) return -1;
     h->nevents = load_events ? nev : h->nevents;
     return 0;
 }
+
+/* Test hook (tests/fuzz/fuzz_pfr.c): the last loaded event's cycle
+ * stamp.  The fuzzer asserts against the footer that no accepted file
+ * leaves an event that never comes due, which is the invariant the run
+ * loop's exit condition rests on. */
+uint64_t replay_last_event_cycle(void){ return nev ? ev[nev-1].cyc : 0; }
 
 int replay_read_header(const char *path, ReplayHeader *out){
     return parse_file(path, out, 0);
