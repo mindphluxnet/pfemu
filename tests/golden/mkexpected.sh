@@ -62,15 +62,34 @@ if [ -z "$f_wav" ] || [ "$f_wav" = none ]; then
 fi
 
 work=$(mktemp -d) || exit 2
-trap 'rm -rf "$work"' EXIT
+# Only cleaned up on success.  A refusal that deletes the log it is telling
+# you to read is the trap HANDOFF.md already warns about for run.sh, and
+# this script walked straight into it the first time it was used.
+keep=0
+trap '[ "$keep" = 1 ] || rm -rf "$work"' EXIT
+bail() { keep=1; echo; echo "log kept at $work/"; exit 1; }
 
 flags="-freezetime"
 [ "$UNTHROTTLE" = 1 ] && flags="$flags -unthrottle"
 
-echo "== replaying $name"
+# The artifact run carries NO -scoredbg, and that is not fussiness.
+# VERIFY.md shows the flag costs the guest nothing observable - but says in
+# the same breath that "only the wav hash is still uncovered, because
+# neither run captured audio".  -scoredbg together with -wav is precisely
+# the untested combination.  The first version of this script used it and
+# the wav check failed; whether -scoredbg caused that is NOT established -
+# it may be something else entirely about this vector - but the artifact
+# run has no reason to carry the risk while the question is open.  There
+# is prior form: -shotevery once moved the audio the same way (dd938f..
+# with, dfb1427.. without), which is why captures no longer clamp the
+# batch.  Separating the runs settles it either way: if the artifacts now
+# match, the flag was the cause and VERIFY.md gains a measurement.
+#
+# So: artifacts first, from a run with nothing extra attached.
+echo "== replaying $name (artifacts)"
 # shellcheck disable=SC2086
 ( cd "$work" && "$BIN" -d "$INSTALL" $flags -replay "$PFR" \
-    -wav out.wav -shotevery 20 -scoredbg >run.log 2>&1 )
+    -wav out.wav -shotevery 20 >run.log 2>&1 )
 
 # Refuse to pin frames from a run that does not already agree with the
 # recording: the frame hashes would then encode this machine's divergence as
@@ -78,15 +97,30 @@ echo "== replaying $name"
 # whose whole job is catching divergence.
 if ! grep -q 'wav hash MATCH' "$work/run.log"; then
     echo "REFUSING: this replay does not match the recording's wav hash."
-    grep -h 'wav' "$work/run.log" | head -2
-    echo "  Fix that first - generating .expected from this run would pin the"
-    echo "  disagreement as correct."
-    exit 1
+    echo "  Generating .expected from it would pin the disagreement as correct."
+    echo
+    echo "  --- last 25 lines of the replay log ---"
+    tail -25 "$work/run.log" | sed 's/^/  /'
+    bail
 fi
 if ! grep -q "actual ${f_emu}s / ${f_cyc} cycles" "$work/run.log"; then
     echo "REFUSING: footer disagrees with the recording."
-    grep -h 'recorded end' "$work/run.log"
-    exit 1
+    grep -h 'recorded end' "$work/run.log" | sed 's/^/  /'
+    bail
+fi
+echo "   wav and footer match the recording"
+
+# Only now, in its own run, the score.
+echo "== replaying $name (score)"
+# shellcheck disable=SC2086
+( cd "$work" && "$BIN" -d "$INSTALL" $flags -replay "$PFR" \
+    -scoredbg >score.log 2>&1 )
+if grep -q 'went BACKWARDS' "$work/score.log"; then
+    echo "REFUSING: the ball-counter watchdog fired."
+    grep -h 'went BACKWARDS' "$work/score.log" | sed 's/^/  /'
+    echo "  A ball was returned by a route the segmenter does not model, so"
+    echo "  the score from this run is not worth pinning."
+    bail
 fi
 
 events=$(sed -n 's/.*: [a-z]*, \([0-9]*\) events,.*/\1/p' "$work/run.log" | head -1)
@@ -119,10 +153,10 @@ events=$(sed -n 's/.*: [a-z]*, \([0-9]*\) events,.*/\1/p' "$work/run.log" | head
     # the one thing the suite did not previously pin.  Only emitted when
     # -scoredbg found an attempt, so vectors that are mid-game excerpts simply
     # have no attempt lines and run.sh skips the check.
-    if grep -q '^\[score\] attempt ' "$work/run.log"; then
-        echo "# -scoredbg, one line per attempt"
+    if grep -q '^\[score\] attempt ' "$work/score.log"; then
+        echo "# -scoredbg, one line per attempt (from a separate replay)"
         sed -n 's/^\[score\] attempt \([0-9]*\) table=\([0-9]*\).*score=\([0-9]*\).*ball_reached=\([0-9]*\) launches=\([0-9]*\).*ended=\([a-z]*\).*/attempt \1 \2 \3 \4 \5 \6/p' \
-            "$work/run.log"
+            "$work/score.log"
     fi
 } > "$exp.new"
 
