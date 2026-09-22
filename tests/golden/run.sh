@@ -73,6 +73,39 @@ for pfr in "$here"/*.pfr; do
         bad=1
     fi
 
+    # The score, for vectors that contain a complete game.  This is the
+    # number a verification service would publish, so it is the one the
+    # suite most needs to pin - a cross-platform divergence that changed it
+    # while leaving the audio alone would otherwise pass everything above.
+    #
+    # It costs a second replay rather than adding -scoredbg to the first.
+    # VERIFY.md argues the flag is observation-only and demonstrates it on
+    # one vector, but the artifacts checked above are the suite's whole
+    # reason to exist, and they are not the place to take that on trust.
+    # Vectors with no attempt lines - mid-game excerpts - skip this and pay
+    # nothing.
+    if grep -q '^attempt ' "$exp"; then
+        ( cd "$d" && "$BIN" -d "$INSTALL" -freezetime -replay "$pfr" \
+             -scoredbg >score.log 2>&1 )
+        got=$(sed -n 's/^\[score\] attempt \([0-9]*\) table=\([0-9]*\).*score=\([0-9]*\).*ball_reached=\([0-9]*\) launches=\([0-9]*\).*ended=\([a-z]*\).*/attempt \1 \2 \3 \4 \5 \6/p' "$d/score.log")
+        want=$(grep '^attempt ' "$exp")
+        if [ "$got" = "$want" ]; then
+            echo "   score    ok    $(echo "$want" | awk '{print $4}' | tr '\n' ' ')"
+        else
+            echo "   score    FAIL"
+            echo "$want" | sed 's/^/     want /'
+            echo "$got"  | sed 's/^/     got  /'
+            bad=1
+        fi
+        # The watchdog added with the ball-return invariant: if it fires,
+        # something returned a ball by a route the segmenter does not model,
+        # and the score above should not be believed even if it matched.
+        if grep -q 'went BACKWARDS' "$d/score.log"; then
+            echo "   invariant FAIL $(grep -h 'went BACKWARDS' "$d/score.log" | head -1)"
+            bad=1
+        fi
+    fi
+
     [ "$bad" -eq 0 ] || fail=1
 done
 

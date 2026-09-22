@@ -210,15 +210,28 @@ Triggers found so far, as examples and not as a closed set:
   count of balls played either. Whatever awards the extra ball - in Party
   Land, a lit outlane is one - is a source feeding this, not a route of its
   own.
-- **A scoreless first ball.** Drain ball 1 having scored nothing at all and
-  Party Land gives it back ("PARTY ON PLAYER 1"). Measured, in a recorded
-  session replayed under `-scoredbg`: first launch at `t=7.184`, no score
-  sample logged at all until `t=24.031` (the sampler only prints on change,
-  so the score was flat at zero throughout), and in between `launch 2
-  (ball 1)` at `t=21.955` with the counter still reading 1. The attempt
-  ended `ball_reached=4 launches=4` for a three-ball game and closed
-  `[RANKABLE]` at 7,937,620 - exactly one launch more than balls, and the
-  invariant intact.
+- **A scoreless ball.** Drain a ball without having scored a single point
+  *on that ball* and Party Land gives it back ("PARTY ON PLAYER 1"). Any
+  ball, not only the first - a later session got two of them in one game.
+  Worth stating carefully, because the first trace of this happened to be
+  ball 1, where "scored nothing on this ball" and "score is still zero"
+  are the same thing, and it is easy to write down the wrong one. The
+  condition is a delta across the ball, not an absolute.
+
+  Measured, in a recorded session replayed under `-scoredbg`: first launch
+  at `t=7.184`, no score sample logged at all until `t=24.031` (the sampler
+  prints only on change, so the score was flat across the whole ball), and
+  in between `launch 2 (ball 1)` at `t=21.955` with the counter still
+  reading 1. The attempt ended `ball_reached=4 launches=4` for a three-ball
+  game and closed `[RANKABLE]` at 7,937,620 - exactly one launch more than
+  balls, and the invariant intact.
+
+  This one is the most useful of the three as a determinism canary, and the
+  easiest to capture. The match needs a 1-in-10 draw to go your way; this
+  can be produced on demand by letting a ball drain untouched. And the test
+  it applies is an exact equality on the score delta, so any divergence
+  that puts a single point on the board where the recording had none flips
+  it, and the rest of the game then differs outright rather than subtly.
 
 Two of those three were found by playing, within a day of each other, after
 this document had already asserted the set was closed. Across four tables
