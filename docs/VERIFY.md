@@ -1,12 +1,24 @@
 # Server-side replay verification (design note)
 
-**Status: both spikes are green. The service is not built.** `-scoredbg`
-(src/fantasies.c) locates the score and prints the per-attempt table described
-below, validated on every table of every ranked release. `make` builds a
-headless Linux binary that reproduces a Windows recording bit for bit - wav,
-frames and footer (see [Phasing](#phasing)). Neither spike found a reason to
-stop, so everything after them is plumbing: the golden-vector CI, eligibility
-enforcement, and the service itself. None of that exists yet.
+**Status: both spikes are green, and the central claim is now demonstrated
+end to end. The service is not built.** `-scoredbg` (src/fantasies.c)
+locates the score and prints the per-attempt table described below,
+validated on every table of every ranked release. `make` builds a headless
+Linux binary that reproduces a Windows recording bit for bit - wav, frames
+and footer (see [Phasing](#phasing)).
+
+What that last sentence could not say until now is *and the score*. A
+complete Party Land game, played by a person on Windows under MSVC and
+recorded to a `.pfr`, has been replayed on a Debian server with gcc 14.2 at
+`-O2` and produced the same capture hash, all fifteen frame hashes, the same
+footer at 1,773,389,028 cycles, and the same final score of **20,652,570**.
+That is the whole premise of this document - *these inputs, on this build,
+under this configuration, produce this score* - measured rather than argued,
+across two compilers and two operating systems.
+
+Neither spike found a reason to stop, so everything after them is plumbing:
+the golden-vector CI, eligibility enforcement, and the service itself. None
+of that exists yet.
 
 The idea: a player uploads a `.pfr`, a headless Linux build re-simulates it,
 and the server derives the score itself. The client's emulator is never
@@ -436,9 +448,22 @@ whole game - the score.
 | Vector | What it is | Why it is here |
 | --- | --- | --- |
 | `deluxe-table3-200s` | 200s excerpt, human-played, mid-game | The first one. Passes under Windows/MSVC and on a Debian server with gcc 14.2 at `-O2`, which reproduced the MSVC-recorded wav hash `575858f2a652fce2` and all eleven frame hashes exactly, 1.2 billion cycles in |
-| `deluxe-table1-partyon-295s` | Party Land, a complete game: 295.6s, 1,773,389,028 cycles, `[RANKABLE]` at 20,652,570 | The first vector holding a whole attempt, so the first that can pin a **score**. Contains two scoreless-ball returns - `launches=5` for a three-ball game - which exercises the `shoot_again` route twice |
+| `deluxe-table1-partyon-295s` | Party Land, a complete game: 295.6s, 1,773,389,028 cycles, `[RANKABLE]` at 20,652,570 | The first vector holding a whole attempt, so the first that can pin a **score**. Contains two scoreless-ball returns - `launches=5` for a three-ball game - which exercises the `shoot_again` route twice. Recorded under Windows/MSVC and reproduced in full on Debian/gcc 14.2, score included |
 
-The cross-platform claim is tested now rather than assumed. `mkexpected.sh`
+The cross-platform claim is tested now rather than assumed, and as of the
+second vector it covers the score. Both vectors pass on Windows/MSVC and on
+Debian with gcc 14.2 at `-O2`. For the complete game that means two
+compilers and two operating systems agreeing on a capture hash, fifteen
+frames, a cycle count of 1,773,389,028 and a final score of 20,652,570 -
+from a session a person actually played on the Windows side.
+
+Worth being precise about what that is not. It is one complete game, on two
+x86-64 hosts, with no match in it. It says nothing yet about the opcode
+space outside these two sessions (`tests/golden/ubsan.sh`), about a
+cycle-derived match draw agreeing across platforms, or about any host that
+is not x86-64.
+
+`mkexpected.sh`
 generates a vector's `.expected` and refuses to do it from a run that does
 not already reproduce the recording's footer and capture hash, so the values
 it can only take from a replay - frames, score - are at least anchored to a

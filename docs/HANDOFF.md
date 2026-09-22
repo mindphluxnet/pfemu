@@ -35,7 +35,7 @@ documents now say what was actually found.
 | `-ffp-contract=off` is *necessary* | **Not demonstrated.** VERIFY.md records `-ffp-contract=fast -march=x86-64-v3` emitting 50 FMAs and producing the same wav and frames. A justified precaution, not a proven need |
 | Shift counts >= width in `cpu.c` | **Unproven either way.** ubsan instruments only the opcodes a vector executes, and one 200s Table 3 replay does not cover the opcode space |
 | The suite catches a wrong **score** | **Verified** as a mechanism, on one vector. `deluxe-table1-partyon-295s` pins `[RANKABLE] 20,652,570`, and `run.sh` fails the vector if a replay disagrees or if the ball-counter watchdog fires |
-| Two platforms agree on a whole game | **Not yet.** The complete-game vector has only been replayed on this Windows machine. The Debian result is from the older 200s excerpt, which pins no score |
+| Two platforms agree on a **score** | **Verified**, on one vector. `deluxe-table1-partyon-295s` was recorded on Windows/MSVC and replayed on Debian/gcc 14.2 at `-O2`: same capture hash, all 15 frames, same 1,773,389,028 cycles, same 20,652,570. This is the claim the whole service rests on |
 | Host pacing is guest-invisible | **Verified**, on one vector, on two hosts. `tests/golden/speed-ab.sh` replays paced and unthrottled: footer, wav hash and all 11 frames byte-identical, and both still match the original Windows session |
 | A replay can run faster than real time | **Verified** - 3.7x on the server, 3.3x under WSL. It could not before `-unthrottle`: `-speed` is discarded during replay by design |
 | The `.pfr` parser refuses hostile input | **Verified** for the cases in `tests/fuzz` - 22 of them, 14 of which the previous parser accepted. `-selftest` is the regression test |
