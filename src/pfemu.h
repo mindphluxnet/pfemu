@@ -267,7 +267,7 @@ void fantasies_score_tick(void);             /* dev_tick() poll */
 void fantasies_score_leave(void);            /* the scored table went away */
 void fantasies_score_report(void);           /* exit summary */
 extern int scoredbg_on;                      /* -scoredbg */
-extern uint32_t score_hook_begin, score_hook_end; /* 0 = nothing to watch */
+extern uint32_t score_hook_begin, score_hook_end, score_hook_launch; /* 0 = idle */
 extern int mat_dbg;                          /* -matdbg */
 extern uint32_t mat_tick_site, mat_call_site, mat_crisis_site; /* 0 = unknown */
 extern int balldbg_on;                       /* -balldbg */

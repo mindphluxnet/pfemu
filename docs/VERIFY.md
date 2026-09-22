@@ -151,13 +151,27 @@ The state machine, per residency:
 
 - **ARMED** - `balls_left` reads its starting value and the score reads 0.
   A game is pending but the player count is not yet fixed.
-- **LOCKED** - the first `SPRING_VALID` true->false transition while
-  `balls_left` is still at its starting value: the first ball has been
-  launched, so the player count can no longer change. Sample it here and
-  reject the session if it is not 1. `SPRING_VALID` is already located per
-  table by `fantasies_patch_spring()` (fantasies.c:1014); note its own
-  comment that the flag is continuously driven by gameplay, not a one-shot
-  latch, which is why the `balls_left` qualifier matters.
+- **LOCKED** - the first launch of ball 1: the ball is away, so the player
+  count can no longer change. Sample it here and reject the session if it is
+  not 1.
+
+  The original plan was to read this off `SPRING_VALID`, already located by
+  `fantasies_patch_spring()`, as a true->false transition while the ball
+  counter is still at its starting value. **That does not work, and the first
+  playtest is what said so:** the flag clears exactly twice per ball where
+  there was one plunger shot. It is driven by the table's own lane switches
+  (`BYGEL12`/`BYGEL28` in `PLAND.ASM`), and a ball crosses them more than once
+  on its way out, so the level is honest but the transition count is not a
+  launch count.
+
+  The launch is an instruction instead. `SPRINGUP` (`FANTASIE.ASM`) computes
+  the plunger speed from how far the spring was drawn, dithers it with the
+  free-running counter, and stores it into the ball's vertical velocity;
+  nothing else reaches that store, and it is skipped entirely when
+  `SPRING_VALID` is false. Hooking it through `cpu_step()` is exact and needs
+  no qualifier at all. `-scoredbg` still counts the flag transitions
+  separately, and reports both numbers, so the discrepancy stays visible
+  instead of turning into folklore.
 - **DRAINED** - the ball counter passes `NO_OF_BALLS`.
   **Provisional only. This is not the end of the attempt.**
 - **ENDED** - the table returns to attract mode: `GO_DEMO_MODE`'s
@@ -268,9 +282,19 @@ to agree:
 Static byte-scan over all twelve `TABLE1-4.PRG` of the floppy, Power Pack and
 Deluxe releases: `zeroscore` matches exactly once per program, the DMD print
 exactly twice, and in all twelve the three immediates are the same address.
-The same scan validates the other four locators - attract-mode entry, game
-start, the ball/player site and the add-player handler - at one, one, one and
-two matches respectively, with every duplicated operand agreeing. The addresses
+The same scan validates the other five locators - attract-mode entry, game
+start, the ball/player site, the add-player handler and the plunger launch -
+at one, one, one, two and one matches respectively, with every duplicated
+operand agreeing.
+
+The launch locator gets a cross-check of its own for free: the word
+`SPRINGUP` stores the plunger speed into is the same word
+`fantasies_patch_jump()` already located from the ball's motion integrator, by
+a signature with nothing in common with it. Both agree in all twelve
+programs, which is what makes "this store is the launch" a measurement rather
+than a reading of the reconstructed source.
+
+The addresses
 themselves differ per table *and* per release (`DS:45B8` in floppy Table 1,
 `DS:4608` in the Deluxe one), which is the usual argument against hardcoding.
 
@@ -422,13 +446,25 @@ reconstructed source alone:
 Two independent spikes gate everything. Either can be done first; both are
 cheap; nothing else should start until both come back green.
 
-- **Spike A - score and segmentation. Built; playtest pending.** `-scoredbg`
-  prints the per-attempt table the verifier would emit, and every locator it
-  rests on was confirmed unique by static byte-scan across all twelve
-  `TABLE1-4.PRG` of the three ranked releases before it was written. What the
-  byte-scan cannot answer is whether the number it reads is the number on the
-  panel, so the spike is not green until someone plays a game on each table of
-  each release and compares:
+- **Spike A - score and segmentation. Built; one game played, one bug found
+  and fixed; wider playtest pending.** `-scoredbg` prints the per-attempt
+  table the verifier would emit, and every locator it rests on was confirmed
+  unique by static byte-scan across all twelve `TABLE1-4.PRG` of the three
+  ranked releases before it was written.
+
+  The first real game - Party Land, Deluxe, three balls, 7.5 emulated
+  minutes - segmented cleanly end to end: one attempt opened at the game
+  start, locked at `players=1`, tracked three balls plus a fourth from the
+  match, and closed on `ended=attract` with a final score of 15,339,660. A
+  second game opened immediately after and was correctly reported as
+  unfinished when the run was stopped. Two things came out of that log: the
+  spring-flag launch count was wrong (see [LOCKED](#attempt-segmentation)),
+  which is what the plunger-launch hook replaced it with, and a table booting
+  into attract mode was being reported as an unbalanced end. Both fixed.
+
+  What is still unverified is the part only a human can check: that the
+  number in the log is the number on the panel. So the spike is not green
+  until someone plays a game on each table of each release and compares:
 
   ```
   pfemu.exe -d FANTASYDX -scoredbg > score.log 2>&1
@@ -437,7 +473,9 @@ cheap; nothing else should start until both come back green.
   What to check, in order: the `[score] table N:` locator line appears on
   every table load; the running `score=` lines agree with the dot matrix; the
   attempt closes on `ended=attract` with the final score the panel shows, and
-  not one ball early; a game that ran into the match reports
+  not one ball early; `launches` now counts one per plunger shot (the log also
+  prints `springflips`, and the two are expected to differ - that is the bug
+  above, kept visible on purpose); a game that ran into the match reports
   `extra_after_last=1` or more; and a two-player game locks at `players=2` and
   says so seconds after the first launch rather than at the end of the run.
   The flag is read-only by construction, which is directly testable: replay

@@ -44,6 +44,18 @@ BALLSITE = re.compile(rb'\xa0(..)\x3a\x06(..)\x74.\x90\x90\x90\xfe\x06(..)\xeb.\
                       rb'\xfe\x06(..)\xa0(..)\x38\x06(..)\x77.', re.S)
 # SUB AL,3Ah / MOV [PLAYERS],AL / ADD AL,37h / MOV [text],AL  (F1-F8 handler)
 ADDPLAYER = re.compile(rb'\x2c\x3a\xa2(..)\x04\x37\xa2.', re.S)
+# SPRINGUP's tail: the plunger speed, dithered with the free-running counter,
+# stored into the ball's vertical velocity.  That store is the launch.  Its
+# Y_HAST must be the word the ball-jump locator in src/fantasies.c finds from
+# the motion integrator - INTEGRATOR below, which shares nothing with it.
+#   IMUL CX / MOV BP,AX / MOV AX,[slump] / AND AX,255 / SUB BP,AX /
+#   MOV BX,offset slump / ADD BX,2 / CMP BYTE PTR [BX],0FFh / JE +13 /
+#   NOP*3 / MOV [Y_HAST],BP
+LAUNCH = re.compile(rb'\xf7\xe9\x8b\xe8\xa1(..)\x25\xff\x00\x2b\xe8\xbb(..)'
+                    rb'\x83\xc3\x02\x80\x3f\xff\x74\x0d\x90\x90\x90\x89\x2e(..)', re.S)
+# MOV AX,[vel] / CWD / ADD [acc_lo],AX / ADC [acc_hi],DX / ... / IDIV BX
+INTEGRATOR = re.compile(rb'\xa1(..)\x99\x01\x06..\x11\x16..\xa1..\x8b\x16..'
+                        rb'\xbb\x00\x04\xf7\xfb', re.S)
 # PUSH imm16 / POP DS - the DATA-segment majority vote
 DATASEG = re.compile(rb'\x68(..)\x1f', re.S)
 
@@ -124,6 +136,21 @@ def scan(path):
         if nballs != balls11 + 1:
             bad.append("NO_OF_BALLS %04X is not BALLS+12 (%04X)" % (nballs, balls11 + 1))
 
+    launch = list(LAUNCH.finditer(img))
+    yhast = None
+    if len(launch) != 1:
+        bad.append("plunger launch matched %d times, want 1" % len(launch))
+    else:
+        slump, slump2, yhast = [u16(x) for x in launch[0].groups()]
+        if slump != slump2:
+            bad.append("plunger launch disagrees with itself")
+        vel = INTEGRATOR.search(img)
+        if vel is None:
+            bad.append("no motion integrator to confirm Y_HAST against")
+        elif u16(vel.group(1)) != yhast:
+            bad.append("plunger launch writes DS:%04X but the integrator reads "
+                       "DS:%04X" % (yhast, u16(vel.group(1))))
+
     players2, n_add = agree(img, ADDPLAYER)
     if n_add < 1:
         bad.append("no add-player handler")
@@ -136,9 +163,10 @@ def scan(path):
         return "%04X" % v if v is not None else "  ??"
 
     print("%-28s dseg=%s(x%-2d) score=%s(x%d,dmd x%d) demo=%s(x%d,start x%d) "
-          "ball=%s nballs=%s players=%s(x%d) player=%s  %s"
+          "ball=%s nballs=%s players=%s(x%d) player=%s launch=%s(x%d)  %s"
           % (path, h(seg), votes, h(score), n_zero, n_dmd, h(demo), n_demo,
              n_ggm, h(balls11), h(nballs), h(players), n_add, h(player),
+             h(yhast), len(launch),
              "OK" if not bad else "FAIL: " + "; ".join(bad)))
     return not bad
 

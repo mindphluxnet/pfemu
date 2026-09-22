@@ -811,7 +811,8 @@ void cpu_step(void){
      * is on and a located table is running, so normal play pays one compare. */
     if(score_hook_begin){
         uint32_t la = cs_base + cpu.eip;
-        if(la == score_hook_begin || la == score_hook_end)
+        if(la == score_hook_begin || la == score_hook_end ||
+           la == score_hook_launch)
             fantasies_score_exec(la);
     }
     if(x_on){

@@ -1993,17 +1993,19 @@ static uint32_t sc_players[5];            /* PLAYERS, 1..8 */
 static uint32_t sc_player[5];             /* PLAYER, whose turn it is */
 static uint32_t sc_begin_site[5];         /* GO_GAME_MODE's store */
 static uint32_t sc_end_site[5];           /* GO_DEMO_MODE's store */
+static uint32_t sc_launch_site[5];        /* SPRINGUP's velocity store */
 
 /* The two addresses cpu_step() compares against, set from the arrays above
  * when a located table is running and zeroed the moment it is not.  Both stay
  * 0 unless -scoredbg is on, so an ordinary run pays one predictable branch
  * per instruction and nothing else. */
-uint32_t score_hook_begin = 0, score_hook_end = 0;
+uint32_t score_hook_begin = 0, score_hook_end = 0, score_hook_launch = 0;
 
 #define SC_LOG 64
 typedef struct {
     int table, index, players, nballs, ball_reached;
-    int launches, launches_after_last_ball, rankable, bad_digits, decreased;
+    int launches, launches_after_last_ball, springflips;
+    int rankable, bad_digits, decreased;
     int locked, trainer;
     unsigned long long start_cycles, end_cycles;
     double start_emu, end_emu;
@@ -2020,6 +2022,7 @@ static int sc_spring_prev = -1;           /* SPRING_VALID at the last poll */
 static int sc_ball_prev = -1;
 static int sc_have_ball = 0;               /* BALLS[11] has read 1 this attempt */
 static int sc_flag_warned = 0;             /* DEMOMODE audit, reported once */
+static int sc_seen_begin = 0;              /* a game has begun on this table */
 static uint64_t sc_last_score = 0;
 static double sc_poll_t = -1.0, sc_line_t = -1.0;
 static unsigned long sc_no_digits = 0;    /* polls that read a non-BCD byte */
@@ -2123,15 +2126,39 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
      * add-player handler, a second and independent read on PLAYERS */
     static const uint8_t f18[9] = { 0x2C,0x3A, 0xA2,0,0, 0x04,0x37, 0xA2,0 };
     static const uint8_t f18m[9] = { 1,1, 1,0,0, 1,1, 1,0 };
+    /* SPRINGUP's tail (FANTASIE.ASM): the plunger speed is computed from how
+     * far the spring was drawn, dithered with the free-running counter, and
+     * then stored into the ball's velocity - which is the launch, exactly,
+     * and nothing else reaches this store.
+     *
+     *   imul cx / mov bp,ax / mov ax,[slump_countern] / and ax,255 /
+     *   sub bp,ax / mov bx,offset slump_countern / add bx,2 /
+     *   cmp byte ptr [bx],0FFh / je +13 / nop*3 /
+     *   mov [Y_HAST],bp / mov [X_HAST],0
+     *
+     * (The shipped builds test the copy-protection sabotage flag through BX
+     * rather than with the direct CMP the reconstructed source shows; the
+     * bytes below are the shipped ones.  If that flag is ever set, the game
+     * skips the store and the ball does not launch - so a missing hook call
+     * is the game refusing to launch, not the hook failing.) */
+    static const uint8_t lau[30] = {
+        0xF7,0xE9, 0x8B,0xE8, 0xA1,0,0, 0x25,0xFF,0x00, 0x2B,0xE8,
+        0xBB,0,0, 0x83,0xC3,0x02, 0x80,0x3F,0xFF, 0x74,0x0D, 0x90,0x90,0x90,
+        0x89,0x2E,0,0 };
+    static const uint8_t laum[30] = {
+        1,1, 1,1, 1,0,0, 1,1,1, 1,1,
+        1,0,0, 1,1,1, 1,1,1, 1,1, 1,1,1,
+        1,1,0,0 };
     /* mov [DEMOMODE],FALSE / retn (GO_GAME_MODE), built once DEMOMODE is
      * known: the bare shape is common, and the operand is what makes it the
      * right one. */
     uint8_t ggm[6] = { 0xC6,0x06,0,0,0x00,0xC3 };
     static const uint8_t ggmm[6] = { 1,1,1,1,1,1 };
     char b[64];
-    uint32_t seg, at_gdm = 0, at_ggm = 0, at_bal = 0;
+    uint32_t seg, at_gdm = 0, at_ggm = 0, at_bal = 0, at_lau = 0;
     uint16_t o_score = 0, o_dmd = 0, o_demo = 0, o_player = 0, o_players = 0;
     uint16_t o_player2 = 0, o_ball = 0, o_ball2 = 0, o_nballs = 0, o_players2 = 0;
+    uint16_t o_yhast = 0;
     int tn, n;
 
     if(!scoredbg_on || !session_armed || dos_no_patch) return;
@@ -2150,6 +2177,7 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
     fantasies_score_leave();
     sc_score[tn] = sc_demomode[tn] = sc_ball[tn] = sc_nballs[tn] = 0;
     sc_players[tn] = sc_player[tn] = sc_begin_site[tn] = sc_end_site[tn] = 0;
+    sc_launch_site[tn] = 0;
     if(load_base + imglen > RAM_SIZE) return;
 
     seg = data_seg_vote(load_base, imglen);
@@ -2204,6 +2232,21 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
                 tn, n, n > 0 ? o_players2 : 0, o_players);
         return;
     }
+    if(sc_scan1(load_base, imglen, lau, laum, sizeof(lau), 28, &at_lau, &o_yhast) != 1){
+        fprintf(stderr, "[score] table %d: plunger-launch site not unique;"
+                        " table left unscored\n", tn);
+        return;
+    }
+    /* Free confirmation that the store really is the ball's vertical speed:
+     * it is the same word fantasies_patch_jump() located from the motion
+     * integrator, by a signature with nothing in common with this one.  Only
+     * checked when that locator succeeded - it has its own refusal path. */
+    if(jump_vel_addr[tn] && jump_vel_addr[tn] != seg*16 + o_yhast){
+        fprintf(stderr, "[score] table %d: plunger launch writes %05X but the"
+                " motion integrator reads %05X; table left unscored\n",
+                tn, (unsigned)(seg*16 + o_yhast), (unsigned)jump_vel_addr[tn]);
+        return;
+    }
 
     sc_score[tn]      = seg*16 + o_score;
     sc_demomode[tn]   = seg*16 + o_demo;
@@ -2213,15 +2256,19 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
     sc_player[tn]     = seg*16 + o_player;
     sc_begin_site[tn] = at_ggm;
     sc_end_site[tn]   = at_gdm + 12;          /* the MOV [DEMOMODE],TRUE itself */
+    sc_launch_site[tn] = at_lau + 26;         /* the MOV [Y_HAST],BP itself */
     score_hook_begin  = sc_begin_site[tn];
     score_hook_end    = sc_end_site[tn];
+    score_hook_launch = sc_launch_site[tn];
     fprintf(stderr, "[score] table %d: data_seg=%04X score=DS:%04X(%05X)"
             " demomode=DS:%04X ball=DS:%04X nballs=DS:%04X players=DS:%04X"
             " player=DS:%04X\n",
             tn, (unsigned)seg, o_score, (unsigned)sc_score[tn], o_demo, o_ball,
             o_nballs, o_players, o_player);
-    fprintf(stderr, "[score] table %d: game start hooked at %05X, attract at %05X\n",
-            tn, (unsigned)score_hook_begin, (unsigned)score_hook_end);
+    fprintf(stderr, "[score] table %d: game start hooked at %05X, attract at %05X,"
+            " plunger launch at %05X (Y_HAST=DS:%04X)\n",
+            tn, (unsigned)score_hook_begin, (unsigned)score_hook_end,
+            (unsigned)score_hook_launch, o_yhast);
 }
 
 /* The 12 unpacked BCD digits, most significant first.  A digit above 9 cannot
@@ -2260,11 +2307,12 @@ static void sc_print(const ScAttempt *a){
     fprintf(stderr,
         "[score] attempt %d table=%d start_cyc=%llu end_cyc=%llu"
         " start_emu=%.3f end_emu=%.3f score=%llu players=%d balls=%d"
-        " ball_reached=%d launches=%d extra_after_last=%d ended=%s%s\n",
+        " ball_reached=%d launches=%d extra_after_last=%d springflips=%d"
+        " ended=%s%s\n",
         a->index, a->table, a->start_cycles, a->end_cycles,
         a->start_emu, a->end_emu, (unsigned long long)a->score,
         a->players, a->nballs, a->ball_reached, a->launches,
-        a->launches_after_last_ball, a->how, why);
+        a->launches_after_last_ball, a->springflips, a->how, why);
 }
 
 static void sc_close(const char *how){
@@ -2289,13 +2337,40 @@ static void sc_close(const char *how){
  * so it is abandoned, not scored. */
 void fantasies_score_leave(void){
     if(sc_state) sc_close("abandoned");
-    score_hook_begin = score_hook_end = 0;
+    score_hook_begin = score_hook_end = score_hook_launch = 0;
+    sc_seen_begin = 0;
 }
 
-/* cpu_step() hook.  Reached only after the two address compares there have
+/* cpu_step() hook.  Reached only after the three address compares there have
  * already matched, so this is off the hot path. */
 void fantasies_score_exec(uint32_t lin){
     int bad = 0;
+    /* SPRINGUP is about to give the ball its plunger speed.  This is the
+     * launch - the flag poll in the tick above only ever approximated it -
+     * and it is where the player count stops being able to change, so it is
+     * also where an attempt locks. */
+    if(lin == score_hook_launch){
+        int ball = sc_byte(sc_ball);
+        if(!sc_state) return;
+        sc_cur.launches++;
+        if(sc_cur.nballs > 0 && ball > sc_cur.nballs)
+            sc_cur.launches_after_last_ball++;
+        if(sc_state == 1 && ball == 1){
+            sc_cur.players = sc_byte(sc_players);
+            sc_state = 2;
+            fprintf(stderr, "[score] t=%.3f attempt %d locked on first launch:"
+                            " players=%d balls=%d%s\n",
+                    emu_time, sc_cur.index, sc_cur.players, sc_cur.nballs,
+                    sc_cur.players == 1 ? "" :
+                    "  <- a verifier rejects the submission here, not at the end");
+        } else {
+            fprintf(stderr, "[score] t=%.3f launch %d (ball %d)%s\n",
+                    emu_time, sc_cur.launches, ball,
+                    (sc_cur.nballs > 0 && ball > sc_cur.nballs) ?
+                        "  <- past the last ball: the match or an extra ball" : "");
+        }
+        return;
+    }
     if(lin == score_hook_begin){
         if(sc_state) sc_close("restarted");     /* should not happen; say so */
         memset(&sc_cur, 0, sizeof(sc_cur));
@@ -2307,6 +2382,7 @@ void fantasies_score_exec(uint32_t lin){
         sc_cur.nballs = sc_byte(sc_nballs);
         sc_cur.trainer = fantasies_trainer_enabled();
         sc_state = 1;
+        sc_seen_begin = 1;
         sc_spring_prev = -1;
         sc_ball_prev = -1;
         sc_have_ball = 0;
@@ -2329,7 +2405,10 @@ void fantasies_score_exec(uint32_t lin){
         uint64_t v = sc_read_score(&bad);
         if(bad) sc_cur.bad_digits = 1; else sc_cur.score = v;
         sc_close("attract");
-    } else {
+    } else if(sc_seen_begin){
+        /* Only surprising once a game has actually run on this table: a fresh
+         * table calls GO_DEMO_MODE on its way into attract mode, which is not
+         * an unbalanced end but the ordinary start of a residency. */
         fprintf(stderr, "[score] t=%.3f attract mode entered with no attempt"
                         " open\n", emu_time);
     }
@@ -2375,31 +2454,23 @@ void fantasies_score_tick(void){
         sc_ball_prev = ball;
     }
 
-    /* SPRING_VALID true->false is the ball leaving the spring lane: a launch.
-     * The flag is continuously driven by the table's own switch handlers (see
-     * fantasies_patch_spring()), which is exactly why the transition, and not
-     * the level, is what means something here. */
+    /* SPRING_VALID true->false, counted but no longer believed.  The first
+     * playtest showed exactly two of these per ball where there was one
+     * plunger shot, so the flag alone cannot say when a ball was launched -
+     * it is driven by the table's own lane switches (see
+     * fantasies_patch_spring()) and the ball crosses them more than once on
+     * its way out.  The launch itself is an instruction now, hooked below;
+     * this stays as a second opinion, so a log still shows both numbers and
+     * the gap between them stays visible rather than becoming folklore. */
     {
         uint32_t a = spring_valid_addr[table_num];
         if(a && a < RAM_SIZE) spring = (ram[a] == 0xFF);
     }
     if(spring == 0 && sc_spring_prev == 1){
-        sc_cur.launches++;
-        if(sc_cur.nballs > 0 && ball > sc_cur.nballs)
-            sc_cur.launches_after_last_ball++;
-        if(sc_state == 1 && ball == 1){
-            sc_cur.players = sc_byte(sc_players);
-            sc_state = 2;
-            fprintf(stderr, "[score] t=%.3f attempt %d locked: players=%d balls=%d%s\n",
-                    emu_time, sc_cur.index, sc_cur.players, sc_cur.nballs,
-                    sc_cur.players == 1 ? "" :
-                    "  <- a verifier rejects the submission here, not at the end");
-        } else {
-            fprintf(stderr, "[score] t=%.3f launch %d (ball %d)%s\n",
-                    emu_time, sc_cur.launches, ball,
-                    (sc_cur.nballs > 0 && ball > sc_cur.nballs) ?
-                        "  <- past the last ball: the match or an extra ball" : "");
-        }
+        sc_cur.springflips++;
+        fprintf(stderr, "[score] t=%.3f spring flag cleared (flip %d, ball %d,"
+                        " launches so far %d)\n",
+                emu_time, sc_cur.springflips, ball, sc_cur.launches);
     }
     if(spring >= 0) sc_spring_prev = spring;
 
@@ -2438,15 +2509,15 @@ void fantasies_score_report(void){
     if(sc_state) sc_close("unfinished");
     fprintf(stderr, "[score] %d attempt(s) this session\n", sc_nlog);
     if(sc_nlog){
-        fprintf(stderr, "[score] %3s %5s %7s %5s %5s %7s %14s  %s\n",
-                "#", "table", "players", "balls", "reach", "launch", "score",
-                "ended");
+        fprintf(stderr, "[score] %3s %5s %7s %5s %5s %7s %6s %14s  %s\n",
+                "#", "table", "players", "balls", "reach", "launch", "flips",
+                "score", "ended");
         for(i = 0; i < sc_nlog; i++){
             const ScAttempt *a = &sc_log[i];
-            fprintf(stderr, "[score] %3d %5d %7d %5d %5d %7d %14llu  %s%s\n",
+            fprintf(stderr, "[score] %3d %5d %7d %5d %5d %7d %6d %14llu  %s%s\n",
                     a->index, a->table, a->players, a->nballs, a->ball_reached,
-                    a->launches, (unsigned long long)a->score, a->how,
-                    a->rankable ? "  RANKABLE" : "");
+                    a->launches, a->springflips, (unsigned long long)a->score,
+                    a->how, a->rankable ? "  RANKABLE" : "");
         }
     }
     if(sc_no_digits)
