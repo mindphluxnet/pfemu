@@ -501,15 +501,31 @@ minutes of one core; a 4-vCPU box verifies about 20 gameplay-hours per
 wall-clock hour. For a community this size the queue is permanently empty on
 the cheapest VPS available. Cap accepted session duration anyway.
 
-**That paragraph assumes an unthrottled replay, which until recently did not
-exist.** Every replay paced itself to wall time: `replay.c` forces the
-recorded `speed` (always 1) over `-speed`, and the loop gates on
-`emu_time < wall * speed`. A 200-second vector took 200 seconds of wall
-clock at `host_mips=6.00`, against a host ceiling five times that. So the
-real figure was 1:1 - four gameplay-hours per wall-clock hour on that
-4-vCPU box, not twenty. `-unthrottle` (EMULATOR.md) is the switch that
-makes the estimate above true; measure the multiplier on the target host
-rather than inheriting 5x from a windowed build.
+**Both numbers in that paragraph were wrong, in opposite directions.**
+
+It assumed an unthrottled replay, which did not exist. Every replay paced
+itself to wall time: `replay.c` forces the recorded `speed` (always 1) over
+`-speed`, and the loop gates on `emu_time < wall * speed`. The 200-second
+vector took 200 seconds of wall clock at `host_mips=6.00`. So the real
+figure was 1:1 - four gameplay-hours per wall-clock hour on a 4-vCPU box,
+not twenty. `-unthrottle` (EMULATOR.md) is the switch that removes the
+pacer.
+
+And 5x was optimistic for a headless replay. Measured with
+`tests/golden/speed-ab.sh` on the 200s vector:
+
+| Host | Paced | Unthrottled | Ratio | `host_mips` |
+| --- | --- | --- | --- | --- |
+| Debian server (2012 Mac Mini) | 200s | 53.6s | 3.7x | 22.39 |
+| WSL dev laptop | 193s | 61.6s | 3.3x | 19.51 |
+
+So one gameplay-hour is about **16 minutes of one core**, not twelve, and a
+4-vCPU box verifies roughly **15 gameplay-hours per wall-clock hour**, not
+twenty. The conclusion survives - the queue is still permanently empty for a
+community this size - but size from 3.7x, and re-measure on the host that
+will actually run it. Note the ten-year-old Mac Mini beat the laptop: 22.39
+MIPS against 19.51, which is WSL overhead rather than anything about the
+silicon.
 
 If that ever stops being true, attempts can be verified in parallel: have the
 client upload periodic snapshots, verify chunk *N* by re-simulating from
@@ -527,12 +543,17 @@ Still open:
 - Do **Angle** and **Scrolling** affect physics, or only the view? Pinned
   either way for now; the answer decides whether either becomes a split axis
   like Resolution.
-- Is `speed` truly guest-invisible during replay? There is now a mechanism
-  argument that it is - the pacer decides how many batches run per outer
-  iteration, never where one begins or ends, since every batch deadline is
-  an emulated-clock quantity - and `tests/golden/speed-ab.sh` turns that
-  argument into a measurement on whatever vectors the suite holds. Still
-  open until it has been run.
+- ~~Is `speed` truly guest-invisible during replay?~~ **Answered: yes, on
+  this vector.** `tests/golden/speed-ab.sh` replays paced and unthrottled
+  and compares the artifacts. On two hosts the footer, the `-wav` hash and
+  all eleven `-shotevery` frames are byte-identical between a run paced to
+  wall time and one going 3.7x as fast, and both still match the hash the
+  original Windows session recorded. The mechanism says why: the pacer
+  decides how many batches run per outer iteration, never where one begins
+  or ends, because every batch deadline - `dev_next_deadline()`,
+  `replay_next_deadline()`, `until_cycles()`, the 256-instruction cap - is
+  an emulated-clock quantity that cannot see `plat_time()`. Same caveat as
+  every other claim here: one vector is not the opcode space.
 - **Does directory enumeration order reach the guest?** `INT 21h` `AH=4Eh/4Fh`
   hands `FindFirstFile`/`FindNextFile` results straight to the program, so the
   order is guest-visible. `src/posix.c` sorts, case-insensitively, so the
