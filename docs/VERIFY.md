@@ -368,7 +368,19 @@ The gate: a golden-vector suite. A set of `.pfr` files with expected
 platforms must reproduce all of it exactly, on every commit. Include at least
 one session in which the end-of-game match fires: its draw is cycle-derived,
 so it amplifies a one-cycle divergence into a different final score, which
-makes it the most sensitive vector in the suite. When something
+makes it the most sensitive vector in the suite.
+
+**Started: `tests/golden/`.** One vector so far - the human-played Deluxe
+Table 3 session above - plus `run.sh`, which checks the footer, the wav hash
+and eleven frame hashes, and passes on the headless build. The vectors are
+marked `-text` in `.gitattributes`, because a `.pfr` is hashed over its own
+raw disk bytes and end-of-line conversion on checkout refuses it; that is not
+hypothetical, the first commit of the vector was normalised on the way in and
+was already broken. Still missing: a match-fires vector, per the paragraph
+above, and the game files, which are not in this repository - so `run.sh`
+takes an installation path, and that is the one thing between it and CI.
+
+When something
 diverges, snapshot at intervals and bisect with `tools/pfsdiff.py`, which
 already diffs section by section.
 
