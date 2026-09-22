@@ -516,30 +516,44 @@ cheap; nothing else should start until both come back green.
   games so far are only self-consistent - the instrument agreeing with
   itself.
 
-  The game will answer that in writing. When a run earns a place on the
-  table, `SAVE_HIGHS` writes `TABLEn.HI`: four records of 12 unpacked BCD
-  digits and three initials - the same encoding as the live buffer, in a file
-  pfemu had no part in producing. A replay writes it into the isolated
-  overlay, which `-keepoverlay` leaves behind instead of deleting:
+  The game sometimes answers that in writing. `SAVE_HIGHS` writes
+  `TABLEn.HI` - four records of 12 unpacked BCD digits and three initials,
+  the same encoding as the live buffer, in a file pfemu had no part in
+  producing - and `tools/hiscore.py` decodes it. A replay writes into the
+  isolated overlay, which `-keepoverlay` leaves behind instead of deleting.
 
-  ```
-  pfemu.exe -replay sessions\FANTASYDX_20260918_062237.pfr -scoredbg -keepoverlay > score.log 2>&1
-  python tools/hiscore.py "<the path the log prints>\table3.hi"
-  ```
+  **It is an opportunistic check, not the validation path**, because it needs
+  three things to line up: the score has to beat the lowest entry (5,000,000
+  in a factory-fresh file), the player has to complete the initials entry,
+  and - the one that actually bites - the table program has to *quit*. The
+  reconstruction calls `SAVE_HIGHS` only from the quit path, and this
+  install's own files agree: `FANTASYDX/PFEMU-STATE/` holds a `table1.hi` and
+  no `table3.hi` at all, although the 8.8M Table 3 game was played on the
+  same day. That recording ends with another game already under way, so it
+  never quits the table and never writes the file. Nothing to compare.
 
-  The recording ends by entering initials, so its 8,826,490 should be sitting
-  in that file. Agreement there is two independent readings of the same run:
-  one from guest memory through five signatures, one from a file the game
-  wrote by itself. A factory-fresh file reads 50,000,000 TSP / 25,000,000 ANY
-  / 10,000,000 J L / 5,000,000 ICE, which distinguishes "the run never made
-  the table" from "nothing was written".
+  It is still worth having where it does apply, and it has already paid for
+  itself once: a leftover overlay from an earlier session decodes to a real
+  played score of 9,907,560 with the 12-digit layout the score locator
+  assumes, which confirms the *encoding* from outside the instrument even
+  though it confirms no particular run.
 
-  That covers the final score. For the *running* values the check is still a
-  screenshot: `-shot` fires at exit and `-untilemu` says when that is, so a
-  replay can be stopped on a frame whose panel should be showing a score the
-  log also names. Pick a moment inside a long gap between `score=` lines -
+  The check that always applies is a screenshot of the panel. `-shot` fires
+  at exit and `-untilemu` says when that is, but a single frame is a guess -
   the panel spends much of the end of a game on scrolling messages rather
   than digits, which is what an attempt at t=274 on this recording ran into.
+  One run with `-shotevery` covers the whole session instead:
+
+  ```
+  pfemu.exe -replay sessions\FANTASYDX_20260918_062237.pfr -shotevery 5 -untilemu 272 -scoredbg > score.log 2>&1
+  ```
+
+  That writes `seq000.ppm`, `seq001.ppm`, ... one per five seconds of replay
+  (`-shotevery` counts wall time scaled by speed, and replay pins speed to 1,
+  so the index is roughly the emulated second divided by five). Pick frames
+  that fall inside a long gap between `score=` lines - this recording has a
+  seven-second one at 8,739,490 - and the panel should be showing exactly
+  that number.
 
   Beyond that the spike is not green until someone plays a game on **each
   table of each release** - tables 2 and 4 have never been run at all - and

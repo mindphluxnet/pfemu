@@ -94,10 +94,13 @@ vector; this only decides which install gets offered to
 
 **`-keepoverlay` leaves the isolated copy behind.** Normally it is deleted at
 exit; with the flag it stays and its path is printed. What is in it is
-everything the guest wrote during the replay, which includes the game's own
-`TABLEn.HI` high-score file - an independent reading of a run's final score,
-written by the game rather than read out of its memory (`tools/hiscore.py`
-decodes it). The flag only affects the end-of-session cleanup: a refused
+everything the guest wrote during the replay, which can include the game's
+own `TABLEn.HI` high-score file - an independent reading of a run's final
+score, written by the game rather than read out of its memory
+(`tools/hiscore.py` decodes it). Only *can*: the game writes that file when
+the table program quits, not at game over, so a recording that ends while a
+table is still running leaves it untouched. The flag only affects the
+end-of-session cleanup: a refused
 attempt still removes its copy, because nothing ran in it. The directory is
 then the caller's to delete.
 
