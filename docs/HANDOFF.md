@@ -93,14 +93,14 @@ directory on exit and would take the stderr you want with it:
 
     wsl make ubsan
     wsl bash -c 'mkdir -p /tmp/ub && cd /tmp/ub && \
-        "$OLDPWD/pfemu-headless" -d "$OLDPWD/FANTASYDX" -freezetime \
+        "$OLDPWD/pfemu-headless-ubsan" -d "$OLDPWD/FANTASYDX" -freezetime \
         -replay "$OLDPWD/tests/golden/deluxe-table3-200s.pfr" \
         -wav out.wav -shotevery 20 >run.log 2>&1
       grep -i "runtime error" /tmp/ub/run.log | sort -u'
 
-`make ubsan` runs `make clean` first and overwrites `pfemu-headless` with an
-`-O1` sanitizer build, so `make clean && make` afterwards to get the fast one
-back.
+`make ubsan` builds `pfemu-headless-ubsan` and deletes its object files on the
+way out, so the two configurations no longer contaminate each other and no
+follow-up `make clean` is needed.
 
 ## Traps, all of them paid for once already
 
@@ -118,3 +118,9 @@ back.
   whole file.
 - **Running the golden suite needs the game files.** `run.sh` takes an
   installation path, or reads `PFEMU_INSTALL`.
+- **A wall of undefined `__ubsan_handle_*` at link time is a stale-object
+  problem, not a source problem.** Instrumented `.o` files relinked without
+  `-fsanitize=undefined` produce it, and it reads like the code is broken when
+  it is not. `make clean && make` clears it. The Makefile now keeps the two
+  builds apart so it should not recur; if it does, check
+  `nm -u src/run.o | grep ubsan` before suspecting the source.

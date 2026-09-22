@@ -25,15 +25,15 @@
 #
 # Targets:
 #   make              the headless binary
-#   make ubsan        the same, instrumented.  Run on Debian/gcc 14 against
-#                     tests/golden: 32 unaligned guest-RAM accesses in dos.c
-#                     and bios.c, every one a wider pointer punned at &ram[a],
-#                     and none in cpu.c - whose hot path assembles bytes by
-#                     hand and was already clean.  Fixed via ld16u/st16u in
-#                     pfemu.h; that vector now reports nothing.  The shift
-#                     counts >= width the determinism section predicts are
-#                     still unproven either way - one vector instruments only
-#                     the opcodes it happens to execute.
+#   make ubsan        pfemu-headless-ubsan, instrumented.  Run on Debian/gcc 14
+#                     against tests/golden: 32 unaligned guest-RAM accesses in
+#                     dos.c and bios.c, every one a wider pointer punned at
+#                     &ram[a], and none in cpu.c - whose hot path assembles
+#                     bytes by hand and was already clean.  Fixed via ld16u/
+#                     st16u in pfemu.h; that vector reports nothing now.  The
+#                     shift counts >= width the determinism section predicts
+#                     are still unproven either way - one vector instruments
+#                     only the opcodes it happens to execute.
 #   make clean
 
 CC      ?= cc
@@ -67,13 +67,25 @@ $(BIN): $(OBJ)
 
 # Undefined-behaviour run.  -O1 keeps the traces readable; this binary is for
 # finding bugs, not for timing anything.
+#
+# It links to its own name and deletes its objects afterwards, because the two
+# configurations otherwise share $(OBJ) with nothing to tell them apart: an
+# instrumented build followed by a plain one relinks sanitizer-laced objects
+# without -fsanitize=undefined, and the link fails on a wall of undefined
+# __ubsan_handle_* references that looks like a source problem and is not.
+# tests/golden/run.sh takes a binary as its first argument, so either build can
+# be handed to it.
+UBBIN := $(BIN)-ubsan
+
 ubsan:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="-O1 -g $(CSTD) $(WARN) $(DETERM) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -fsanitize=undefined -fno-omit-frame-pointer" \
-	        LDLIBS="-lm -fsanitize=undefined" BIN=$(BIN)
+	        LDLIBS="-lm -fsanitize=undefined" BIN=$(UBBIN)
+	rm -f $(OBJ) $(DEP)
+	@echo "built $(UBBIN); objects removed so a later 'make' recompiles clean"
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN)
+	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan
 
 -include $(DEP)
 

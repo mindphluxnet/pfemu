@@ -22,6 +22,7 @@ GAME
 *.o
 *.d
 /pfemu-headless
+/pfemu-headless-ubsan
 
 # Capture and session artifacts left in the working directory.
 # tests/golden/*.pfr is a committed vector and is re-included below.
