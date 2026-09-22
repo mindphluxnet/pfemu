@@ -2025,6 +2025,7 @@ static int sc_spring_prev = -1;           /* SPRING_VALID at the last poll */
 static int sc_ball_prev = -1;
 static int sc_have_ball = 0;               /* BALLS[11] has read 1 this attempt */
 static int sc_flag_warned = 0;             /* DEMOMODE audit, reported once */
+static int sc_rewind_warned = 0;           /* ball counter went backwards */
 static int sc_seen_begin = 0;              /* a game has begun on this table */
 static int sc_unstable = 0;                /* inside the new-ball score clear */
 static double sc_unstable_t = 0.0;         /* when it started, for the watchdog */
@@ -2504,6 +2505,7 @@ void fantasies_score_exec(uint32_t lin){
         sc_ball_prev = -1;
         sc_have_ball = 0;
         sc_flag_warned = 0;
+        sc_rewind_warned = 0;
         sc_unstable = 0;
         sc_last_score = sc_read_score(&bad);
         sc_line_t = -1.0;
@@ -2569,6 +2571,38 @@ void fantasies_score_tick(void){
         if(sc_ball_prev > 0 && ball != sc_ball_prev)
             fprintf(stderr, "[score] t=%.3f ball %d -> %d (of %d)\n",
                     emu_time, sc_ball_prev, ball, sc_cur.nballs);
+        /* The invariant every ball-return mechanism has held to so far:
+         * the counter only ever counts UP.  Nothing gives a ball back by
+         * rewinding it - the match sets XXBALLE and an extra ball
+         * decrements XBALLS, and both route into shoot_again with BALLS
+         * untouched (docs/VERIFY.md, "One route puts balls back").  A
+         * ball returned that way shows up as an extra LAUNCH on the same
+         * ball number, never as the counter moving back.
+         *
+         * This exists because the list of things that trigger that route
+         * keeps growing - Party Land alone adds a scoreless first ball
+         * and lit outlanes - and enumerating triggers across four tables
+         * is a losing game.  Watching the invariant instead means the
+         * next unknown one announces itself here rather than being
+         * noticed by somebody playing.  If this ever fires, the
+         * segmenter's model is wrong and the attempt it fired in should
+         * not be ranked until somebody understands why.
+         *
+         * The player count is printed with it because a multi-player game
+         * is the one plausible benign cause: this reads a single address,
+         * and if the counter turns out to be per-player the handover would
+         * look like a rewind.  Nobody has traced a long enough two-player
+         * session to know.  Not suppressed for players > 1 even so - a
+         * verifier rejects those at the first launch anyway, and silencing
+         * the check exactly where the model is least understood is how a
+         * watchdog becomes decoration. */
+        if(!sc_rewind_warned && sc_ball_prev > 0 && ball < sc_ball_prev){
+            sc_rewind_warned = 1;
+            fprintf(stderr, "[score] t=%.3f ball counter went BACKWARDS, %d -> %d"
+                            " (players=%d) - a ball was returned by a route"
+                            " this does not model\n",
+                    emu_time, sc_ball_prev, ball, sc_cur.players);
+        }
         sc_ball_prev = ball;
     }
 

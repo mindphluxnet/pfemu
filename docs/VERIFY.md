@@ -186,16 +186,46 @@ The state machine, per residency:
 
 ### Why running out of balls does not end an attempt
 
-Two separate mechanisms put balls back:
+**One route puts balls back, and an open set of triggers uses it.** This
+paragraph used to say "two separate mechanisms" and list them, which was
+the wrong shape for the problem: the list was incomplete, and a list that
+has to be complete to be correct will quietly stop being either.
+
+The route is `XXBALLE` -> `shoot_again`. It leaves `BALLS` untouched and
+the score untouched, so play resumes inside the same attempt and a returned
+ball shows up as an extra *launch* on a ball number that does not advance -
+never as the counter moving backwards. That is the invariant the segmenter
+rests on, and it is worth more than any enumeration, because it holds
+whether or not we know what tripped it.
+
+Triggers found so far, as examples and not as a closed set:
 
 - **The match.** After all balls are lost the game draws a random number
-  0-9 and displays it; on a hit the player gets another go, and the score
-  carries on accumulating. This is the classic real-machine match feature,
-  and it means a score sampled at DRAINED can undercount by an entire
-  additional ball's worth of play.
+  0-9 and displays it; on a hit the player gets another go. `_knacket` sets
+  `XXBALLE` directly. This is the classic real-machine match feature, and it
+  means a score sampled at DRAINED can undercount by an entire additional
+  ball's worth of play.
 - **Extra balls awarded during play.** `LET_HIM_SHOOT_AGAIN` decrements
-  `XBALLS` and goes straight back to a new ball without touching the ball
-  counter at all, so the counter is not a count of balls played either.
+  `XBALLS` and goes straight back to a new ball, so the counter is not a
+  count of balls played either. Whatever awards the extra ball - in Party
+  Land, a lit outlane is one - is a source feeding this, not a route of its
+  own.
+- **A scoreless first ball.** Drain ball 1 having scored nothing at all and
+  Party Land gives it back ("PARTY ON PLAYER 1"). Measured, in a recorded
+  session replayed under `-scoredbg`: first launch at `t=7.184`, no score
+  sample logged at all until `t=24.031` (the sampler only prints on change,
+  so the score was flat at zero throughout), and in between `launch 2
+  (ball 1)` at `t=21.955` with the counter still reading 1. The attempt
+  ended `ball_reached=4 launches=4` for a three-ball game and closed
+  `[RANKABLE]` at 7,937,620 - exactly one launch more than balls, and the
+  invariant intact.
+
+Two of those three were found by playing, within a day of each other, after
+this document had already asserted the set was closed. Across four tables
+there are certainly more. `-scoredbg` now watches the invariant instead:
+the ball counter going backwards is reported as "a ball was returned by a
+route this does not model", so the next unknown trigger announces itself
+rather than waiting to be noticed by somebody at the keyboard.
 
 So the segmenter must treat DRAINED as "possibly over" and wait for attract
 mode to commit. The attract-mode entry is `GO_DEMO_MODE` (`FANTASIE.ASM`),
