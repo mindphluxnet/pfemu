@@ -58,12 +58,23 @@ name=$(basename "$PFR" .pfr)
 exp="$(dirname "$PFR")/$name.expected"
 
 # Straight out of the .pfr, not out of the replay.
-f_release=$(awk '$1=="release:"{print $2; exit}' "$PFR")
-f_program=$(awk '$1=="program:"{print $2; exit}' "$PFR")
-f_emu=$(awk '$1=="end_emu:"{print $2; exit}' "$PFR")
-f_cyc=$(awk '$1=="end_cycles:"{print $2; exit}' "$PFR")
-f_wav=$(awk '$1=="wav_hash:"{print $2; exit}' "$PFR")
-f_smp=$(awk '$1=="wav_samples:"{print $2; exit}' "$PFR")
+#
+# A .pfr is written by the Windows recorder and keeps CRLF - deliberately,
+# since it is `-text` in .gitattributes because the file is hashed over its
+# own raw bytes. So every field pulled out of one carries a trailing
+# carriage return, and a shell that has just built a grep pattern out of it
+# will never match a line the emulator wrote on a POSIX host. It fails
+# silently and prints the two values side by side looking identical, which
+# is exactly as confusing as it sounds. Strip it once, here.
+pfrfield() {
+    awk -v k="$1:" '$1==k { v=$2; sub(/\r$/, "", v); print v; exit }' "$PFR"
+}
+f_release=$(pfrfield release)
+f_program=$(pfrfield program)
+f_emu=$(pfrfield end_emu)
+f_cyc=$(pfrfield end_cycles)
+f_wav=$(pfrfield wav_hash)
+f_smp=$(pfrfield wav_samples)
 
 [ -n "$f_emu" ] && [ -n "$f_cyc" ] || { echo "$name: no footer in the .pfr"; exit 2; }
 if [ -z "$f_wav" ] || [ "$f_wav" = none ]; then
@@ -132,7 +143,8 @@ if ! grep -q 'wav hash MATCH' "$work/run.log"; then
 fi
 if ! grep -q "actual ${f_emu}s / ${f_cyc} cycles" "$work/run.log"; then
     echo "REFUSING: footer disagrees with the recording."
-    grep -h 'recorded end' "$work/run.log" | sed 's/^/  /'
+    echo "  wanted:  actual ${f_emu}s / ${f_cyc} cycles"
+    grep -h 'recorded end' "$work/run.log" | sed 's/^/  got:     /'
     bail
 fi
 echo "   wav and footer match the recording"

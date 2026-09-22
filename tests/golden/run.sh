@@ -48,8 +48,11 @@ for pfr in "$here"/*.pfr; do
         bad=1
     fi
 
-    want_emu=$(awk '$1=="end_emu"{print $2}' "$exp")
-    want_cyc=$(awk '$1=="end_cycles"{print $2}' "$exp")
+    # sub(/\r$/) because core.autocrlf is true here and a fresh Windows
+    # clone can produce a CRLF .expected; a pattern built from it then
+    # matches nothing while looking correct on screen.
+    want_emu=$(awk '$1=="end_emu"{v=$2; sub(/\r$/,"",v); print v}' "$exp")
+    want_cyc=$(awk '$1=="end_cycles"{v=$2; sub(/\r$/,"",v); print v}' "$exp")
     if grep -q "actual ${want_emu}s / ${want_cyc} cycles" "$d/run.log"; then
         echo "   footer   ok    ${want_emu}s / ${want_cyc} cycles"
     else

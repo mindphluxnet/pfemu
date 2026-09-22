@@ -7,3 +7,8 @@ tests/golden/*.pfr -text
 # The suite scripts run under sh, so a CRLF checkout on Windows would put a
 # carriage return in the shebang and every command line. Pin them to LF.
 tests/golden/*.sh text eol=lf
+
+# Generated and read by tests/golden/run.sh with awk. core.autocrlf is true
+# in this repository, and a CRLF checkout would put a carriage return on the
+# end of every extracted value.
+tests/golden/*.expected text eol=lf
