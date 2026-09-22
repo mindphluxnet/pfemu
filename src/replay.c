@@ -229,6 +229,11 @@ void replay_isolate_overlay(const char *dir){
             dir, iso_tmp);
 }
 
+/* Where the isolated copy lives, or NULL when there is none.  -keepoverlay
+ * in main.c reports it instead of deleting it; the guest's own writes from
+ * the session are in there. */
+const char *replay_overlay_path(void){ return iso_tmp[0] ? iso_tmp : NULL; }
+
 void replay_cleanup_overlay(void){
     if(!iso_tmp[0]) return;
     {

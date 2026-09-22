@@ -819,6 +819,7 @@ int main(int argc, char **argv){
     double t0, last_present = 0, wall_t0 = 0;
     double max_secs = 0, until_emu = -1.0;
     const char *shotfile = NULL;
+    int keep_overlay = 0;     /* -keepoverlay: keep the replay overlay */
     const char *keyscript = NULL;
     double shot_every = 0, next_shot = 0;
     double speed = 1.0;
@@ -857,6 +858,7 @@ int main(int argc, char **argv){
         else if(!strcmp(argv[i],"-cfgscan")){ extern int fantasies_cfgscan;
             fantasies_cfgscan = 1; }
         else if(!strcmp(argv[i],"-shot") && i+1<argc) shotfile = argv[++i];
+        else if(!strcmp(argv[i],"-keepoverlay")) keep_overlay = 1;
         else if(!strcmp(argv[i],"-keys") && i+1<argc) keyscript = argv[++i];
         else if(!strcmp(argv[i],"-shotevery") && i+1<argc) shot_every = atof(argv[++i]);
         else if(!strcmp(argv[i],"-force256")) vga_force256 = 1;
@@ -1837,7 +1839,21 @@ relaunch:
     { extern void wav_close(void); extern void plat_audio_close(void);
       wav_close(); plat_audio_close(); timeEndPeriod(1); }
     dos_close_all_handles();
-    replay_cleanup_overlay();
+    /* -keepoverlay: leave the isolated copy behind instead of deleting it.
+     * Everything the guest wrote during the replay is in there, and the one
+     * that matters for scoring is TABLEn.HI - the game's own high-score file,
+     * 4 entries of 12 unpacked BCD digits and three initials, written by
+     * SAVE_HIGHS when a run earns a place.  That makes it an independent
+     * check on -scoredbg: the number pfemu read out of guest memory and the
+     * number the game itself wrote to disk have nothing in common but the
+     * game.  The directory is the caller's to delete.  Only here, never on
+     * the abort path in replay.c, where nothing ran and there is nothing to
+     * look at. */
+    if(keep_overlay && replay_overlay_path())
+        fprintf(stderr, "[replay] -keepoverlay: session overlay left at '%s'\n",
+                replay_overlay_path());
+    else
+        replay_cleanup_overlay();
     if(trace_fp) fclose(trace_fp);
     return exit_code;
 }

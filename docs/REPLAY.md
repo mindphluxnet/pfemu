@@ -92,6 +92,15 @@ install that would have worked, if there is one. Identity is still the hash
 vector; this only decides which install gets offered to
 `replay_verify_install()`, which then checks it properly.
 
+**`-keepoverlay` leaves the isolated copy behind.** Normally it is deleted at
+exit; with the flag it stays and its path is printed. What is in it is
+everything the guest wrote during the replay, which includes the game's own
+`TABLEn.HI` high-score file - an independent reading of a run's final score,
+written by the game rather than read out of its memory (`tools/hiscore.py`
+decodes it). The flag only affects the end-of-session cleanup: a refused
+attempt still removes its copy, because nothing ran in it. The directory is
+then the caller's to delete.
+
 **A refusal refuses the launch, not the session.** Everything from the
 picker to the first executed instruction is one attempt: a replay whose
 install does not match, a record target that will not open, the trainer

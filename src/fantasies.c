@@ -2385,6 +2385,14 @@ static void sc_close(const char *how){
     sc_cur.locked = (sc_state == 2);
     sc_cur.end_cycles = cpu.cycles;
     sc_cur.end_emu = emu_time;
+    /* Only the attract hook produces a terminal score, and it has already
+     * stored one by the time it calls this.  Every other way out - the run
+     * stopping mid-game, the table being left - has no terminal score to
+     * report, and reporting 0 for a game that was visibly at 8.8M reads as a
+     * defect in the instrument.  The last stable sample is what is actually
+     * known, so report that; the attempt is not rankable either way, and the
+     * `ended=` field says which kind of number this is. */
+    if(strcmp(how, "attract")) sc_cur.score = sc_last_score;
     /* The trainer is refused outright for recording and replay (docs/REPLAY.md
      * 3.2/3.3), so an attempt played with it armed can never be a verified
      * one either - whether or not a hotkey was actually pressed. */
@@ -2627,6 +2635,8 @@ void fantasies_score_report(void){
     if(sc_state) sc_close("unfinished");
     fprintf(stderr, "[score] %d attempt(s) this session\n", sc_nlog);
     if(sc_nlog){
+        fprintf(stderr, "[score] (score is terminal only where ended=attract;"
+                        " elsewhere it is the last stable sample)\n");
         fprintf(stderr, "[score] %3s %5s %7s %5s %5s %7s %6s %14s  %s\n",
                 "#", "table", "players", "balls", "reach", "launch", "flips",
                 "score", "ended");

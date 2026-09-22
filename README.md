@@ -253,7 +253,8 @@ development.
 | `-wav FILE` | Capture audio to WAV |
 
 The tracing flags (`-t`, `-xring`, `-trap`, `-dosdbg`, `-iotrace`, `-pll`,
-`-snddbg`, `-flipdbg`, `-vscan`, `-dmd`, `-balldbg`, `-matdbg`, `-scoredbg`, `-mem`,
+`-snddbg`, `-flipdbg`, `-vscan`, `-dmd`, `-balldbg`, `-matdbg`, `-scoredbg`,
+`-keepoverlay`, `-mem`,
 `-intwatch`, `-undefdump`, `-dumpseg`, `-prof`, `-vgastate`, and several `-no*`
 rendering and timing overrides) are documented in
 [Emulator](docs/EMULATOR.md#debugging-and-tracing).

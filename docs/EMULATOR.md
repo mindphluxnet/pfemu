@@ -420,6 +420,7 @@ Numeric addresses are hex; key scripts are `time:scancode:state` triples
 | `-flipdbg` / `-vscan N` / `-dmd` | CRTC start writes with phase+caller / VRAM-change hashes / DMD-region write cadence |
 | `-balldbg` / `-matdbg` | Ball erase/redraw gap vs present phase / game ticks vs panel updates vs crises vs IRQ latency |
 | `-scoredbg` | Per-attempt score, ball, player count and start/end cycles - Spike A of [Verification](VERIFY.md). Read-only |
+| `-keepoverlay` | Keep a replay's isolated overlay instead of deleting it, so the guest's own writes (e.g. `TABLEn.HI`) can be inspected |
 | `-paldbg` | AR14 bank writes with frame-relative scanline |
 | `-vgastate` | Video mode, select registers, DAC, pointed-to memory at exit |
 | `-force256`, `-nodbl`, `-oldtiming`, `-noballsync`, `-nolatch`, `-nophaselock`, `-nopitm0`, `-dmairq` | Disable one behavior to bisect display/timing faults |

@@ -512,16 +512,34 @@ cheap; nothing else should start until both come back green.
   both.
 
   What is still unverified is the one thing none of this can check from the
-  inside: that the number in the log is the number on the panel. Both games
-  so far are only self-consistent - the instrument agreeing with itself. The
-  cheapest external check is a screenshot, because `-shot` fires at exit and
-  `-untilemu` says when that is, so a replay can be stopped on a frame whose
-  panel is showing a score the log also names:
+  inside: that the number in the log is the number the game itself has. Both
+  games so far are only self-consistent - the instrument agreeing with
+  itself.
+
+  The game will answer that in writing. When a run earns a place on the
+  table, `SAVE_HIGHS` writes `TABLEn.HI`: four records of 12 unpacked BCD
+  digits and three initials - the same encoding as the live buffer, in a file
+  pfemu had no part in producing. A replay writes it into the isolated
+  overlay, which `-keepoverlay` leaves behind instead of deleting:
 
   ```
-  pfemu.exe -replay sessions\FANTASYDX_20260918_062237.pfr -untilemu 274 ^
-            -shot dmd.ppm -scoredbg > shot.log 2>&1
+  pfemu.exe -replay sessions\FANTASYDX_20260918_062237.pfr -scoredbg -keepoverlay > score.log 2>&1
+  python tools/hiscore.py "<the path the log prints>\table3.hi"
   ```
+
+  The recording ends by entering initials, so its 8,826,490 should be sitting
+  in that file. Agreement there is two independent readings of the same run:
+  one from guest memory through five signatures, one from a file the game
+  wrote by itself. A factory-fresh file reads 50,000,000 TSP / 25,000,000 ANY
+  / 10,000,000 J L / 5,000,000 ICE, which distinguishes "the run never made
+  the table" from "nothing was written".
+
+  That covers the final score. For the *running* values the check is still a
+  screenshot: `-shot` fires at exit and `-untilemu` says when that is, so a
+  replay can be stopped on a frame whose panel should be showing a score the
+  log also names. Pick a moment inside a long gap between `score=` lines -
+  the panel spends much of the end of a game on scrolling messages rather
+  than digits, which is what an attempt at t=274 on this recording ran into.
 
   Beyond that the spike is not green until someone plays a game on **each
   table of each release** - tables 2 and 4 have never been run at all - and

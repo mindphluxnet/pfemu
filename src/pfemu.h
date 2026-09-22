@@ -427,6 +427,7 @@ typedef struct {
 int  replay_read_header(const char *path, ReplayHeader *out);
 const char *replay_parse_error(void);   /* last parse failure, for fail_msg */
 const char *replay_wanted_release(void); /* release id in the loaded file */
+const char *replay_overlay_path(void);   /* isolated copy, NULL if none */
 /* Record side: open with the full session context, log every kbd_key entry
  * with emu_now() (dev.c calls in), close with the footer at exit. */
 int  replay_begin_record(const char *path, const RelResult *rel, const char *prog,
