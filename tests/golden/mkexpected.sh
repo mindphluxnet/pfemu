@@ -32,10 +32,22 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 
+# Both scripts replay from inside a scratch directory, so every path handed
+# to the emulator has to survive a cd.  A relative one does not, and the
+# failure is thoroughly misleading: the replay never opens the file, the run
+# produces no audio, and the wav check then reports a hash mismatch on a
+# vector that is perfectly fine.
+abspath() {
+    case $1 in
+        /*) printf '%s\n' "$1" ;;
+        *)  printf '%s/%s\n' "$(pwd)" "$1" ;;
+    esac
+}
+
 [ $# -ge 1 ] || { echo "usage: $0 <vector.pfr> [binary] [install]"; exit 2; }
-PFR=$1
-BIN=${2:-${PFEMU_BIN:-$root/pfemu-headless}}
-INSTALL=${3:-${PFEMU_INSTALL:-$root/FANTASYDX}}
+PFR=$(abspath "$1")
+BIN=$(abspath "${2:-${PFEMU_BIN:-$root/pfemu-headless}}")
+INSTALL=$(abspath "${3:-${PFEMU_INSTALL:-$root/FANTASYDX}}")
 UNTHROTTLE=${PFEMU_UNTHROTTLE:-0}
 
 [ -f "$PFR" ]     || { echo "no vector at $PFR"; exit 2; }
@@ -78,14 +90,17 @@ flags="-freezetime"
 # VERIFY.md shows the flag costs the guest nothing observable - but says in
 # the same breath that "only the wav hash is still uncovered, because
 # neither run captured audio".  -scoredbg together with -wav is precisely
-# the untested combination.  The first version of this script used it and
-# the wav check failed; whether -scoredbg caused that is NOT established -
-# it may be something else entirely about this vector - but the artifact
-# run has no reason to carry the risk while the question is open.  There
-# is prior form: -shotevery once moved the audio the same way (dd938f..
-# with, dfb1427.. without), which is why captures no longer clamp the
-# batch.  Separating the runs settles it either way: if the artifacts now
-# match, the flag was the cause and VERIFY.md gains a measurement.
+# the untested combination, so the artifact run does not carry it.
+#
+# Honest history, because the comment here used to imply otherwise: the
+# first version of this script did pass -scoredbg with -wav AND failed the
+# wav check - but the cause was the relative-path bug above, not the flag.
+# The replay never opened the vector at all.  -scoredbg has not been shown
+# to move the audio and is not accused of it here.  The runs stay split
+# because run.sh splits them for a stated reason and a sibling script
+# disagreeing with it silently is worse than one extra replay - and
+# because -shotevery has form (dd938f.. with, dfb1427.. without), which is
+# why captures no longer clamp the batch.
 #
 # So: artifacts first, from a run with nothing extra attached.
 echo "== replaying $name (artifacts)"
@@ -97,12 +112,22 @@ echo "== replaying $name (artifacts)"
 # recording: the frame hashes would then encode this machine's divergence as
 # the expected answer, which is the worst possible failure mode for a suite
 # whose whole job is catching divergence.
-if ! grep -q 'wav hash MATCH' "$work/run.log"; then
-    echo "REFUSING: this replay does not match the recording's wav hash."
-    echo "  Generating .expected from it would pin the disagreement as correct."
+# Two different failures, and conflating them wasted a round trip once:
+# a replay that never started looks exactly like a hash mismatch if you
+# only test for the MATCH line.
+if ! grep -q 'wav hash' "$work/run.log"; then
+    echo "REFUSING: the replay did not run to completion - no capture hash"
+    echo "  was reported at all, so there is nothing to compare."
     echo
     echo "  --- last 25 lines of the replay log ---"
     tail -25 "$work/run.log" | sed 's/^/  /'
+    bail
+fi
+if ! grep -q 'wav hash MATCH' "$work/run.log"; then
+    echo "REFUSING: this replay does not match the recording's capture hash."
+    echo "  Generating .expected from it would pin the disagreement as correct."
+    echo
+    grep -h 'wav' "$work/run.log" | sed 's/^/  /'
     bail
 fi
 if ! grep -q "actual ${f_emu}s / ${f_cyc} cycles" "$work/run.log"; then

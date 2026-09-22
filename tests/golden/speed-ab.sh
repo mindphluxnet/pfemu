@@ -18,9 +18,21 @@ set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-PFR=${1:-$here/deluxe-table3-200s.pfr}
-BIN=${2:-${PFEMU_BIN:-$root/pfemu-headless}}
-INSTALL=${3:-${PFEMU_INSTALL:-$root/FANTASYDX}}
+# Both scripts replay from inside a scratch directory, so every path handed
+# to the emulator has to survive a cd.  A relative one does not, and the
+# failure is thoroughly misleading: the replay never opens the file, the run
+# produces no audio, and the wav check then reports a hash mismatch on a
+# vector that is perfectly fine.
+abspath() {
+    case $1 in
+        /*) printf '%s\n' "$1" ;;
+        *)  printf '%s/%s\n' "$(pwd)" "$1" ;;
+    esac
+}
+
+PFR=$(abspath "${1:-$here/deluxe-table3-200s.pfr}")
+BIN=$(abspath "${2:-${PFEMU_BIN:-$root/pfemu-headless}}")
+INSTALL=$(abspath "${3:-${PFEMU_INSTALL:-$root/FANTASYDX}}")
 
 [ -f "$PFR" ]     || { echo "no vector at $PFR"; exit 2; }
 [ -x "$BIN" ]     || { echo "no binary at $BIN (run make)"; exit 2; }
