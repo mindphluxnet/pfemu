@@ -725,12 +725,38 @@ cheap; nothing else should start until both come back green.
   And one thing it raised that is larger than the spike. Batch structure is
   guest-observable - that is what the `-shotevery` mistake proved. Replay
   clamps every batch to the next recorded event so a key lands on the
-  instruction it is due on; record has no such clamp. So **a replay's batch
-  structure is not the recorded session's**, and whether a replay reproduces
-  the session it recorded has never been measured end to end. Everything here
-  rests on it. It is now testable without a human in the loop, because `-keys`
-  works again: record a scripted session, replay the `.pfr`, compare the
-  audio.
+  instruction it is due on; a recorded session has no such clamp, because the
+  keys arrive from the host whenever they arrive. So **a replay's batch
+  structure is not necessarily the recorded session's**, and whether a replay
+  reproduces the session it recorded had never been measured. Everything here
+  rests on it.
+
+  Half of that is now measured. A 40-second scripted session on Table 3
+  (`-record -keys ... -untilemu 40 -wav`), replayed: 6 of 6 events injected,
+  the footer reproduced to the cycle, and the emulator's own footer check
+  reported `wav hash MATCH: 27b398a6f7af66ee` with the two captures
+  byte-identical. A replay can reproduce a recording exactly.
+
+  **But that run does not test the asymmetry it was written for.** `-keys`
+  clamps the batch to each scripted event during *record* as well (see
+  `keys_next_deadline()` in src/run.c), and the replay clamps at those same
+  cycles, so both sides had the same batch structure and the case of interest
+  never arose. What is still untested is a **human-played** recording, where
+  record does not clamp and replay does.
+
+  That needs one session a person has to play, and it is cheap: record with
+  `-wav` so the footer carries a sample hash, then replay with `-wav` and read
+  the `[replay] wav hash` line, which does the comparison itself.
+
+  ```
+  pfemu.exe -nolauncher -d FANTASYDX -table 3 -freezetime -record probe.pfr -wav rec.wav
+  pfemu.exe -nolauncher -freezetime -replay probe.pfr -wav rep.wav
+  ```
+
+  A `MATCH` settles it. A mismatch means the batch-structure asymmetry is real
+  and reaches the guest, and the fix is to make replay stop clamping and
+  inject at batch boundaries instead - the same correction `-shotevery` just
+  needed, for the same reason.
 
   The gate this argues for is unchanged, but its contents are now specific:
   compare the wav hash and the frame hashes, not just the footer, and include
