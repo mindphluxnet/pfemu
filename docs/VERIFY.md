@@ -280,9 +280,19 @@ Output per attempt: `(table, index, start_cycles, end_cycles, score,
 terminated_how)`. Same-table-repeated and mixed-table sessions both fall out
 of this without special cases.
 
-An attempt is only rankable if it started from a clean start observed *in
-this session* and reached attract mode on its own. Quitting a table mid-game
-is recorded as abandoned, not scored.
+**Decided: a run that ends mid-table does not count.** An attempt has to be
+finished to be scored; quitting a table mid-game is recorded as abandoned.
+That was the operator's call, and it matches what `-scoredbg` has always
+done, so nothing had to change to enforce it.
+
+The full condition is stricter than the two clauses this paragraph used to
+name. `sc_close()` (src/fantasies.c) requires all six: the attempt ended in
+attract mode on its own, its first launch was observed *in this session*,
+the trainer was off, the player count was exactly 1, no score digit was
+out of BCD range, and the score never decreased. A verifier should reject
+on the flag rather than re-deriving any of that, and the golden suite pins
+the flag for the same reason: `ended=attract` is necessary but not
+sufficient, so a change could leave it intact while flipping the verdict.
 
 **The segmenter must be strictly read-only.** No poking guest state, ever, or
 a scoring run diverges from a normal one. Directly testable: replay the same

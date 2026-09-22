@@ -193,9 +193,8 @@ events=$(sed -n 's/.*: [a-z]*, \([0-9]*\) events,.*/\1/p' "$work/run.log" | head
     # -scoredbg found an attempt, so vectors that are mid-game excerpts simply
     # have no attempt lines and run.sh skips the check.
     if grep -q '^\[score\] attempt ' "$work/score.log"; then
-        echo "# -scoredbg, one line per attempt (from a separate replay)"
-        sed -n 's/^\[score\] attempt \([0-9]*\) table=\([0-9]*\).*score=\([0-9]*\).*ball_reached=\([0-9]*\) launches=\([0-9]*\).*ended=\([a-z]*\).*/attempt \1 \2 \3 \4 \5 \6/p' \
-            "$work/score.log"
+        echo "# -scoredbg: index table score ball_reached launches ended rankable"
+        awk '/^\[score\] attempt /{t="";s="";b="";l="";e="";for(i=1;i<=NF;i++){if($i ~ /^table=/)t=substr($i,7);else if($i ~ /^score=/)s=substr($i,7);else if($i ~ /^ball_reached=/)b=substr($i,14);else if($i ~ /^launches=/)l=substr($i,10);else if($i ~ /^ended=/)e=substr($i,7)}r=(index($0,"[RANKABLE]")>0)?"yes":"no";printf "attempt %s %s %s %s %s %s %s\n",$3,t,s,b,l,e,r}' "$work/score.log"
     fi
 } > "$exp.new"
 

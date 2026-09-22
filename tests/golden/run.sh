@@ -90,8 +90,19 @@ for pfr in "$here"/*.pfr; do
     if grep -q '^attempt ' "$exp"; then
         ( cd "$d" && "$BIN" -d "$INSTALL" -freezetime -replay "$pfr" \
              -scoredbg >score.log 2>&1 )
-        got=$(sed -n 's/^\[score\] attempt \([0-9]*\) table=\([0-9]*\).*score=\([0-9]*\).*ball_reached=\([0-9]*\) launches=\([0-9]*\).*ended=\([a-z]*\).*/attempt \1 \2 \3 \4 \5 \6/p' "$d/score.log")
+        got=$(awk '/^\[score\] attempt /{t="";s="";b="";l="";e="";for(i=1;i<=NF;i++){if($i ~ /^table=/)t=substr($i,7);else if($i ~ /^score=/)s=substr($i,7);else if($i ~ /^ball_reached=/)b=substr($i,14);else if($i ~ /^launches=/)l=substr($i,10);else if($i ~ /^ended=/)e=substr($i,7)}r=(index($0,"[RANKABLE]")>0)?"yes":"no";printf "attempt %s %s %s %s %s %s %s\n",$3,t,s,b,l,e,r}' "$d/score.log")
         want=$(grep '^attempt ' "$exp")
+        # .expected files written before rankable was pinned carry one value
+        # fewer. Compare what they actually claim rather than failing every
+        # older vector on a format change.
+        #
+        # "attempt" is itself field 1, so the old six-value format is SEVEN
+        # tokens and the new seven-value one is EIGHT. Getting that backwards
+        # truncated `ended` off as well, which a test caught and reading did
+        # not.
+        if [ "$(printf '%s\n' "$want" | head -1 | awk '{print NF}')" != 8 ]; then
+            got=$(printf '%s\n' "$got" | cut -d' ' -f1-7)
+        fi
         if [ "$got" = "$want" ]; then
             echo "   score    ok    $(echo "$want" | awk '{print $4}' | tr '\n' ' ')"
         else
