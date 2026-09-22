@@ -868,6 +868,8 @@ int main(int argc, char **argv){
     const char *shotfile = NULL;
     int keep_overlay = 0;     /* -keepoverlay: keep the replay overlay */
     const char *keyscript = NULL;
+    /* -shotevery: both are EMULATED seconds now, not wall seconds.  See
+     * the capture site in the batch loop below. */
     double shot_every = 0, next_shot = 0;
     double speed = 1.0;
     int vol_override = -1;    /* -vol N overrides the saved slider position */
@@ -1498,6 +1500,14 @@ relaunch:
                     if(udl < cpu.cycles + step)
                         step = (udl > cpu.cycles) ? (udl - cpu.cycles) : 0;
                 }
+                /* ...and not past a -shotevery capture, for the same reason:
+                 * a frame is only comparable between runs if it is sampled on
+                 * the cycle it is due on. */
+                if(shot_every > 0){
+                    uint64_t sdl = until_cycles(next_shot);
+                    if(sdl < cpu.cycles + step)
+                        step = (sdl > cpu.cycles) ? (sdl - cpu.cycles) : 0;
+                }
                 cpu.cycles += step;
                 dev_tick();
             } else {
@@ -1524,6 +1534,10 @@ relaunch:
                 if(until_emu >= 0.0){
                     uint64_t udl = until_cycles(until_emu);
                     if(udl < dl) dl = udl;
+                }
+                if(shot_every > 0){
+                    uint64_t sdl = until_cycles(next_shot);
+                    if(sdl < dl) dl = sdl;
                 }
                 /* A deadline that is already here (dl == cpu.cycles, because
                  * dev_next_deadline() truncates the remaining instruction
@@ -1615,6 +1629,33 @@ relaunch:
                         break;
                     }
                 }
+            }
+            /* -shotevery capture, on the emulated clock.
+             *
+             * This used to ride the present path, which is paced by the WALL
+             * clock (`real = wall * speed`, and the present gate itself tests
+             * plat_time()).  So the frames landed wherever the host happened
+             * to be: two runs of the same replay on the same machine sampled
+             * different emulated moments and produced different files.  That
+             * makes them useless as the comparison REPLAY.md's validation
+             * section names them for ("replay twice -> ... -shotevery frames
+             * ... must all match"), which is the criterion Spike B has to
+             * carry across two platforms.
+             *
+             * Sampled here instead, on a grid of emulated seconds, with the
+             * batch above clamped to the deadline exactly the way the replay,
+             * -keys and -untilemu deadlines already are.  Same script, same
+             * cycle, same pixels, every run - and it no longer needs a
+             * present at all, so a headless host captures too.
+             *
+             * vga_render() only reads guest state (registers, VRAM, DAC), so
+             * sampling here costs the guest nothing it can observe. */
+            if(shot_every > 0 && emu_now() >= next_shot){
+                char nm[64];
+                next_shot += shot_every;
+                vga_render(fb, &fbw, &fbh);
+                sprintf(nm, "seq%03d.ppm", shot_n++);
+                save_ppm(nm, fb, fbw, fbh);
             }
             /* Batch-precision -untilemu stop, for the same reason as the
              * replay footer below: the outer check is wall-clock paced, so
@@ -1737,16 +1778,11 @@ relaunch:
                                 " using 12000000 ips; -ips overrides\n",
                         fbw, fbh);
             }
-            /* Captures first, badges after: -shotevery/-shot frames and
-             * F11 screenshots are validation artifacts and stay pixel-clean
-             * (this also lifts the old OSD text out of them).  The window
-             * still shows everything below. */
-            if(shot_every > 0 && real >= next_shot){
-                char nm[64];
-                next_shot = real + shot_every;
-                sprintf(nm, "seq%03d.ppm", shot_n++);
-                save_ppm(nm, fb, fbw, fbh);
-            }
+            /* Captures first, badges after: -shot frames and F11 screenshots
+             * are validation artifacts and stay pixel-clean (this also lifts
+             * the old OSD text out of them).  The window still shows
+             * everything below.  -shotevery is no longer taken here - it is
+             * sampled on the emulated clock in the batch loop above. */
             if(screenshot_pending){
                 screenshot_pending = 0;
                 take_screenshot(fb, fbw, fbh);
