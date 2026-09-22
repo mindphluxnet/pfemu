@@ -1,0 +1,51 @@
+# Everything here runs on a stock runner with no game files.
+#
+# That constraint is the whole design.  docs/VERIFY.md calls the game files
+# "the one thing between it and CI": tests/golden/run.sh needs an
+# installation, which is deliberately not in this repository and cannot go
+# into one.  So the golden suite and tests/golden/speed-ab.sh are absent here
+# on purpose, not by oversight - running them needs either a self-hosted
+# runner that already has an install, or a synthetic guest fixture small
+# enough to commit.  That decision is still open (docs/HANDOFF.md).
+#
+# What is left still catches the failure this was written for: a change to a
+# shared header that compiles under MSVC and breaks the POSIX build, which
+# until now had nothing but somebody's local WSL build standing in its way.
+# The parser tests need no install either, so this is a real gate rather than
+# only a compile check.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (gcc, -O2)
+        run: make
+
+      # 22 fixed cases with expected verdicts, milliseconds, meaningful exit
+      # status.  Fourteen of them are accepted by the parser as it stood
+      # before the validation pass, so this is a gate and not a formality.
+      - name: Parser regression suite
+        run: |
+          make fuzz
+          ./pfemu-fuzz-pfr -selftest
+
+      # A short campaign over the committed vector.  tests/golden/*.pfr is in
+      # the repository (it carries hashes, not code), so the fuzzer has a real
+      # corpus here even though the emulator has nothing to run.  The driver
+      # fails a run in which under 1% of cases are accepted, which is what
+      # stops this passing while silently testing nothing.
+      - name: Fuzz the .pfr parser
+        run: ./pfemu-fuzz-pfr -n 50000 tests/golden/deluxe-table3-200s.pfr
+
+      # Last, because `make ubsan` starts by cleaning.  This only proves the
+      # instrumented build compiles and links - the finding-bugs part needs a
+      # vector to execute, which needs an install.
+      - name: Instrumented build compiles
+        run: make ubsan

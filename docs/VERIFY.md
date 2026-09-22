@@ -211,6 +211,16 @@ change the final score outright. That makes a session containing at least one
 match an excellent golden-vector candidate (see
 [Cross-platform determinism](#cross-platform-determinism)).
 
+Informally corroborated, and worth writing down because it rules out the
+worse possibility: every recorded session whose match *hit* has replayed as a
+hit, watched on screen across several sessions. That is same-machine replay,
+eyeballed rather than hashed, so it is not the gate - but if the draw read
+entropy the cycle-exact injection failed to capture, it would already be
+flipping there, and it is not. The open question was never whether the draw
+is reproducible in principle; it is whether gcc-on-Linux and MSVC-on-Windows
+agree on the cycle it lands on. So this raises the odds that a match-fires
+vector passes; it does not remove the reason to have one.
+
 Output per attempt: `(table, index, start_cycles, end_cycles, score,
 terminated_how)`. Same-table-repeated and mixed-table sessions both fall out
 of this without special cases.
