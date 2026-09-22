@@ -68,10 +68,15 @@ footer:  final emu_time + cpu.cycles, -wav capture hash (FNV-1a over the
 with overwrite confirm for record, open dialog for replay) feeds the same
 `{dir, prog, fullscreen, mode, path}` commit path as normal launch. The
 last-used session file per install is remembered as the `session` key in
-`PFEMU-STATE/pfemu.cfg` and restored into the field (a typed or
-picked path always wins; record re-targets on install switch, replay keeps
-the loaded file). A typed record path gains the `.pfr` extension when it
-has none. The trainer checkbox is greyed out in record/replay mode; the
+`PFEMU-STATE/pfemu.cfg` and restored into the field **in replay mode
+only** - so the file you just recorded is the one offered to replay. Record
+mode builds a fresh target every time it is entered, because the remembered
+path is the previous recording and reusing it would silently overwrite a
+playthrough that cannot be reproduced. If that name already exists (two
+recordings started in the same second), it gains a `_2`, `_3`, ... suffix
+rather than the file being replaced. A typed or picked path always wins
+over both; record re-targets on install switch, replay keeps the loaded
+file. A typed record path gains the `.pfr` extension when it has none. The trainer checkbox is greyed out in record/replay mode; the
 volume slider stays enabled in all modes. CLI and launcher are thin
 frontends to the same injector. Details in replay mode opens a report
 window: whether the file can play and why not, the recorded session

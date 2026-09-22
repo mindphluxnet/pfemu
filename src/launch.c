@@ -435,11 +435,19 @@ static void launch_save_pos(HWND h);
 
 /* Default record target: sessions/<install>_<date>.pfr (REPLAY.md section
  * 4), next to pfemu.exe.  The install dir is sanitised: it is only ever a
- * plain directory name, but never trust a filename you did not build. */
+ * plain directory name, but never trust a filename you did not build.
+ *
+ * Rebuilt on every entry into record mode, so the timestamp in the name is
+ * the recording's own.  A second-resolution stamp can still repeat if
+ * record mode is re-entered within the same second, so an existing file
+ * gets _2, _3, ... rather than being overwritten: a recording is a
+ * playthrough that cannot be reproduced, and one lost to a name clash is
+ * gone for good. */
 static void default_record_path(LaunchState *st){
     SYSTEMTIME t;
-    char safe[64];
+    char safe[64], stem[480];
     size_t i;
+    int n;
     const char *dir = cur_game_dir(st);
     GetLocalTime(&t);
     for(i=0;i<sizeof(safe)-1 && dir[i];i++){
@@ -448,9 +456,16 @@ static void default_record_path(LaunchState *st){
     }
     safe[i] = 0;
     if(!safe[0]) snprintf(safe, sizeof(safe), "GAME");
-    snprintf(st->replay_path, sizeof(st->replay_path),
-             "sessions\\%s_%04d%02d%02d_%02d%02d%02d.pfr",
+    snprintf(stem, sizeof(stem),
+             "sessions\\%s_%04d%02d%02d_%02d%02d%02d",
              safe, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    snprintf(st->replay_path, sizeof(st->replay_path), "%s.pfr", stem);
+    for(n=2; n<100; n++){
+        FILE *f = fopen(st->replay_path, "rb");
+        if(!f) break;
+        fclose(f);
+        snprintf(st->replay_path, sizeof(st->replay_path), "%s_%d.pfr", stem, n);
+    }
 }
 
 /* Identity compare for auto-restore (REPLAY.md 4.1): same release id AND
@@ -566,19 +581,23 @@ static void replay_load_file(HWND h, LaunchState *st){
     show_detection(h, st);
 }
 
-/* Fill the path field on mode entry: the install's last-used session file
- * when there is one, else the default record target (record) or empty
- * (replay).  Never clobbers a user-typed/picked path.  Install switches
- * keep the current path, except record mode which re-targets to the new
- * install (saved file or fresh default) - a record target naming another
- * install would only confuse. */
+/* Fill the path field on mode entry: a fresh record target in record mode,
+ * else the install's last-used session file, else empty.  Never clobbers a
+ * user-typed/picked path.  Install switches keep the current path, except
+ * record mode which re-targets to the new install - a record target naming
+ * another install would only confuse. */
 static void restore_session_path(HWND h, LaunchState *st, int install_switch){
     char saved[512];
     if(st->path_custom) return;
     if(install_switch && st->mode == LAUNCH_REPLAY) return;
+    /* Record always gets a fresh target.  The remembered path is a
+     * convenience for replay - it pre-fills the file you last recorded or
+     * replayed - but as a record target it aims the next recording at the
+     * last one and overwrites it, wearing that session's timestamp while
+     * it does so. */
     read_session_path(cur_game_dir(st), saved, sizeof(saved));
-    if(saved[0]) snprintf(st->replay_path, sizeof(st->replay_path), "%s", saved);
-    else if(st->mode == LAUNCH_RECORD) default_record_path(st);
+    if(st->mode == LAUNCH_RECORD) default_record_path(st);
+    else if(saved[0]) snprintf(st->replay_path, sizeof(st->replay_path), "%s", saved);
     else st->replay_path[0] = 0;
     if(st->hPath){
         st->updating_path = 1;
