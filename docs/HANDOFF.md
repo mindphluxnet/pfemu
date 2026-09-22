@@ -37,14 +37,15 @@ documents now say what was actually found.
 | Host pacing is guest-invisible | **Verified**, on one vector, on two hosts. `tests/golden/speed-ab.sh` replays paced and unthrottled: footer, wav hash and all 11 frames byte-identical, and both still match the original Windows session |
 | A replay can run faster than real time | **Verified** - 3.7x on the server, 3.3x under WSL. It could not before `-unthrottle`: `-speed` is discarded during replay by design |
 | The `.pfr` parser refuses hostile input | **Verified** for the cases in `tests/fuzz` - 22 of them, 14 of which the previous parser accepted. `-selftest` is the regression test |
-| The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. ~50k mutation cases under ASan+UBSan, one seed. No crash. A gcc mutation driver is not a coverage-guided campaign |
+| The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. 1,000,004 mutation cases under ASan+UBSan across four seeds, ~1.8% of them accepted deep into the parser. No crash, no assertion. A gcc mutation driver is still not a coverage-guided campaign |
 | Big-endian correctness | **Untested.** The new helpers are host-endian, exactly like the puns they replaced. No regression, but no progress either |
 
 The parser hardening that used to head this list is done (`8da135b`).
 What it settled: the specific holes are closed and regression-tested, and
 `-strict` exists for a verifier that should refuse what a player may keep.
-What it did not settle: memory safety is "no finding after ~50k cases from
-one seed under a hand-rolled mutator", which is not the same as fuzzed.
+What it did not settle: memory safety is "no finding in 1M cases under a
+hand-rolled mutator", which is not the same thing as fuzzed - a blind
+mutator rediscovers shallow structure and stops.
 A real campaign wants `make fuzz-clang` on a box with clang, left running
 for hours against a corpus of more than one vector - which is another
 reason item 1 below matters.

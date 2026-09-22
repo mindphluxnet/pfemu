@@ -488,6 +488,38 @@ eating attacker-controlled text, and it - not the emulator - is the real
 attack surface. Workers run sandboxed: container, no network, read-only game
 directory, tmpfs overlay, CPU and wall-clock timeouts.
 
+**Tiers 0 and 1 now exist**, in `parse_file()` rather than in a server, so
+every caller gets them: bounds on `ips`, `speed`, the quality notch,
+`start_table`, the footer and the event count, plus sorted events that may
+not mix the cycle-stamped and legacy forms and may not be stamped past the
+footer. The service still owns the policy half of tier 0 - release
+allowlist, balls = 3 - because neither is the parser's business. `-strict`
+covers what is: refuse a file with no integrity line, or with pre-cycle
+events.
+
+Two of those were live bugs, and both ended as a process that never exits:
+an event stamped past the footer (`replay_should_stop()` returns 0 while
+`ev_idx < nev`, so it never comes due and the footer stop is never
+consulted) and `ips: nan` (every comparison against NaN is false, so it
+walks through `run.c`'s `emu_ips <= 0.0` clamp and `emu_now()` returns NaN
+forever after).
+
+The fuzzing itself is **started, not finished**. `tests/fuzz/` holds a
+22-case regression suite for the above - 14 of which the previous parser
+accepted - and a deterministic mutation driver: 1,000,004 cases under
+ASan+UBSan across four seeds, no crash and no assertion. That is a gcc
+mutator against a corpus of one vector, not a coverage-guided campaign.
+`make fuzz-clang` builds the same code as a libFuzzer target for a host
+that has clang, and that is what should run for hours before the service
+takes an upload from anyone.
+
+One thing that generalises beyond this parser: **the integrity line has to
+be repaired after each mutation or the fuzzer tests the checksum instead of
+the code.** The first run of the harness accepted 8 cases out of 20001 and
+never reached the event loop. It is also the right threat model - FNV-1a is
+a checksum, not a MAC, and the client holds no key, so an attacker
+recomputes it exactly the way the harness does.
+
 The server needs its own copies of each supported release. Uploads are fine
 (a `.pfr` carries hashes, not code), but the operator has to hold the game
 binaries, and every newly identified release is a new verification target.

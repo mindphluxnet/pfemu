@@ -52,8 +52,14 @@ A `.pfr` carries an FNV-1a over its own bytes and `parse_file()` refuses a file
 whose hash does not match. So a blind mutator is rejected at the door: the
 first run of this harness accepted **8 cases out of 20001** and never reached
 the event loop at all. After `fixup_hash()` recomputes the line, the same
-corpus and iteration count accepts around 1.8%, a couple of hundred times more
-work actually reaching the parser.
+corpus accepts around 1.8% - a couple of hundred times more work actually
+reaching the parser.
+
+Campaign so far: 1,000,004 cases across four seeds, ~18,000 of them accepted
+deep into the parser, no crash and no assertion. Worth being clear about what
+that is and is not - a blind mutator against a corpus of one vector
+rediscovers shallow structure and stops. `make fuzz-clang` on a host with
+clang is the real campaign.
 
 It is also the correct threat model. FNV-1a is a checksum, not a MAC -
 VERIFY.md says exactly that - and the client holds no key, so an attacker
