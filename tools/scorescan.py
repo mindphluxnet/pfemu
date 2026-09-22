@@ -60,6 +60,23 @@ INTEGRATOR = re.compile(rb'\xa1(..)\x99\x01\x06..\x11\x16..\xa1..\x8b\x16..'
 DATASEG = re.compile(rb'\x68(..)\x1f', re.S)
 
 
+def transaction(img, sif):
+    """The new-ball score clear and the restore that closes it.
+
+    RESET_VARS zeroes the live score buffer and P_STRUC_2_VARS copies the
+    player's saved score straight back in; between them the buffer reads 0
+    without the run having lost anything (docs/VERIFY-BUG.md).  Both brackets
+    are anchored on the score address itself, which is what makes shapes this
+    short safe to match on.  Tables 1, 2 and 4 copy words, table 3 copies
+    bytes; exactly one of the two forms must appear.
+    """
+    s = re.escape(struct.pack('<H', sif))
+    clear = re.findall(rb'\xbf' + s + rb'\xb9\x06\x00\xf3\xab', img)
+    rest_w = re.findall(rb'\xbf' + s + rb'\xb9\x06\x00\xf3\xa5', img)
+    rest_b = re.findall(rb'\xbf' + s + rb'\x1e\x07\xb9\x0c\x00\xf3\xa4', img)
+    return len(clear), len(rest_w), len(rest_b)
+
+
 def load_image(path):
     """The bytes the loader puts in RAM: an MZ file past its header."""
     d = open(path, 'rb').read()
@@ -136,6 +153,15 @@ def scan(path):
         if nballs != balls11 + 1:
             bad.append("NO_OF_BALLS %04X is not BALLS+12 (%04X)" % (nballs, balls11 + 1))
 
+    n_clr = n_rw = n_rb = 0
+    if score is not None:
+        n_clr, n_rw, n_rb = transaction(img, score)
+        if n_clr != 1:
+            bad.append("new-ball score clear matched %d times, want 1" % n_clr)
+        if n_rw + n_rb != 1:
+            bad.append("new-ball score restore matched %d times (%d word, "
+                       "%d byte), want 1" % (n_rw + n_rb, n_rw, n_rb))
+
     launch = list(LAUNCH.finditer(img))
     yhast = None
     if len(launch) != 1:
@@ -163,10 +189,12 @@ def scan(path):
         return "%04X" % v if v is not None else "  ??"
 
     print("%-28s dseg=%s(x%-2d) score=%s(x%d,dmd x%d) demo=%s(x%d,start x%d) "
-          "ball=%s nballs=%s players=%s(x%d) player=%s launch=%s(x%d)  %s"
+          "ball=%s nballs=%s players=%s(x%d) player=%s launch=%s(x%d) "
+          "txn=%d/%s  %s"
           % (path, h(seg), votes, h(score), n_zero, n_dmd, h(demo), n_demo,
              n_ggm, h(balls11), h(nballs), h(players), n_add, h(player),
              h(yhast), len(launch),
+             n_clr, ("%dw" % n_rw) if n_rw else ("%db" % n_rb),
              "OK" if not bad else "FAIL: " + "; ".join(bad)))
     return not bad
 

@@ -812,7 +812,8 @@ void cpu_step(void){
     if(score_hook_begin){
         uint32_t la = cs_base + cpu.eip;
         if(la == score_hook_begin || la == score_hook_end ||
-           la == score_hook_launch)
+           la == score_hook_launch || la == score_hook_clear ||
+           la == score_hook_restore)
             fantasies_score_exec(la);
     }
     if(x_on){

@@ -1,5 +1,12 @@
 # False score decrease during new-ball reset
 
+> **Status: fixed in code, not yet confirmed against the recording.**
+> `-scoredbg` now hooks both brackets of the clear/restore sequence and
+> ignores the live buffer in between, as recommended below. The locators pass
+> `tools/scorescan.py` on all twelve ranked programs. Validation plan item 1 -
+> replaying `sessions/FANTASYDX_20260918_062237.pfr` and getting a rankable
+> 8,826,490 - has not been run yet. See the implementation notes at the end.
+
 ## Conclusion
 
 The run did not lose its score. The verifier is applying its monotonicity
@@ -173,3 +180,44 @@ rankable attempt.
 A segmentation regression test should cover both high-score exit paths: three
 initials without Enter must return to attract mode without opening another
 attempt, while three initials followed by Enter must open a new attempt.
+
+## What was implemented
+
+The recommended fix, semantic brackets rather than a debounce.
+`fantasies_find_score()` locates both sides and `cpu_step()` hooks them:
+
+| Bracket | Shape | Hook |
+| --- | --- | --- |
+| clear | `MOV DI,SIFFRORNA / MOV CX,6 / REP STOSW` | on the `MOV DI`, before the buffer is touched |
+| restore | `MOV DI,SIFFRORNA / MOV CX,6 / REP MOVSW` (tables 1, 2, 4) or `MOV DI,SIFFRORNA / PUSH DS / POP ES / MOV CX,12 / REP MOVSB` (table 3) | on the address just past the string op, since a hook fires before its instruction |
+
+Both are anchored on the already confirmed score address, which is what makes
+shapes this short safe; neither collides with `zeroscore`, which loads `CX`
+before `DI`. Exactly one clear and exactly one restore in each of the twelve
+ranked programs - `tools/scorescan.py` checks this and prints `txn=1/1w` or
+`txn=1/1b`, so a new release has to pass it too.
+
+Between the brackets the poll does not read the buffer at all: no
+monotonicity, no BCD check, no update of the last-seen value. When the restore
+bracket fires it takes an immediate sample and compares it against the value
+from before the clear, so a restore that genuinely came back lower still sets
+`decreased` and still invalidates the attempt. Zero is not special-cased and
+nothing is clamped.
+
+One addition not in the recommendation: a watchdog. If a clear is not followed
+by a restore within half a second of emulated time - about four orders of
+magnitude more than the real gap - the window is closed anyway, the run says
+so once, and the exit report counts it. Without that, a single mislocated
+bracket would silently disable the monotonicity check for the rest of the
+session, which is a worse failure than the false positive this fixes.
+
+Per-attempt output gained a `resets=` count of transactions observed, next to
+the existing `springflips=`, on the same principle: the numbers that drove a
+decision stay visible in the log.
+
+Not implemented: the larger design that models the logical score from both
+copy directions, and the segmentation regression tests for the two high-score
+exit paths. The trailing Enter-triggered attempt is already handled the way
+this document asks - it opens in the ordinary unlocked state, samples its
+player count at the first launch, and reports as unfinished without touching
+the earlier attempt's result.

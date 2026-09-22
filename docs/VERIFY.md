@@ -263,6 +263,28 @@ Expect the score to be BCD or multi-word. Verify monotonicity across an
 attempt - a decrease means the address is wrong, or something worse, and
 should invalidate the whole submission rather than get clamped.
 
+**That last sentence was too strong, and it cost a good run.** What the
+signatures find is `SIFFRORNA`, the game's *live working copy* of the score,
+and the game rebuilds that buffer from the current player's saved score at
+every new ball: `RESET_VARS` zeroes it, `P_STRUC_2_VARS` copies the saved
+value straight back. A 500 Hz poll lands in the gap often enough to matter,
+and it did - a genuine 8.8M Table 3 run was thrown out on a transient zero
+that the next few guest instructions undid. The full diagnosis is in
+[VERIFY-BUG.md](VERIFY-BUG.md).
+
+Monotonicity is a property of the *logical* score, so it can only be applied
+to observations that are logically meaningful. `-scoredbg` now hooks both
+brackets of that rebuild, ignores the buffer in between, and compares the
+restored value against the pre-clear one when the transaction closes - so a
+restore that really did lose points still invalidates the attempt, and an
+asynchronous glimpse of the demolition does not. A clear that is never
+followed by a restore ends the window on a watchdog and says so, because
+silently suspending the check forever would be the worse bug.
+
+The rule generalises past this one buffer: **sample guest state at semantic
+boundaries the guest itself defines, not on a timer.** Every value this spike
+reads asynchronously is a candidate for the same mistake.
+
 ### What that found
 
 The score is `SIFFRORNA` - "the digits" - **12 unpacked BCD bytes, most
@@ -285,7 +307,12 @@ exactly twice, and in all twelve the three immediates are the same address.
 The same scan validates the other five locators - attract-mode entry, game
 start, the ball/player site, the add-player handler and the plunger launch -
 at one, one, one, two and one matches respectively, with every duplicated
-operand agreeing.
+operand agreeing. It also validates the two brackets of the new-ball score
+transaction described above: exactly one clear and exactly one restore per
+program, the restore copying words on tables 1, 2 and 4 and bytes on table 3.
+Those two shapes are short enough to be meaningless on their own; what makes
+them safe is that both are anchored on the score address the other signatures
+already agreed on.
 
 The launch locator gets a cross-check of its own for free: the word
 `SPRINGUP` stores the plunger speed into is the same word
@@ -446,11 +473,11 @@ reconstructed source alone:
 Two independent spikes gate everything. Either can be done first; both are
 cheap; nothing else should start until both come back green.
 
-- **Spike A - score and segmentation. Built; one game played, one bug found
-  and fixed; wider playtest pending.** `-scoredbg` prints the per-attempt
-  table the verifier would emit, and every locator it rests on was confirmed
-  unique by static byte-scan across all twelve `TABLE1-4.PRG` of the three
-  ranked releases before it was written.
+- **Spike A - score and segmentation. Built; two games played, three bugs
+  found and fixed; wider playtest pending.** `-scoredbg` prints the
+  per-attempt table the verifier would emit, and every locator it rests on
+  was confirmed unique by static byte-scan across all twelve `TABLE1-4.PRG`
+  of the three ranked releases before it was written.
 
   The first real game - Party Land, Deluxe, three balls, 7.5 emulated
   minutes - segmented cleanly end to end: one attempt opened at the game
@@ -461,6 +488,14 @@ cheap; nothing else should start until both come back green.
   spring-flag launch count was wrong (see [LOCKED](#attempt-segmentation)),
   which is what the plunger-launch hook replaced it with, and a table booting
   into attract mode was being reported as an unbalanced end. Both fixed.
+
+  A second game, recorded this time (`sessions/FANTASYDX_20260918_062237.pfr`,
+  Table 3), found the third and worst: an 8.8M run thrown out as "score
+  decreased" on a transient zero inside the game's own new-ball score rebuild.
+  That is the sampling-model bug written up in [VERIFY-BUG.md](VERIFY-BUG.md)
+  and fixed by the transaction brackets described under
+  [Locating the score](#what-that-found). **That fix is not yet confirmed
+  against the recording** - replaying it is the first thing to do.
 
   What is still unverified is the part only a human can check: that the
   number in the log is the number on the panel. So the spike is not green

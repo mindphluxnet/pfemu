@@ -1994,17 +1994,20 @@ static uint32_t sc_player[5];             /* PLAYER, whose turn it is */
 static uint32_t sc_begin_site[5];         /* GO_GAME_MODE's store */
 static uint32_t sc_end_site[5];           /* GO_DEMO_MODE's store */
 static uint32_t sc_launch_site[5];        /* SPRINGUP's velocity store */
+static uint32_t sc_clear_site[5];         /* RESET_VARS zeroes the score */
+static uint32_t sc_restore_site[5];       /* P_STRUC_2_VARS has put it back */
 
 /* The two addresses cpu_step() compares against, set from the arrays above
  * when a located table is running and zeroed the moment it is not.  Both stay
  * 0 unless -scoredbg is on, so an ordinary run pays one predictable branch
  * per instruction and nothing else. */
 uint32_t score_hook_begin = 0, score_hook_end = 0, score_hook_launch = 0;
+uint32_t score_hook_clear = 0, score_hook_restore = 0;
 
 #define SC_LOG 64
 typedef struct {
     int table, index, players, nballs, ball_reached;
-    int launches, launches_after_last_ball, springflips;
+    int launches, launches_after_last_ball, springflips, resets;
     int rankable, bad_digits, decreased;
     int locked, trainer;
     unsigned long long start_cycles, end_cycles;
@@ -2023,6 +2026,9 @@ static int sc_ball_prev = -1;
 static int sc_have_ball = 0;               /* BALLS[11] has read 1 this attempt */
 static int sc_flag_warned = 0;             /* DEMOMODE audit, reported once */
 static int sc_seen_begin = 0;              /* a game has begun on this table */
+static int sc_unstable = 0;                /* inside the new-ball score clear */
+static double sc_unstable_t = 0.0;         /* when it started, for the watchdog */
+static unsigned long sc_stuck = 0;         /* windows the watchdog had to end */
 static uint64_t sc_last_score = 0;
 static double sc_poll_t = -1.0, sc_line_t = -1.0;
 static unsigned long sc_no_digits = 0;    /* polls that read a non-BCD byte */
@@ -2156,6 +2162,7 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
     static const uint8_t ggmm[6] = { 1,1,1,1,1,1 };
     char b[64];
     uint32_t seg, at_gdm = 0, at_ggm = 0, at_bal = 0, at_lau = 0;
+    uint32_t at_clr = 0, at_rst = 0;
     uint16_t o_score = 0, o_dmd = 0, o_demo = 0, o_player = 0, o_players = 0;
     uint16_t o_player2 = 0, o_ball = 0, o_ball2 = 0, o_nballs = 0, o_players2 = 0;
     uint16_t o_yhast = 0;
@@ -2177,7 +2184,7 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
     fantasies_score_leave();
     sc_score[tn] = sc_demomode[tn] = sc_ball[tn] = sc_nballs[tn] = 0;
     sc_players[tn] = sc_player[tn] = sc_begin_site[tn] = sc_end_site[tn] = 0;
-    sc_launch_site[tn] = 0;
+    sc_launch_site[tn] = sc_clear_site[tn] = sc_restore_site[tn] = 0;
     if(load_base + imglen > RAM_SIZE) return;
 
     seg = data_seg_vote(load_base, imglen);
@@ -2248,6 +2255,55 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
         return;
     }
 
+    /* The new-ball score transaction (docs/VERIFY-BUG.md).  RESET_VARS zeroes
+     * the live score buffer and P_STRUC_2_VARS immediately copies the current
+     * player's saved score back into it, so between those two the buffer
+     * legitimately reads 0 - and a 500 Hz poll lands in that gap often enough
+     * to have failed a genuine 8.8M run on Table 3 as "score decreased".  The
+     * buffer is the game's working copy, not the logical score; these two
+     * sites are the transaction brackets that say when reading it means
+     * anything.
+     *
+     *   clear    MOV DI,SIFFRORNA / MOV CX,6  / REP STOSW
+     *   restore  MOV DI,SIFFRORNA / MOV CX,6  / REP MOVSW   (tables 1, 2, 4)
+     *            MOV DI,SIFFRORNA / PUSH DS / POP ES / MOV CX,12 / REP MOVSB
+     *                                                      (table 3)
+     *
+     * Anchoring on the already independently confirmed score address is what
+     * makes these safe to write this loosely: an eight-byte shape would match
+     * all over the image, but not one that has to name this buffer.  Exactly
+     * one clear and exactly one restore in each of the twelve ranked programs
+     * (tools/scorescan.py).  Note the clear does not collide with `zeroscore`,
+     * which loads CX before DI and so has no MOV CX between the two.
+     *
+     * A build where either bracket is missing or doubled is a build this does
+     * not understand, so it is left unscored rather than scored with the
+     * monotonicity check known to be wrong. */
+    { uint8_t clr[8]  = { 0xBF,0,0, 0xB9,0x06,0x00, 0xF3,0xAB };
+      uint8_t rsw[8]  = { 0xBF,0,0, 0xB9,0x06,0x00, 0xF3,0xA5 };
+      uint8_t rsb[10] = { 0xBF,0,0, 0x1E,0x07, 0xB9,0x0C,0x00, 0xF3,0xA4 };
+      static const uint8_t all[10] = { 1,1,1,1,1,1,1,1,1,1 };
+      int nw, nb;
+      clr[1] = rsw[1] = rsb[1] = (uint8_t)(o_score & 0xFF);
+      clr[2] = rsw[2] = rsb[2] = (uint8_t)(o_score >> 8);
+      if(sc_scan1(load_base, imglen, clr, all, sizeof(clr), 1, &at_clr, NULL) != 1){
+          fprintf(stderr, "[score] table %d: new-ball score clear not unique;"
+                          " table left unscored\n", tn);
+          return;
+      }
+      nw = sc_scan1(load_base, imglen, rsw, all, sizeof(rsw), 1, &at_rst, NULL);
+      nb = sc_scan1(load_base, imglen, rsb, all, sizeof(rsb), 1, &at_rst, NULL);
+      if(nw + nb != 1){
+          fprintf(stderr, "[score] table %d: new-ball score restore not unique"
+                  " (%d word-copy, %d byte-copy site(s)); table left unscored\n",
+                  tn, nw, nb);
+          return;
+      }
+      /* A cpu_step() hook fires before its instruction, so "the copy is done"
+       * has to be the address just past the string op, not the string op. */
+      at_rst += nw ? sizeof(rsw) : sizeof(rsb);
+    }
+
     sc_score[tn]      = seg*16 + o_score;
     sc_demomode[tn]   = seg*16 + o_demo;
     sc_ball[tn]       = seg*16 + o_ball;
@@ -2257,9 +2313,13 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
     sc_begin_site[tn] = at_ggm;
     sc_end_site[tn]   = at_gdm + 12;          /* the MOV [DEMOMODE],TRUE itself */
     sc_launch_site[tn] = at_lau + 26;         /* the MOV [Y_HAST],BP itself */
+    sc_clear_site[tn]  = at_clr;              /* about to zero the live score */
+    sc_restore_site[tn] = at_rst;             /* the copy back has completed */
     score_hook_begin  = sc_begin_site[tn];
     score_hook_end    = sc_end_site[tn];
     score_hook_launch = sc_launch_site[tn];
+    score_hook_clear  = sc_clear_site[tn];
+    score_hook_restore = sc_restore_site[tn];
     fprintf(stderr, "[score] table %d: data_seg=%04X score=DS:%04X(%05X)"
             " demomode=DS:%04X ball=DS:%04X nballs=DS:%04X players=DS:%04X"
             " player=DS:%04X\n",
@@ -2269,6 +2329,9 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
             " plunger launch at %05X (Y_HAST=DS:%04X)\n",
             tn, (unsigned)score_hook_begin, (unsigned)score_hook_end,
             (unsigned)score_hook_launch, o_yhast);
+    fprintf(stderr, "[score] table %d: new-ball score transaction %05X (clear)"
+            " -> %05X (restored)\n",
+            tn, (unsigned)score_hook_clear, (unsigned)score_hook_restore);
 }
 
 /* The 12 unpacked BCD digits, most significant first.  A digit above 9 cannot
@@ -2308,11 +2371,12 @@ static void sc_print(const ScAttempt *a){
         "[score] attempt %d table=%d start_cyc=%llu end_cyc=%llu"
         " start_emu=%.3f end_emu=%.3f score=%llu players=%d balls=%d"
         " ball_reached=%d launches=%d extra_after_last=%d springflips=%d"
-        " ended=%s%s\n",
+        " resets=%d ended=%s%s\n",
         a->index, a->table, a->start_cycles, a->end_cycles,
         a->start_emu, a->end_emu, (unsigned long long)a->score,
         a->players, a->nballs, a->ball_reached, a->launches,
-        a->launches_after_last_ball, a->springflips, a->how, why);
+        a->launches_after_last_ball, a->springflips, a->resets,
+        a->how, why);
 }
 
 static void sc_close(const char *how){
@@ -2338,13 +2402,48 @@ static void sc_close(const char *how){
 void fantasies_score_leave(void){
     if(sc_state) sc_close("abandoned");
     score_hook_begin = score_hook_end = score_hook_launch = 0;
+    score_hook_clear = score_hook_restore = 0;
     sc_seen_begin = 0;
+    sc_unstable = 0;
 }
 
 /* cpu_step() hook.  Reached only after the three address compares there have
  * already matched, so this is off the hot path. */
 void fantasies_score_exec(uint32_t lin){
     int bad = 0;
+    /* The two brackets of the new-ball score transaction.  Between them the
+     * live buffer is being rebuilt from the player's saved score and means
+     * nothing; see the locator above and docs/VERIFY-BUG.md. */
+    if(lin == score_hook_clear){
+        if(sc_state && !sc_unstable){
+            sc_unstable = 1;
+            sc_unstable_t = emu_time;
+            sc_cur.resets++;
+        }
+        return;
+    }
+    if(lin == score_hook_restore){
+        if(sc_state && sc_unstable){
+            uint64_t v = sc_read_score(&bad);
+            sc_unstable = 0;
+            if(bad){
+                sc_cur.bad_digits = 1;
+            } else {
+                /* Monotonicity still applies across the window, just to its
+                 * endpoints: what came back has to be at least what went in.
+                 * A restore that really did lose points is still a failure. */
+                if(v < sc_last_score && !sc_cur.decreased){
+                    sc_cur.decreased = 1;
+                    fprintf(stderr, "[score] t=%.3f new-ball restore came back"
+                            " LOW, %llu -> %llu\n", emu_time,
+                            (unsigned long long)sc_last_score,
+                            (unsigned long long)v);
+                }
+                sc_last_score = v;
+            }
+        }
+        return;
+    }
     /* SPRINGUP is about to give the ball its plunger speed.  This is the
      * launch - the flag poll in the tick above only ever approximated it -
      * and it is where the player count stops being able to change, so it is
@@ -2387,6 +2486,7 @@ void fantasies_score_exec(uint32_t lin){
         sc_ball_prev = -1;
         sc_have_ball = 0;
         sc_flag_warned = 0;
+        sc_unstable = 0;
         sc_last_score = sc_read_score(&bad);
         sc_line_t = -1.0;
         fprintf(stderr, "[score] t=%.3f attempt %d begins on table %d"
@@ -2474,6 +2574,24 @@ void fantasies_score_tick(void){
     }
     if(spring >= 0) sc_spring_prev = spring;
 
+    /* Mid-transaction the buffer is a demolition site, not a score: no read,
+     * no monotonicity, no last-value update.  The restore bracket resumes all
+     * three and checks the endpoints against each other.
+     *
+     * The watchdog is for the case this code has the brackets wrong: without
+     * it, one unmatched clear would silently disable the monotonicity check
+     * for the rest of the run, which is a worse failure than the false
+     * positive it exists to prevent.  The gap it covers is two guest routines
+     * apart - microseconds - so half a second is enormous. */
+    if(sc_unstable){
+        if(emu_time - sc_unstable_t <= 0.5) return;
+        sc_unstable = 0;
+        if(!sc_stuck++)
+            fprintf(stderr, "[score] t=%.3f the new-ball score clear was never"
+                    " followed by a restore - the transaction brackets are"
+                    " wrong\n", emu_time);
+    }
+
     v = sc_read_score(&bad);
     if(bad){
         sc_cur.bad_digits = 1;
@@ -2523,6 +2641,9 @@ void fantasies_score_report(void){
     if(sc_no_digits)
         fprintf(stderr, "[score] %lu poll(s) read a non-BCD score byte\n",
                 sc_no_digits);
+    if(sc_stuck)
+        fprintf(stderr, "[score] %lu new-ball score clear(s) never restored\n",
+                sc_stuck);
 }
 
 /* ------------------------------------------------------ direct-to-table --- */
