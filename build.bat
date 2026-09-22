@@ -19,6 +19,6 @@ if %errorlevel% neq 0 (
 )
 rc /nologo /fo pfemu.res res\pfemu.rc
 if errorlevel 1 exit /b 1
-cl /nologo /O2 /GL /W3 /wd4996 /Fe:pfemu.exe src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c src/main.c src/launch.c src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c src/replay.c src/snapshot.c pfemu.res user32.lib gdi32.lib winmm.lib comctl32.lib comdlg32.lib /link /LTCG /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
+cl /nologo /O2 /GL /W3 /wd4996 /Fe:pfemu.exe src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c src/main.c src/run.c src/launch.c src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c src/replay.c src/snapshot.c pfemu.res user32.lib gdi32.lib winmm.lib comctl32.lib comdlg32.lib /link /LTCG /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
 del *.obj
 del pfemu.res

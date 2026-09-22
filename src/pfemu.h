@@ -297,6 +297,28 @@ void plat_audio_init(int hz);
 void plat_audio_push(const int16_t *samples, int count);
 void plat_set_fullscreen(int on);     /* runtime toggle; also Alt+Enter in-window */
 
+/* --- host entry points the session driver (src/run.c) calls ---------------
+ * src/main.c answers these with Win32; src/host_null.c answers them with
+ * nothing, which is what the headless build needs.  emu_main() is the
+ * session itself: each host's main() does its own process setup and then
+ * hands over. */
+int  emu_main(int argc, char **argv);
+void plat_early_init(void);           /* console, DPI, process-wide setup */
+void plat_shutdown(void);             /* pairs with plat_init's timer period */
+void plat_fail_msg(const char *msg);  /* modal box; stderr is already done */
+void plat_kbd_reconcile(void);        /* live host key state -> guest */
+void plat_screenshot(const uint32_t *pix, int w, int h);  /* F11 */
+int  plat_abspath(const char *in, char *out, size_t n);   /* 0 on failure */
+
+/* --- raised by the host, serviced by the loop -----------------------------
+ * The host sets these from wherever it handles input; src/run.c acts on them
+ * at an instruction boundary between batches, so a snapshot taken in response
+ * is exact.  Defined in src/run.c. */
+extern int screenshot_pending;
+extern int snap_save_pending, snap_load_pending;
+extern int vol_premute, vol_muted;    /* keypad-* mute, read by the exit path */
+extern int from_launcher;             /* 1 once the picker returned Launch */
+
 /* Host-only on-screen message, drawn over the presented frame (src/main.c).
  * Used by the volume keys and by the trainer's hotkeys in src/fantasies.c. */
 void osd_show(const char *text);
