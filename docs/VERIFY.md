@@ -1,10 +1,12 @@
 # Server-side replay verification (design note)
 
-**Status: Spike A is green, the rest is not built.** `-scoredbg`
-(src/fantasies.c) locates the score and prints the per-attempt table
-described below, and has been validated on every table of every ranked
-release; nothing else here exists. Two spikes decide whether any of the rest gets built
-(see [Phasing](#phasing)); everything after them is plumbing.
+**Status: both spikes are green. The service is not built.** `-scoredbg`
+(src/fantasies.c) locates the score and prints the per-attempt table described
+below, validated on every table of every ranked release. `make` builds a
+headless Linux binary that reproduces a Windows recording bit for bit - wav,
+frames and footer (see [Phasing](#phasing)). Neither spike found a reason to
+stop, so everything after them is plumbing: the golden-vector CI, eligibility
+enforcement, and the service itself. None of that exists yet.
 
 The idea: a player uploads a `.pfr`, a headless Linux build re-simulates it,
 and the server derives the score itself. The client's emulator is never
@@ -375,20 +377,69 @@ is a regression net for the emulator itself.
 
 ## The headless Linux build
 
-Smaller than it looks. The emulation core - `cpu.c`, `vga.c`, `dev.c`,
-`bios.c`, `fantasies.c`, `lzexe.c`, `png.c` - contains no Win32 at all.
+**Built.** `make` produces `pfemu-headless`. It was smaller than it looked:
+the emulation core - `cpu.c`, `vga.c`, `dev.c`, `bios.c`, `fantasies.c`,
+`lzexe.c`, `png.c` - contained no Win32 at all, exactly as this table
+predicted.
 
-| File | Win32 surface | Work |
-| --- | --- | --- |
-| `launch.c` | the GUI launcher | Excluded from the headless build entirely. No work. |
-| `main.c` | window, present, keyboard, timing | Split into a host layer and the emulation loop, plus a null host. The only real refactor. |
-| `sound.c` | the DirectSound sink | Null sink. All synthesis is already platform-free. |
-| `dos.c`, `release.c`, `replay.c`, `snapshot.c`, `cfg.c` | `FindFirstFile`, `GetTempPath`, `GetFullPathName` | A small posix shim. |
+| File | Win32 surface | Work | Done |
+| --- | --- | --- | --- |
+| `launch.c` | the GUI launcher | Excluded entirely. No work. | yes |
+| `main.c` | window, present, keyboard, timing | Split into a host layer and the emulation loop, plus a null host. The only real refactor. | `src/run.c` + `src/host_null.c` |
+| `sound.c` | the DirectSound sink | Null sink. All synthesis is already platform-free. | `waveOutOpen` fails, `hwo` stays NULL - a path it already had |
+| `dos.c`, `release.c`, `replay.c`, `snapshot.c`, `cfg.c` | `FindFirstFile`, `GetTempPath`, `GetFullPathName` | A small posix shim. | `src/compat.h` + `src/posix.c` |
+
+The split is worth one note. `run.c` was *moved* out of `main.c`, not
+rewritten: the loop body is byte-identical to what it replaced, checked by
+diffing the old file against the two new ones line for line. Four call sites
+changed shape and no others. That is not tidiness - if each host carried its
+own transcription of the loop, a cross-platform mismatch would not say which
+of the two was responsible.
+
+Four things the port turned up that were not on this list, none of them
+introduced by it:
+
+- **`-keys` had done nothing since 953d83a**, which replaced the wall-clock
+  keyscript with the emu-time injector, wrote `keys_parse()`, and never called
+  it. The flag was accepted and the script silently discarded. It matters here
+  because `-keys` is one of only two ways to drive a headless run, so a
+  comparison built on it would have had both platforms agree perfectly on
+  having done nothing.
+- **Host paths were built with `\`** in `release.c` and `snapshot.c`. Win32
+  accepts `/` everywhere, including in a `FindFirstFile` pattern; a backslash
+  is an ordinary filename character off Windows, so the installation scan
+  found nothing at all. Now `/` throughout.
+- **`mem_w8(d+0x1E+i, ...)`** in `dos.c` is a single preprocessing number in
+  C99 - the `E+` reads as an exponent. MSVC accepts it, gcc does not.
+- **The text-mode font was rasterised from Consolas through GDI** at startup.
+  That tied a core rendering path to a Win32 API, made text-mode output depend
+  on which Consolas the host shipped, and left the headless build with no font
+  at all - so a captured frame could differ between two *Windows* machines for
+  a reason the emulated machine knew nothing about. It is now static CP437
+  data (`src/vgafont.c`), the shapes real hardware would draw, identical on
+  both builds. The tables are read in exactly one place, `vga_render()`, and
+  nothing copies them into guest RAM, so this is pure output and cannot reach
+  the guest.
 
 Two specifics:
 
 - **Case sensitivity.** DOS paths are uppercase, ext4 is not case-folding.
   The overlay and open paths need a case-insensitive resolver.
+
+  This was the real one, and it is what Spike B's first run found. Deluxe
+  opens its sound configuration as `SoUnD.cFg` while the file on disk is
+  `SOUND.CFG`. DOS did not care and neither does NTFS. ext4 does: the open
+  failed, the table never got its sound driver, and the run sat in text mode
+  for 121 emulated seconds while the replay dutifully injected all 292 events
+  into nothing. `host_casefix()` (`src/posix.c`, a no-op on Windows) resolves
+  the last component against the directory when the exact name is not there -
+  the last component only, because this DOS layer has no subdirectories. An
+  exact match is never touched, so a newly created file keeps the name the
+  guest asked for.
+
+  Worth noting where the isolated overlay lives: under `/tmp`, i.e. real
+  ext4. Running the install itself off `/mnt/c` hides the problem, because
+  DrvFs is case-insensitive.
 - **Speed forcing.** `replay.c` currently forces the recorded speed (= 1 on
   record) over `-speed`, so a replay plays back in real time. Since the
   injection clock is `cpu.cycles` and guest-visible host time is already
@@ -445,6 +496,14 @@ Still open:
   either way for now; the answer decides whether either becomes a split axis
   like Resolution.
 - Is `speed` truly guest-invisible during replay?
+- **Does directory enumeration order reach the guest?** `INT 21h` `AH=4Eh/4Fh`
+  hands `FindFirstFile`/`FindNextFile` results straight to the program, so the
+  order is guest-visible. `src/posix.c` sorts, case-insensitively, so the
+  Linux side is at least deterministic and independent of the filesystem -
+  but Windows returns the NTFS b-tree order and nothing sorts it, so the two
+  only *happen* to agree. They did on this vector; a directory whose contents
+  collate differently might not. The fix, if it ever bites, is to sort on both
+  sides rather than to guess at NTFS collation.
 - How does the ball counter behave under **multiball**? It counts balls
   played, not balls in play, so it should be fine - but confirm.
 - Does `PLAYERS` stay put for a game started from the in-table add-player
@@ -618,10 +677,46 @@ cheap; nothing else should start until both come back green.
   rather than as results: `resets` should be one per ball started, and any
   `new-ball score clear was never followed by a restore` line means the
   transaction brackets are wrong for that build.
-- **Spike B - determinism.** Build the core on Linux with a stub host,
-  replay one existing `.pfr` unthrottled on both platforms, compare
-  `end_emu` / `end_cycles` / wav hash. Match means the rest is plumbing.
+- **Spike B - determinism. GREEN.** The same `.pfr`, recorded on Windows,
+  replayed on Windows and on Linux (gcc 13.3, `-O2 -ffp-contract=off
+  -fno-strict-aliasing`):
 
-Then, in order: the headless host split and portability hardening with the
-golden-vector CI; eligibility enforcement and verifier output; the service.
+  | | |
+  | --- | --- |
+  | `end_emu` / `end_cycles` | `121.707901s` / `730247408` - identical |
+  | `-wav` FNV-1a | `dd938f6bd1540842`, 2521088 samples - identical |
+  | the `-wav` file itself | 5042220 bytes, byte-identical |
+  | `-shotevery` frames | 13 of 13, byte-identical |
+  | exit counters | 3DA reads 9240475, bit0 1891121, bit3 21262, page flips 1503, final mode 13h - all identical |
+
+  730 million instructions of x86, a 2.5 million sample mix and thirteen
+  framebuffers, bit for bit, across two compilers and two operating systems.
+  The entire log diff was one line of null-host noise.
+
+  **Read the footer match carefully, though: it is the weakest of the three.**
+  A replay stops on the recorded cycle, so `end_cycles` agrees *by
+  construction* and `end_emu` is derived from it. The wav hash and the frames
+  are the independent evidence, and they are what caught the case-sensitivity
+  divergence above - the footers matched perfectly through a run that had
+  never started the game. Any golden-vector suite built on footers alone would
+  have passed that run.
+
+  Two things this did not test, and should not be read as having tested:
+
+  - **`-ffp-contract=off` is set, not exercised.** A build with
+    `-ffp-contract=fast -march=x86-64-v3`, which emits 50 fused
+    multiply-adds, produced the same wav and the same 13 frames. So on this
+    vector FMA contraction is not observable. That makes the flag a justified
+    precaution rather than a demonstrated necessity, and it means the suite
+    still needs a vector that does reach the PIT and VGA phase math hard
+    enough to tell.
+  - **UBSan has not been run.** `make ubsan` exists; nothing has been through
+    it yet.
+
+  The gate this argues for is unchanged, but its contents are now specific:
+  compare the wav hash and the frame hashes, not just the footer, and include
+  a session in which the end-of-game match fires.
+
+The headless host split and portability hardening are done. Then, in order:
+the golden-vector CI; eligibility enforcement and verifier output; the service.
 Chunked parallel verification only if capacity ever demands it.

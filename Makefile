@@ -45,7 +45,8 @@ LDLIBS  += -lm
 # are excluded, which is the whole point of the split.
 SRC := src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c \
        src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c \
-       src/replay.c src/snapshot.c src/run.c src/host_null.c src/posix.c
+       src/replay.c src/snapshot.c src/run.c src/vgafont.c \
+       src/host_null.c src/posix.c
 
 OBJ := $(SRC:.c=.o)
 DEP := $(OBJ:.o=.d)

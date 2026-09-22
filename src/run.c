@@ -860,14 +860,6 @@ relaunch:
                     if(udl < cpu.cycles + step)
                         step = (udl > cpu.cycles) ? (udl - cpu.cycles) : 0;
                 }
-                /* ...and not past a -shotevery capture, for the same reason:
-                 * a frame is only comparable between runs if it is sampled on
-                 * the cycle it is due on. */
-                if(shot_every > 0){
-                    uint64_t sdl = until_cycles(next_shot);
-                    if(sdl < cpu.cycles + step)
-                        step = (sdl > cpu.cycles) ? (sdl - cpu.cycles) : 0;
-                }
                 cpu.cycles += step;
                 dev_tick();
             } else {
@@ -894,10 +886,6 @@ relaunch:
                 if(until_emu >= 0.0){
                     uint64_t udl = until_cycles(until_emu);
                     if(udl < dl) dl = udl;
-                }
-                if(shot_every > 0){
-                    uint64_t sdl = until_cycles(next_shot);
-                    if(sdl < dl) dl = sdl;
                 }
                 /* A deadline that is already here (dl == cpu.cycles, because
                  * dev_next_deadline() truncates the remaining instruction
@@ -1002,17 +990,31 @@ relaunch:
              * ... must all match"), which is the criterion Spike B has to
              * carry across two platforms.
              *
-             * Sampled here instead, on a grid of emulated seconds, with the
-             * batch above clamped to the deadline exactly the way the replay,
-             * -keys and -untilemu deadlines already are.  Same script, same
-             * cycle, same pixels, every run - and it no longer needs a
-             * present at all, so a headless host captures too.
+             * Sampled here instead, at the first batch boundary at or after
+             * each due time.  Deterministic, because where the batches fall is
+             * itself a deterministic function of the run - and it no longer
+             * needs a present at all, so a headless host captures too.
+             *
+             * It deliberately does NOT clamp the batch to the due cycle, the
+             * way the replay, -keys and -untilemu deadlines do.  That was the
+             * first attempt and it was wrong: a capture has to observe the run
+             * without altering it, and shortening a batch alters it.  Measured,
+             * not reasoned - the same replay on the same binary produced wav
+             * hash dd938f6bd1540842 with -shotevery and dfb1427eef9a2239
+             * without, so taking a picture was changing the sound.  The clamp
+             * is right for an injection (the key must land on the instruction
+             * it is due on) and wrong for an observation.
+             *
+             * The cost is that a frame lands up to one batch late rather than
+             * exactly on the grid.  That is the correct trade: the capture is
+             * still identical between two runs, and now the run is identical
+             * to one that was never capturing at all.
              *
              * vga_render() only reads guest state (registers, VRAM, DAC), so
              * sampling here costs the guest nothing it can observe. */
             if(shot_every > 0 && emu_now() >= next_shot){
                 char nm[64];
-                next_shot += shot_every;
+                do { next_shot += shot_every; } while(emu_now() >= next_shot);
                 vga_render(fb, &fbw, &fbh);
                 sprintf(nm, "seq%03d.ppm", shot_n++);
                 save_ppm(nm, fb, fbw, fbh);

@@ -314,6 +314,8 @@ void plat_set_fullscreen(int on);     /* runtime toggle; also Alt+Enter in-windo
  * nothing, which is what the headless build needs.  emu_main() is the
  * session itself: each host's main() does its own process setup and then
  * hands over. */
+void vga_font_init(void);   /* src/vgafont.c: derive the 8x8 table */
+
 int  emu_main(int argc, char **argv);
 void plat_early_init(void);           /* console, DPI, process-wide setup */
 void plat_shutdown(void);             /* pairs with plat_init's timer period */

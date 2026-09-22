@@ -16,8 +16,6 @@ extern void  set_sreg(int s, uint16_t v);
 extern int   vga_get_mode(void);
 extern int   vga_force256, vga_nodbl;
 
-uint8_t vga_font8x16[256*16];
-uint8_t vga_font8x8[256*8];
 
 
 /* -------------------------------------------------------------- window  */
@@ -370,39 +368,6 @@ void plat_kbd_reconcile(void){
 
 /* Build 8x16 and 8x8 character bitmaps from a host fixed-pitch font so text
  * mode (DOS messages, the sound-setup screen) is readable. */
-static void build_fonts(void){
-    HDC mdc = CreateCompatibleDC(NULL);
-    HFONT f = CreateFontA(16,8,0,0,FW_NORMAL,0,0,0,OEM_CHARSET,
-                          OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
-                          NONANTIALIASED_QUALITY,FIXED_PITCH|FF_MODERN,"Consolas");
-    BITMAPINFO bi; void *bits = NULL; HBITMAP bm;
-    int c,y,x;
-    memset(&bi,0,sizeof(bi));
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = 8; bi.bmiHeader.biHeight = -16;
-    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    bm = CreateDIBSection(mdc,&bi,DIB_RGB_COLORS,&bits,NULL,0);
-    SelectObject(mdc,bm);
-    SelectObject(mdc,f);
-    SetBkColor(mdc, RGB(0,0,0));
-    SetTextColor(mdc, RGB(255,255,255));
-    for(c=0;c<256;c++){
-        RECT r = {0,0,8,16};
-        char ch = (char)c;
-        uint32_t *px = (uint32_t*)bits;
-        FillRect(mdc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));
-        if(c >= 32) TextOutA(mdc,0,0,&ch,1);
-        GdiFlush();
-        for(y=0;y<16;y++){
-            uint8_t row = 0;
-            for(x=0;x<8;x++) if((px[y*8+x] & 0xFF) > 96) row |= (uint8_t)(0x80>>x);
-            vga_font8x16[c*16+y] = row;
-        }
-        for(y=0;y<8;y++) vga_font8x8[c*8+y] = vga_font8x16[c*16+y*2];
-    }
-    DeleteObject(bm); DeleteObject(f); DeleteDC(mdc);
-}
 
 /* Windows' StickyKeys/FilterKeys/ToggleKeys accessibility shortcuts are the
  * real cause of the "flipper gets stuck up" reports: Pinball Fantasies'
@@ -524,7 +489,6 @@ void plat_init(const char *title){
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
-    build_fonts();
 }
 
 /* Persist the windowed position globally (pfemu-winpos.cfg) for the next

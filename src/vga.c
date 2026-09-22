@@ -509,8 +509,8 @@ static int line_compare(void){
 }
 
 /* 8x16 / 8x8 ROM font lives at F000:FA6E style; we keep our own copy */
-extern const uint8_t vga_font8x16[256*16];
-extern const uint8_t vga_font8x8[256*8];
+extern uint8_t vga_font8x16[256*16];
+extern uint8_t vga_font8x8[256*8];
 
 void vga_render(uint32_t *out, int *wp, int *hp){
     int w, h, x, y;
@@ -857,6 +857,9 @@ void vga_dump(void){
 }
 
 void vga_init(void){
+    /* The text-mode font is static data now (src/vgafont.c); only the derived
+     * 8x8 table needs building, and it has to exist before the first render. */
+    vga_font_init();
     memset(sq,0,sizeof(sq)); memset(gc,0,sizeof(gc));
     memset(cr,0,sizeof(cr)); memset(ar,0,sizeof(ar));
     vga_set_mode_bios(3);

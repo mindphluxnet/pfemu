@@ -129,6 +129,19 @@ status.
 
 - Replay twice -> `-wav` hash, `-shotevery` frames, and exit `emu_time/cycles`
   must all match. Any mismatch is a nondeterminism bug.
+
+  Two cautions on reading that, both learned the hard way in Spike B
+  (docs/VERIFY.md):
+
+  - The frames only became comparable once `-shotevery` was moved onto the
+    emulated clock. It used to ride the present path, which is paced by the
+    wall clock, so two runs of one replay on one machine already produced
+    different files.
+  - **The footer is the weakest of the three.** A replay stops on the
+    recorded cycle, so `emu_time/cycles` agree by construction. A run that
+    failed to open a file, never started the game and sat in text mode for
+    the whole session still matched the footer exactly. The wav hash and the
+    frames are what actually caught it.
 - Game entropy must come only from emulated sources (PIT, BDA tick `0x46C`,
   `INT 1Ah`), never host time.
 - Manual play-through per table (Party Land first - most tested).

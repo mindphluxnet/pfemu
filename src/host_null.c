@@ -34,18 +34,6 @@
 #include <time.h>
 #include "pfemu.h"
 
-/* src/vga.c renders text mode through these.  The Win32 host rasterises them
- * from a TrueType face at startup; there is no such thing here, so they stay
- * zero and text mode renders blank.
- *
- * That difference is confined to text mode, which the game only uses for DOS
- * error output - but it does mean a captured frame from a text-mode moment is
- * not comparable across the two builds.  The deeper problem is that the
- * Windows side is host-dependent too (it asks GDI for Consolas), so those
- * frames were never comparable between two Windows machines either.  A fixed
- * built-in font would fix both; see docs/VERIFY.md. */
-uint8_t vga_font8x16[256*16];
-uint8_t vga_font8x8[256*8];
 
 int plat_pump(void){ return 1; }
 void plat_init(const char *title){ (void)title; }
