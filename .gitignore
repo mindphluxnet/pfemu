@@ -27,6 +27,7 @@ GAME
 /pfemu-fuzz-pfr-libfuzzer
 /pfemu-verify-test
 /pfemu-verify-selftest.json
+/src/build.h
 
 # Capture and session artifacts left in the working directory.
 # tests/golden/*.pfr is a committed vector and is re-included below.

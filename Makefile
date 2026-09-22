@@ -65,6 +65,14 @@ SRC := src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c \
        src/replay.c src/snapshot.c src/verify.c src/run.c src/vgafont.c \
        src/host_null.c src/posix.c
 
+# The build identity the -verify object carries (src/verify.c).  The
+# header is regenerated on every make but rewritten only when the ID
+# changes, so a new commit recompiles verify.o and nothing else - and a
+# stale ID cannot survive a rebuild, which a -D on the command line with
+# no dependency behind it would allow.  -dirty marks a build from a tree
+# with uncommitted changes, which a verifier should not be running.
+BUILD_ID := $(shell git describe --always --dirty --abbrev=12 2>/dev/null || echo unknown)
+
 OBJ := $(SRC:.c=.o)
 DEP := $(OBJ:.o=.d)
 BIN := pfemu-headless
@@ -76,6 +84,12 @@ $(BIN): $(OBJ)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/build.h: FORCE
+	@printf '#define PFEMU_BUILD "%s"\n' '$(BUILD_ID)' > $@.tmp
+	@if cmp -s $@ $@.tmp; then rm -f $@.tmp; else mv $@.tmp $@; fi
+
+src/verify.o: src/build.h
 
 # Undefined-behaviour run.  -O1 keeps the traces readable; this binary is for
 # finding bugs, not for timing anything.
@@ -128,7 +142,7 @@ fuzz:
 VERSRC := tests/verify/verify_selftest.c src/verify.c
 VERBIN := pfemu-verify-test
 
-verify-test:
+verify-test: src/build.h
 	$(CC) $(FUZZFLAGS) -o $(VERBIN) $(VERSRC) -lm
 	@echo "built $(VERBIN); run it with ./$(VERBIN)"
 
@@ -140,8 +154,10 @@ fuzz-clang:
 	@echo "built $(FUZZBIN)-libfuzzer; run it with tests/fuzz/corpus/"
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer $(VERBIN)
+	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer $(VERBIN) src/build.h
 
 -include $(DEP)
 
-.PHONY: all clean ubsan fuzz fuzz-clang verify-test
+FORCE:
+
+.PHONY: all clean ubsan fuzz fuzz-clang verify-test FORCE

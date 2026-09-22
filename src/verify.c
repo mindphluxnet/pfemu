@@ -34,6 +34,16 @@
  */
 #include "pfemu.h"
 
+/* Which build wrote the object.  The service stores it beside every
+ * verdict, because re-verifying a kept .pfr under a newer build is how a
+ * determinism regression would be found in production, and that
+ * comparison is only worth something if the old answer says which build
+ * gave it.  src/build.h is generated from `git describe` by the Makefile
+ * and by build.bat, and it is included unconditionally: a compile path
+ * that forgot to generate it should fail, not ship a verdict that quietly
+ * says "unknown".  A checkout without git history does say "unknown". */
+#include "build.h"
+
 int verify_on = 0;
 static const char *verify_path = NULL;
 static const char *pending_code = NULL;   /* set just before a refusal */
@@ -79,6 +89,14 @@ static void jstr(FILE *f, const char *s){
     fputc('"', f);
 }
 
+/* The opening of every object, refusals included, up to the value of
+ * "status".  "build" is additive, so the schema number stays 1. */
+static void jhead(FILE *f){
+    fputs("{\n  \"pfemu_verify\": 1,\n  \"build\": ", f);
+    jstr(f, PFEMU_BUILD);
+    fputs(",\n  \"status\": ", f);
+}
+
 static FILE *vopen(void){
     FILE *f;
     if(!verify_on || emitted || !verify_path) return NULL;
@@ -106,7 +124,8 @@ void verify_fail(const char *msg){
     f = vopen();
     status_code = 1;
     if(!f) return;
-    fputs("{\n  \"pfemu_verify\": 1,\n  \"status\": \"refused\",\n  \"error\": ", f);
+    jhead(f);
+    fputs("\"refused\",\n  \"error\": ", f);
     jstr(f, pending_code ? pending_code : "refused");
     fputs(",\n  \"message\": ", f);
     jstr(f, msg ? msg : "");
@@ -153,7 +172,8 @@ void verify_report(void){
         f = vopen();
         status_code = 1;
         if(!f) return;
-        fputs("{\n  \"pfemu_verify\": 1,\n  \"status\": \"refused\",\n"
+        jhead(f);
+        fputs("\"refused\",\n"
               "  \"error\": \"not_a_replay\",\n"
               "  \"message\": \"-verify needs -replay: there is nothing to"
               " verify in a play or record run\"\n}\n", f);
@@ -197,7 +217,7 @@ void verify_report(void){
     status_code = ok ? 0 : 2;
     if(!f) return;
 
-    fputs("{\n  \"pfemu_verify\": 1,\n  \"status\": ", f);
+    jhead(f);
     jstr(f, ok ? "verified" : "mismatch");
     fputs(",\n  \"strict\": ", f);
     fputs(replay_is_strict() ? "true" : "false", f);

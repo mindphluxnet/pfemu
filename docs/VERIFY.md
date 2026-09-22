@@ -693,6 +693,15 @@ and making the caller remember a second flag is the footgun the capture
 hash used to have - a run without `-wav` silently produced nothing to
 compare against.
 
+`build` says which binary wrote the object: `git describe --always
+--dirty --abbrev=12` at compile time, generated into `src/build.h` by the
+Makefile and by `build.bat`, `unknown` from a tree with no git history. The
+service stores it beside every verdict, because re-verifying a kept `.pfr`
+under a newer build is how a determinism regression would show up in
+production, and that comparison needs to know which build gave the old
+answer. A `-dirty` build should not be verifying anything. The field is
+additive, so `pfemu_verify` stays 1.
+
 `warnings` is advisory and does not change the status. `ball_counter_rewound`
 means a ball came back by a route the segmenter does not model, so every
 attempt boundary after that point is suspect; `no_recorded_wav_hash` means

@@ -142,7 +142,8 @@ int main(int argc, char **argv){
      *    field it reads is pinned here by name. */
     {
         static const char *w[] = {
-            "\"pfemu_verify\": 1", "\"status\": \"verified\"",
+            "\"pfemu_verify\": 1", "\"build\": \"",
+            "\"status\": \"verified\"",
             "\"strict\": false", "\"release\": \"deluxe\"",
             "\"events_total\": 630", "\"events_injected\": 630",
             "\"footer_match\": true", "\"events_match\": true",
@@ -292,6 +293,7 @@ int main(int argc, char **argv){
     /* 11. -verify on something that is not a replay. */
     {
         static const char *w[] = { "\"status\": \"refused\"",
+                                   "\"build\": \"",
                                    "\"error\": \"not_a_replay\"", NULL };
         reset();
         verify_report();

@@ -17,6 +17,11 @@ if %errorlevel% neq 0 (
   echo No MSVC compiler found. Install Visual Studio 2019 Build Tools with the C++ toolchain.
   exit /b 1
 )
+rem The build identity the -verify object carries (src\verify.c), the same
+rem one the Makefile writes. Without git history it says unknown.
+set PFEMU_BUILD=unknown
+for /f "usebackq delims=" %%i in (`git describe --always --dirty --abbrev^=12 2^>nul`) do set PFEMU_BUILD=%%i
+>src\build.h echo #define PFEMU_BUILD "%PFEMU_BUILD%"
 rc /nologo /fo pfemu.res res\pfemu.rc
 if errorlevel 1 exit /b 1
 cl /nologo /O2 /GL /W3 /wd4996 /Fe:pfemu.exe src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c src/main.c src/run.c src/launch.c src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c src/replay.c src/snapshot.c src/verify.c src/vgafont.c pfemu.res user32.lib gdi32.lib winmm.lib comctl32.lib comdlg32.lib /link /LTCG /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
