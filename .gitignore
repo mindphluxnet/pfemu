@@ -17,3 +17,8 @@ GAME
 *.txt
 /pfemu-last.cfg
 /pfemu-winpos.cfg
+
+# Headless build (Makefile)
+*.o
+*.d
+/pfemu-headless
