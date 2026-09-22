@@ -109,7 +109,7 @@ void snapshot_slot_path(const char *dir, char *dst, size_t n){
      * separates them; the identity check on load would catch a
      * collision anyway, but as a refusal rather than two good slots. */
     h = fnv1a(dir ? dir : "", dir ? strlen(dir) : 0, 1469598103934665603ULL);
-    snprintf(dst, n, "savestates\\%s-%08lx.pfs", safe,
+    snprintf(dst, n, "savestates/%s-%08lx.pfs", safe,
              (unsigned long)(h & 0xFFFFFFFFu));
 }
 

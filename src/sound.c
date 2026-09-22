@@ -526,8 +526,14 @@ void plat_audio_init(int hz){
     wf.nBlockAlign = 4;
     wf.nAvgBytesPerSec = HOST_HZ * 4;
     if(waveOutOpen(&hwo, WAVE_MAPPER, &wf, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR){
+        /* Once, not once per call.  The guest re-inits the driver on every
+         * program load, and where there is no device at all - the headless
+         * build's null host, which fails this by design - that was 39 copies
+         * of the same line in a single run. */
+        static int said = 0;
         hwo = NULL;
-        fprintf(stderr, "[snd] waveOutOpen failed; running silent\n");
+        if(!said){ said = 1;
+            fprintf(stderr, "[snd] no audio device; running silent\n"); }
         return;
     }
     memset(hdrs, 0, sizeof(hdrs));

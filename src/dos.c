@@ -325,6 +325,7 @@ static void overlay_path(const char *in, char *out, size_t n){
     const char *base = in, *p;
     for(p = in; *p; p++) if(*p=='/' || *p=='\\' || *p==':') base = p+1;
     snprintf(out, n, "%s/%s", writedir, base);
+    host_casefix(out);
 }
 static int copy_to_overlay(const char *src, const char *dst){
     FILE *a = fopen(src, "rb"), *b;
@@ -354,6 +355,9 @@ static void dos_path(const char *in, char *out, size_t n){
     base = p;
     for(; *p; p++) if(*p=='\\' || *p=='/') base = p+1;
     snprintf(out, n, "%s/%s", gamedir, base);
+    /* The guest's spelling is not the filesystem's on a case-sensitive host;
+     * see host_casefix() in src/posix.c.  A no-op on Windows. */
+    host_casefix(out);
 }
 static void read_dosstr(uint32_t a, char *out, int n){
     int i;

@@ -159,6 +159,64 @@ BOOL FindClose(HANDLE h){
     return 1;
 }
 
+/* ------------------------------------------------------------ case fold ---
+ * The guest names its files in whatever case the original program was written
+ * with, and it is not consistent: Pinball Fantasies Deluxe opens its sound
+ * configuration as "SoUnD.cFg" while the file on disk is SOUND.CFG.  DOS and
+ * NTFS do not care.  ext4 does, so on Linux that open failed, the table never
+ * got its sound driver, and the guest sat in text mode for the whole run
+ * while the replay dutifully injected all 292 events into nothing.
+ *
+ * Only the last component is resolved.  This DOS layer has no subdirectories
+ * at all - every guest file lands directly in gamedir or the write overlay
+ * (see dos_path() in src/dos.c) - so there is no other component to get
+ * wrong.
+ *
+ * Exact matches are never touched, which is what keeps a newly created file
+ * the name the guest asked for.  When several names differ only in case the
+ * lexicographically first is taken, so the choice does not depend on the
+ * order the filesystem happens to return them in.
+ */
+void host_casefix(char *path){
+    char dir[1024], best[256];
+    const char *base;
+    char *slash;
+    DIR *d;
+    struct dirent *e;
+    int have = 0;
+
+    if(!path || !*path) return;
+    if(access(path, F_OK) == 0) return;          /* the name is already right */
+
+    slash = strrchr(path, '/');
+    if(!slash){
+        snprintf(dir, sizeof(dir), ".");
+        base = path;
+    } else {
+        size_t n = (size_t)(slash - path);
+        if(n >= sizeof(dir)) return;
+        memcpy(dir, path, n);
+        dir[n] = 0;
+        if(!dir[0]) snprintf(dir, sizeof(dir), "/");
+        base = slash + 1;
+    }
+    if(!*base || strlen(base) >= sizeof(best)) return;
+
+    d = opendir(dir);
+    if(!d) return;
+    while((e = readdir(d)) != NULL){
+        if(strcasecmp(e->d_name, base) != 0) continue;
+        if(!have || strcmp(e->d_name, best) < 0){
+            snprintf(best, sizeof(best), "%s", e->d_name);
+            have = 1;
+        }
+    }
+    closedir(d);
+
+    /* Same length by construction - only the case differs. */
+    if(have) memcpy(slash ? slash + 1 : path, best, strlen(best));
+}
+
 /* --------------------------------------------------------- file system --- */
 DWORD GetFileAttributesA(const char *path){
     struct stat st;

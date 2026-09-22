@@ -237,7 +237,7 @@ static int list_dir(const char *dir, DirList *dl){
     HANDLE h;
     char pat[600];
     dl->n = 0; dl->dup = 0; dl->dupname[0] = 0;
-    snprintf(pat, sizeof(pat), "%s\\*", dir);
+    snprintf(pat, sizeof(pat), "%s/*", dir);
     h = FindFirstFileA(pat, &fd);
     if(h == INVALID_HANDLE_VALUE) return -1;
     do {
@@ -267,11 +267,16 @@ static const char *dir_find(const DirList *dl, const char *want){
 }
 
 /* Does this directory hold the anchor program of any known layout? */
+/* Host paths are built with '/' throughout, here and everywhere else that
+ * touches the filesystem.  Win32 accepts it in every file API and in a
+ * FindFirstFile pattern, and a backslash is an ordinary filename character
+ * off Windows - so building them the other way meant the installation scan
+ * silently found nothing there. */
 static const CodeLayout *anchor_in(const char *dir){
     char probe[700];
     int i;
     for(i=0;i<NLAYOUTS;i++){
-        snprintf(probe, sizeof(probe), "%s\\%s", dir, layouts[i]->names[0]);
+        snprintf(probe, sizeof(probe), "%s/%s", dir, layouts[i]->names[0]);
         if(GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES) return layouts[i];
     }
     return NULL;
@@ -285,13 +290,13 @@ static int nested_install(const char *dir, char *sub, size_t subn){
     HANDLE h;
     char pat[600], probe[700];
     int found = 0;
-    snprintf(pat, sizeof(pat), "%s\\*", dir);
+    snprintf(pat, sizeof(pat), "%s/*", dir);
     h = FindFirstFileA(pat, &fd);
     if(h == INVALID_HANDLE_VALUE) return 0;
     do {
         if(!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
         if(fd.cFileName[0] == '.') continue;
-        snprintf(probe, sizeof(probe), "%s\\%s", dir, fd.cFileName);
+        snprintf(probe, sizeof(probe), "%s/%s", dir, fd.cFileName);
         if(anchor_in(probe)){
             snprintf(sub, subn, "%s", fd.cFileName);
             found = 1;
@@ -338,7 +343,7 @@ static int hash_in_dir(const char *dir, const DirList *dl, const char *want,
     const char *real = dir_find(dl, want);
     char path[700];
     if(!real) return -1;
-    snprintf(path, sizeof(path), "%s\\%s", dir, real);
+    snprintf(path, sizeof(path), "%s/%s", dir, real);
     return hash_file(path, prefix, out, size);
 }
 

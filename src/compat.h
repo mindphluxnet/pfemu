@@ -25,6 +25,10 @@
 #include <mmsystem.h>
 #include <direct.h>
 
+/* NTFS already matches names without regard to case, so there is nothing to
+ * resolve here. */
+#define host_casefix(p) ((void)0)
+
 #else  /* ------------------------------------------------------- POSIX --- */
 
 #include <stdint.h>
@@ -86,6 +90,13 @@ DWORD  GetTempPathA(DWORD n, char *buf);
 DWORD  GetFullPathNameA(const char *name, DWORD n, char *out, char **part);
 DWORD  GetTickCount(void);
 DWORD  GetCurrentProcessId(void);
+
+/* Resolve the last component of a host path against the directory, ignoring
+ * case, when the exact name does not exist.  Rewrites in place; a
+ * case-insensitive match is the same length, so nothing can grow.  See
+ * src/posix.c for why the guest needs this and src/dos.c for where it is
+ * applied. */
+void   host_casefix(char *path);
 void   GetLocalTime(SYSTEMTIME *st);
 BOOL   FileTimeToLocalFileTime(const FILETIME *in, FILETIME *out);
 BOOL   FileTimeToSystemTime(const FILETIME *in, SYSTEMTIME *out);
