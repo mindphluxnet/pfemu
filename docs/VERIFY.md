@@ -429,19 +429,34 @@ one session in which the end-of-game match fires: its draw is cycle-derived,
 so it amplifies a one-cycle divergence into a different final score, which
 makes it the most sensitive vector in the suite.
 
-**Started: `tests/golden/`.** One vector so far - the human-played Deluxe
-Table 3 session above - plus `run.sh`, which checks the footer, the wav hash
-and eleven frame hashes, and passes on the headless build - under
-Windows/MSVC, and on a Debian server with gcc 14.2 at `-O2`, which reproduced
-the MSVC-recorded wav hash `575858f2a652fce2` and all eleven frame hashes
-exactly, 1.2 billion cycles in. The cross-platform claim is tested now rather
-than assumed. The vectors are
+**Started: `tests/golden/`.** Two vectors, and `run.sh`, which checks the
+footer, the capture hash, the frame hashes and - where the vector holds a
+whole game - the score.
+
+| Vector | What it is | Why it is here |
+| --- | --- | --- |
+| `deluxe-table3-200s` | 200s excerpt, human-played, mid-game | The first one. Passes under Windows/MSVC and on a Debian server with gcc 14.2 at `-O2`, which reproduced the MSVC-recorded wav hash `575858f2a652fce2` and all eleven frame hashes exactly, 1.2 billion cycles in |
+| `deluxe-table1-partyon-295s` | Party Land, a complete game: 295.6s, 1,773,389,028 cycles, `[RANKABLE]` at 20,652,570 | The first vector holding a whole attempt, so the first that can pin a **score**. Contains two scoreless-ball returns - `launches=5` for a three-ball game - which exercises the `shoot_again` route twice |
+
+The cross-platform claim is tested now rather than assumed. `mkexpected.sh`
+generates a vector's `.expected` and refuses to do it from a run that does
+not already reproduce the recording's footer and capture hash, so the values
+it can only take from a replay - frames, score - are at least anchored to a
+run that passed the checks that compare against the original session.
+
+The vectors are
 marked `-text` in `.gitattributes`, because a `.pfr` is hashed over its own
 raw disk bytes and end-of-line conversion on checkout refuses it; that is not
 hypothetical, the first commit of the vector was normalised on the way in and
-was already broken. Still missing: a match-fires vector, per the paragraph
-above, and the game files, which are not in this repository - so `run.sh`
-takes an installation path, and that is the one thing between it and CI.
+was already broken. Reading fields back out of one has the mirror hazard:
+they keep CRLF, so anything awk pulls out carries a carriage return, and a
+grep pattern built from it fails against a line the emulator wrote on a
+POSIX host - silently, printing two values that look identical because the
+difference is a byte neither side shows. Both scripts strip it now.
+
+Still missing: a match-fires vector, per the paragraph above, and the game
+files, which are not in this repository - so `run.sh` takes an installation
+path, and that is the one thing between it and CI.
 
 When something
 diverges, snapshot at intervals and bisect with `tools/pfsdiff.py`, which
