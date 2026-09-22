@@ -1,6 +1,6 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `15989e9`.
+State as of 2026-09-22, `main` at `8da135b`.
 
 Read this with the determinism section of `VERIFY.md`, which is the document
 this work serves. This file is the short version plus what to do next.
@@ -36,52 +36,34 @@ documents now say what was actually found.
 | Shift counts >= width in `cpu.c` | **Unproven either way.** ubsan instruments only the opcodes a vector executes, and one 200s Table 3 replay does not cover the opcode space |
 | Host pacing is guest-invisible | **Verified**, on one vector, on two hosts. `tests/golden/speed-ab.sh` replays paced and unthrottled: footer, wav hash and all 11 frames byte-identical, and both still match the original Windows session |
 | A replay can run faster than real time | **Verified** - 3.7x on the server, 3.3x under WSL. It could not before `-unthrottle`: `-speed` is discarded during replay by design |
-| The `.pfr` parser is safe on hostile input | **Untested, and nothing has ever tried.** VERIFY.md gates server code on fuzzing it. See next steps |
+| The `.pfr` parser refuses hostile input | **Verified** for the cases in `tests/fuzz` - 22 of them, 14 of which the previous parser accepted. `-selftest` is the regression test |
+| The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. ~50k mutation cases under ASan+UBSan, one seed. No crash. A gcc mutation driver is not a coverage-guided campaign |
 | Big-endian correctness | **Untested.** The new helpers are host-endian, exactly like the puns they replaced. No regression, but no progress either |
+
+The parser hardening that used to head this list is done (`8da135b`).
+What it settled: the specific holes are closed and regression-tested, and
+`-strict` exists for a verifier that should refuse what a player may keep.
+What it did not settle: memory safety is "no finding after ~50k cases from
+one seed under a hand-rolled mutator", which is not the same as fuzzed.
+A real campaign wants `make fuzz-clang` on a box with clang, left running
+for hours against a corpus of more than one vector - which is another
+reason item 1 below matters.
 
 ## What to do next, in order
 
-1. **Harden the `.pfr` parser, then fuzz it.** VERIFY.md has said "fuzz
-   the parser before writing a line of server code" since the design note
-   existed, and its pipeline tier 1 - "event stream sanity, monotonic
-   cycles, bounded rates" - is simply not implemented. Reading
-   `parse_file()` against a hostile file rather than a recorded one turns
-   up concrete holes:
-
-   - **An event stamped past the footer hangs the process.**
-     `replay_should_stop()` returns 0 while `ev_idx < nev`, so an event at
-     cycle 2^63 is never due, the list never empties and the footer stop is
-     never consulted. `end_cycles: 18446744073709551615` does the same
-     thing through the front door. Nothing validates ordering or bounds.
-   - **`ips: nan` survives every guard.** `run.c` assigns the recorded ips
-     unconditionally and the `emu_ips <= 0.0` clamp is false for NaN, so
-     `emu_inv_ips` goes NaN, `emu_now()` returns NaN and every deadline
-     comparison is false. The guard that would catch it already exists in
-     `replay_apply_recorded_env()` - just not on the path that sets it.
-   - **Legacy acceptance is a policy hole**, not a bug: a file with no
-     `file_hash:` line plays with a warning, and 3-field events replay on
-     `emu_time` instead of `cpu.cycles`. A verifier should refuse both
-     outright.
-   - Minor: `quality: 260` truncates through `(uint8_t)` to 4 and is
-     applied. `start_table` is fine, clamped in `fantasies.c`.
-
-   Sandboxed workers are defence in depth, not a substitute - and a worker
-   that spins forever on a crafted upload is a denial of service whatever
-   the container does.
-
-2. **Add a match-fires vector.** VERIFY.md has wanted this since before the
+1. **Add a match-fires vector.** VERIFY.md has wanted this since before the
    suite existed, and it is now the single highest-value thing left: the
    end-of-game match draw is cycle-derived, so it amplifies a one-cycle
    divergence into a different final score. It is the most sensitive vector
    the suite can hold, and the suite currently has exactly one vector, which
    is not one.
 
-3. **Re-run `make ubsan` once more vectors exist.** This is what settles the
+2. **Re-run `make ubsan` once more vectors exist.** This is what settles the
    shift-count question, and it is nearly free once step 1 is done. A second
    vector exercising different opcodes is the only way to find out whether
    the original prediction was wrong or merely unexercised.
 
-4. **CI, in two halves - the first is free.** `.github/workflows/release.yml`
+3. **CI, in two halves - the first is free.** `.github/workflows/release.yml`
    already builds with MSVC on `windows-latest`, tag-triggered, so the
    infrastructure works and only has no test job.
 
@@ -97,16 +79,16 @@ documents now say what was actually found.
      synthetic guest program committed as a fixture so at least *some* vector
      runs on a stock runner.
 
-5. **A vector that reaches the PIT and VGA phase math hard.** That is what
+4. **A vector that reaches the PIT and VGA phase math hard.** That is what
    would turn `-ffp-contract=off` from a precaution into a demonstrated
    necessity, or reveal it as unnecessary. Lower priority than 1-3 because
    the flag stays either way.
 
-6. **Small, still open:** `tests/golden/run.sh` is mode `100644`, so it needs
+5. **Small, still open:** `tests/golden/run.sh` is mode `100644`, so it needs
    `sh run.sh` rather than `./run.sh`. `git update-index --chmod=+x
    tests/golden/run.sh` fixes that if wanted; it was offered and not decided.
 
-7. **Optional, low priority:** make the new helpers explicitly little-endian
+6. **Optional, low priority:** make the new helpers explicitly little-endian
    instead of host-endian. Correct in principle, unobservable on any host we
    build for, and not something the golden vector can check - so it buys
    nothing measurable today.
@@ -118,6 +100,7 @@ device. From the repo root under Git Bash:
 
     wsl make && wsl sh tests/golden/run.sh          # the gate, a few minutes
     wsl sh tests/golden/speed-ab.sh                 # pacing A/B, ~4 minutes
+    wsl make fuzz && wsl ./pfemu-fuzz-pfr -selftest # parser, milliseconds
     cmd //c ".\build.bat"                            # MSVC; note //c, Git Bash eats /c
 
 The ubsan run must **not** go through `run.sh`, which deletes its work
