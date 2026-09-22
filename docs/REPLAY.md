@@ -79,6 +79,19 @@ window: whether the file can play and why not, the recorded session
 compared program by program against the selected install, and that
 install's own detection report.
 
+**A `-replay` with no `-d` picks the install the file needs.** The launcher
+never runs for a replay, so without `-d` the install would otherwise be
+whatever the detector lists first - and on a machine with several releases
+side by side that is usually not the one the recording came from, which then
+refuses for a reason that has nothing to do with the recording. The file
+names its release, so the scan prefers a runnable install of that release and
+says which one it took. This only chooses between installs nobody chose: an
+explicit `-d` is never overridden, because an explicit wrong one deserves the
+refusal rather than a silent substitution - though that refusal now names an
+install that would have worked, if there is one. Identity is still the hash
+vector; this only decides which install gets offered to
+`replay_verify_install()`, which then checks it properly.
+
 **A refusal refuses the launch, not the session.** Everything from the
 picker to the first executed instruction is one attempt: a replay whose
 install does not match, a record target that will not open, the trainer

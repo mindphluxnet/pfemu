@@ -453,6 +453,13 @@ static void header_defaults(ReplayHeader *o){
  * flows have no console, so "cannot replay 'x'" alone would say nothing. */
 static char parse_err[512] = "";
 const char *replay_parse_error(void){ return parse_err[0] ? parse_err : NULL; }
+
+/* Which release the loaded file was recorded from, so a run that was not
+ * told which install to use can pick the one that matches instead of the
+ * first one on disk.  NULL until a file has parsed.  Identity is still the
+ * hash vector - this only decides which install gets offered to
+ * replay_verify_install(), which then checks everything properly. */
+const char *replay_wanted_release(void){ return rh_valid ? rh.release_id : NULL; }
 #define PARSE_FAIL(...) do { snprintf(parse_err, sizeof(parse_err), __VA_ARGS__); \
     fprintf(stderr, "%s\n", parse_err); fclose(f); return -1; } while(0)
 

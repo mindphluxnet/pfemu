@@ -1102,11 +1102,31 @@ relaunch:
     }
     /* No -d and no launcher: take the first installation the detector finds
      * (GAME, then the rest alphabetically), so a headless run needs no more
-     * arguments than an interactive one. */
+     * arguments than an interactive one.
+     *
+     * A replay is the one case where that default has something better to go
+     * on: the file names the release it was recorded from, and an install of
+     * some other release will be refused a few lines below whatever else is
+     * true of it.  So prefer an install that IS that release.  This only ever
+     * decides between installs nobody chose - the launcher does not run for a
+     * replay, so reaching here means no -d was given - and it never overrides
+     * an explicit choice, because an explicit wrong one is worth a refusal
+     * rather than a silent substitution. */
     if(!dir){
         static RelResult found[8];
+        const char *want = replay_path ? replay_wanted_release() : NULL;
         int n = release_scan(found, 8), k;
-        for(k=0;k<n;k++) if(release_runnable(&found[k])){ dir = found[k].dir; break; }
+        if(want)
+            for(k=0;k<n;k++)
+                if(release_runnable(&found[k]) && found[k].rel &&
+                   !_stricmp(found[k].rel->id, want)){
+                    dir = found[k].dir;
+                    fprintf(stderr, "[replay] no -d given; '%s' is the '%s'"
+                            " install this recording needs\n", dir, want);
+                    break;
+                }
+        if(!dir)
+            for(k=0;k<n;k++) if(release_runnable(&found[k])){ dir = found[k].dir; break; }
         if(!dir) dir = n ? found[0].dir : "GAME";
     }
     {   /* Install dirs are stored relative ("FANTASY", ...): resolve once
@@ -1240,9 +1260,27 @@ relaunch:
         return 1;
     }
     if(replay_path){
-        char why[512];
+        char why[512], hint[256] = "";
         if(replay_verify_install(&rel, prog, why, sizeof(why)) != 0){
-            fail_msg("%s", why);
+            /* A release mismatch here means -d named an install of some other
+             * release (nothing else can reach this - an unchosen install is
+             * matched to the file above).  The fix is one flag away, so name
+             * the install that would work instead of leaving it to be
+             * guessed. */
+            const char *want = replay_wanted_release();
+            if(want && rel.rel && _stricmp(rel.rel->id, want)){
+                static RelResult found[8];
+                int n = release_scan(found, 8), k;
+                for(k=0;k<n;k++)
+                    if(release_runnable(&found[k]) && found[k].rel &&
+                       !_stricmp(found[k].rel->id, want)){
+                        snprintf(hint, sizeof(hint),
+                                 "\n'%s' is the '%s' install here: add -d %s",
+                                 found[k].dir, want, found[k].dir);
+                        break;
+                    }
+            }
+            fail_msg("%s%s", why, hint);
             if(from_launcher) goto relaunch;
             return 1;
         }
