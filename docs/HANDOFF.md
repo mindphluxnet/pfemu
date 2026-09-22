@@ -1,14 +1,19 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `e26ae26`.
+State as of 2026-09-22, `main` at `c24cf6a` plus this file.
 
 Read this with `VERIFY.md`, which is the document this work serves. This file
 is the short version plus what to do next.
 
 ## Where things stand
 
-**Nothing pressing stands between here and building the service.** The work
-done before it is finished:
+**The service has started, in its own repository**: `pfemu-service`, next
+to this checkout, Python on the Mac Mini. The reasons are in its
+`docs/HANDOFF.md`. The short version: the two meet only at the `-verify`
+object and the exit code, and the service pins which pfemu build it runs.
+That repository has its own handoff. This one covers the emulator side.
+
+The work done before it is finished:
 
 - **Determinism holds.** Two compilers (MSVC, gcc 14.2), two operating
   systems (Windows, Debian), two optimisation levels (`-O2`, `-O1` + ubsan).
@@ -26,7 +31,9 @@ done before it is finished:
   comparison, every attempt with a reason token, and `best`, the highest
   *rankable* score. It sets the exit code to 0 / 2 / 1 to match. This is
   what the service reads. Nothing else the emulator prints is an interface.
-  See the verdict section of VERIFY.md.
+  See the verdict section of VERIFY.md. Since `c24cf6a` it also carries
+  `build` (`git describe --dirty` at compile time, via a generated
+  `src/build.h`), so each stored verdict names the binary that produced it.
 - **The input side is hardened.** The `.pfr` parser bounds every field,
   refuses events stamped past the footer (that used to be an endless run),
   and `-strict` refuses what a verifier should not accept. 22 regression cases
@@ -56,31 +63,18 @@ compile.
 | The `.pfr` parser refuses hostile input | **Verified** for the 22 cases in `tests/fuzz`, 14 of which the previous parser accepted |
 | The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. 1,000,004 mutation cases under ASan+UBSan, no crash. A hand-rolled gcc mutator is not a coverage-guided campaign |
 | Shift counts >= width in `cpu.c` | **Looked for properly, not found**, in the code the two vectors execute. `TABLE2`, `TABLE4`, the intro and three other releases are unexercised |
-| `-strict -unthrottle -verify` together | **Not run.** Each flag has been exercised, but never all three in one command, which is the one the service will use. The first service run is the test |
+| `-strict -unthrottle -verify` together | **Verified** once, through the service under WSL: the Party Land vector came back `verified` at 20,652,570, 87.7 s wall for 295.6 s emulated. Not yet under bwrap on the Mac Mini, which is the service's first next step |
 | `-ffp-contract=off` is *necessary* | **Not demonstrated.** A justified precaution: `-ffp-contract=fast` emitted 50 FMAs and changed nothing |
 | Big-endian correctness | **Untested.** The memory helpers are host-endian, like the puns they replaced |
 
 ## What to do next, in order
 
-1. **The service.** It is unblocked. Two decisions are yours before any code:
-   where it runs (the Mac Mini is the obvious candidate, since it already
-   verifies the golden vectors) and what it is written in. The pieces are
-   laid out in VERIFY.md (Pipeline, The verdict):
-
-   - Take the upload and run the headless binary against the operator's own
-     install, the way `run.sh` does, plus the verifier flags:
-     `pfemu-headless -d <install> -freezetime -replay <file> -strict
-     -unthrottle -verify <out.json>`.
-   - Read the exit code, then the object. Store `best` together with the full
-     configuration, never a score from the client.
-   - The service owns the policy half of tier 0, which is not the parser's
-     business: the release allowlist (the `release` field) and balls = 3
-     (`balls` on each attempt).
-   - Workers run sandboxed: container, no network, read-only game directory,
-     tmpfs overlay, CPU and wall-clock timeouts. A timeout is its own outcome.
-     It is not a `mismatch`.
-   - Keep the `.pfr`. It is the evidence, and re-verifying it under a newer
-     build is how a determinism regression would be found in production.
+1. **The service** lives in `pfemu-service` now; its HANDOFF has the order.
+   What it needs from this repository is to leave things alone: the
+   `-verify` object is an interface, so add fields, never rename or
+   remove them, and bump `pfemu_verify` if that ever has to happen. Push
+   before the Mac Mini builds, because it pins a commit that has to exist
+   on `origin`.
 
 2. **A real fuzzing campaign, before the service takes uploads from
    strangers.** This is the only item on the list with a deadline attached.
@@ -181,6 +175,11 @@ follow-up `make clean` is needed.
   overwrite a differing file and leaves `.expected.new` beside it, because
   an expected value that changed on its own is a finding. Read the diff
   and move the file into place by hand only when the change is intended.
+- **A WSL build of this checkout says `-dirty`.** `core.autocrlf` is
+  `true` on the Windows side, so WSL-git sees every CRLF file as modified,
+  and `src/build.h` gets `<hash>-dirty` even on a clean tree. The service
+  withholds ranking from a dirty build, correctly. A clean Linux clone,
+  which is what the Mac Mini builds from, does not have this problem.
 - **Write patch scripts to files, not heredocs**, when an agent edits this
   repo through a shell tool. A `\n` inside a heredoc came out as a literal
   newline or a bare `n` more than once. That produced a broken C string
