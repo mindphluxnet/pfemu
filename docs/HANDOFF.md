@@ -113,21 +113,23 @@ device. From the repo root under Git Bash:
     wsl make fuzz && wsl ./pfemu-fuzz-pfr -selftest # parser, milliseconds
     cmd //c ".\build.bat"                            # MSVC; note //c, Git Bash eats /c
 
-The ubsan run must **not** go through `run.sh`, which deletes its work
-directory on exit and would take the stderr you want with it:
+The ubsan pass has its own script, because it must **not** go through
+`run.sh`: that deletes its work directory on exit and would take the stderr
+you want with it.
 
-    wsl make ubsan
-    wsl bash -c 'for v in deluxe-table3-200s deluxe-table1-partyon-295s; do
-        mkdir -p "/tmp/ub/$v" && cd "/tmp/ub/$v"
-        "$OLDPWD/pfemu-headless-ubsan" -d "$OLDPWD/FANTASYDX" -freezetime \
-            -replay "$OLDPWD/tests/golden/$v.pfr" \
-            -wav out.wav -shotevery 20 >run.log 2>&1
-        cd "$OLDPWD"
-      done
-      grep -ih "runtime error" /tmp/ub/*/run.log | sort -u'
+    wsl sh tests/golden/ubsan.sh                    # builds, runs every vector
 
-The second vector is the one that might say something new: a different
-table program, and a complete game rather than a 200-second excerpt.
+It replays every `.pfr` in `tests/golden/` into `/tmp/pfemu-ubsan/<vector>/`,
+keeps the logs, and prints the unique `runtime error` lines across all of
+them. It also says whether each vector still reproduced its capture hash
+under `-O1` + instrumentation, which is a small extra piece of evidence on
+top of the bug hunt.
+
+This used to be a multi-line snippet to paste. Do not go back to that: in
+`cmd.exe` it is split line by line, the first fragment is an unterminated
+bash command, and the result is that nothing happens and nothing explains
+why. The snippet also carried the repo root in `$OLDPWD`, which a loop's own
+`cd` overwrites after the first vector.
 
 `make ubsan` builds `pfemu-headless-ubsan` and deletes its object files on the
 way out, so the two configurations no longer contaminate each other and no
