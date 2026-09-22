@@ -436,8 +436,23 @@ the traps are specific:
   `memcpy`-based `ld16u`/`st16u` in `pfemu.h`, which compile to the same
   unaligned `mov`. What was predicted here - shift counts >= width and signed
   overflow in `cpu.c`, since x86 masks shift counts and C does not define them
-  - is neither confirmed nor refuted: one vector instruments only the opcodes
-  it runs.
+  - has now had a serious attempt made on it and did not appear.
+  `tests/golden/ubsan.sh` runs both vectors: two different table programs
+  (`TABLE1.PRG` and `TABLE3.PRG`), one of them a complete game reaching
+  end-of-game handling the excerpt never enters. Zero reports.
+
+  Read that as what it is. ubsan instruments what executes, so it says
+  `cpu.c` is clean *for the code these two sessions run*, not that it is
+  clean. For this project that is closer to the useful statement than it
+  would be for a general-purpose emulator - the service only ever runs this
+  one game - but `TABLE2`, `TABLE4`, the intro and the three other ranked
+  releases are still unexercised, and vectors on those are the cheapest way
+  to extend it.
+
+  One result came free: both vectors reproduced their capture hash exactly
+  under `-O1` with instrumentation, against `-O2` without. The determinism
+  evidence now spans two compilers, two operating systems and two
+  optimisation levels.
 - **libm is already gone** from every guest-visible path: dev.c:439 removed
   `fmod()`/`floor()` deliberately. There are no transcendentals anywhere the
   guest can observe. The single most encouraging fact in the file.

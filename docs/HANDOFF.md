@@ -1,6 +1,6 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `a9fa5e0`.
+State as of 2026-09-22, `main` at `fb4f59a`.
 
 Read this with the determinism section of `VERIFY.md`, which is the document
 this work serves. This file is the short version plus what to do next.
@@ -33,7 +33,8 @@ documents now say what was actually found.
 | MSVC and gcc 14.2 agree byte-for-byte | **Verified**, on one vector |
 | The unaligned accesses are gone | **Verified** - 0 ubsan reports, and the vector is still byte-identical |
 | `-ffp-contract=off` is *necessary* | **Not demonstrated.** VERIFY.md records `-ffp-contract=fast -march=x86-64-v3` emitting 50 FMAs and producing the same wav and frames. A justified precaution, not a proven need |
-| Shift counts >= width in `cpu.c` | **Unproven either way.** ubsan instruments only the opcodes a vector executes, and one 200s Table 3 replay does not cover the opcode space |
+| Shift counts >= width in `cpu.c` | **Looked for properly, not found.** `tests/golden/ubsan.sh` on both vectors - two table programs, one a complete game - reports nothing at all. ubsan instruments what runs, so this covers the code these sessions execute, not the opcode space. `TABLE2`, `TABLE4`, the intro and three other releases are untouched |
+| Determinism across optimisation levels | **Verified**, incidentally. Both vectors reproduce their capture hash under `-O1` + ubsan against `-O2` without. Two compilers, two operating systems, two optimisation levels |
 | The suite catches a wrong **score** | **Verified** as a mechanism, on one vector. `deluxe-table1-partyon-295s` pins `[RANKABLE] 20,652,570`, and `run.sh` fails the vector if a replay disagrees or if the ball-counter watchdog fires |
 | Two platforms agree on a **score** | **Verified**, on one vector. `deluxe-table1-partyon-295s` was recorded on Windows/MSVC and replayed on Debian/gcc 14.2 at `-O2`: same capture hash, all 15 frames, same 1,773,389,028 cycles, same 20,652,570. This is the claim the whole service rests on |
 | Host pacing is guest-invisible | **Verified**, on one vector, on two hosts. `tests/golden/speed-ab.sh` replays paced and unthrottled: footer, wav hash and all 11 frames byte-identical, and both still match the original Windows session |
@@ -54,27 +55,25 @@ reason item 1 below matters.
 
 ## What to do next, in order
 
-1. **Add a match-fires vector.** VERIFY.md has wanted this since before the
-   suite existed, and it is now the single highest-value thing left: the
-   end-of-game match draw is cycle-derived, so it amplifies a one-cycle
-   divergence into a different final score. It is the most sensitive vector
-   the suite can hold, and the suite currently has exactly one vector, which
-   is not one.
+1. **More vectors, on the tables and releases nothing covers.** The single
+   lever that moves several things at once: ubsan coverage (`TABLE2`,
+   `TABLE4`, the intro and the floppy/A releases are all unexercised), the
+   fuzz corpus, and the cross-platform score evidence, which currently rests
+   on one complete game. Recording one is cheap now - the capture hash is
+   automatic, so no flag has to be remembered, and `mkexpected.sh` does the
+   rest.
 
-2. **Re-run `make ubsan`. The precondition is met - do this one first if
-   you only have half an hour.** This item waited on "a second vector
-   exercising different opcodes", and `deluxe-table1-partyon-295s` is
-   better than that: it is a different *table program* (`TABLE1.PRG`, not
-   `TABLE3.PRG`), so it is different code rather than a different session
-   through the same code. It is also a complete game, which reaches the
-   end-of-game paths the 200s excerpt never enters.
+   **A match-fires vector is the one to grab if it turns up**, and it is no
+   longer worth hunting for on its own. VERIFY.md wanted it because the
+   end-of-game draw is cycle-derived and amplifies a one-cycle divergence
+   into a different final score. The scoreless-ball return in
+   `deluxe-table1-partyon-295s` now covers that shape of test - an exact
+   equality on the score that flips the rest of the game - and can be
+   produced on demand rather than waiting on a 1-in-10 draw. So: play, keep
+   what lands, and if a match fires in one of them, that vector is the
+   valuable one.
 
-   This is what settles the shift-count question - whether the UB the
-   Makefile and VERIFY.md both predicted in `cpu.c` was wrong or merely
-   unexercised. Command in "Running the gate" below; it needs no new
-   recording and nobody has to get lucky with a 1-in-10 draw.
-
-3. **CI: the free half is done, the other half needs a decision.**
+2. **CI: the free half is done, the other half needs a decision.**
    `.github/workflows/ci.yml` runs on every push on `ubuntu-latest`:
    `make`, the 22-case parser regression suite, a 50k-case fuzz run over
    the committed vector, and `make ubsan` as a compile check. None of it
@@ -93,12 +92,12 @@ reason item 1 below matters.
    change made on the POSIX side can sit broken until release time -
    the mirror image of the risk the Linux job just closed.
 
-4. **A vector that reaches the PIT and VGA phase math hard.** That is what
+3. **A vector that reaches the PIT and VGA phase math hard.** That is what
    would turn `-ffp-contract=off` from a precaution into a demonstrated
    necessity, or reveal it as unnecessary. Lower priority than 1-3 because
    the flag stays either way.
 
-5. **Optional, low priority:** make the new helpers explicitly little-endian
+4. **Optional, low priority:** make the new helpers explicitly little-endian
    instead of host-endian. Correct in principle, unobservable on any host we
    build for, and not something the golden vector can check - so it buys
    nothing measurable today.

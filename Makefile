@@ -25,15 +25,18 @@
 #
 # Targets:
 #   make              the headless binary
-#   make ubsan        pfemu-headless-ubsan, instrumented.  Run on Debian/gcc 14
-#                     against tests/golden: 32 unaligned guest-RAM accesses in
+#   make ubsan        pfemu-headless-ubsan, instrumented.  Drive it with
+#                     tests/golden/ubsan.sh, which keeps its logs.  The
+#                     first pass found 32 unaligned guest-RAM accesses in
 #                     dos.c and bios.c, every one a wider pointer punned at
 #                     &ram[a], and none in cpu.c - whose hot path assembles
 #                     bytes by hand and was already clean.  Fixed via ld16u/
-#                     st16u in pfemu.h; that vector reports nothing now.  The
-#                     shift counts >= width the determinism section predicts
-#                     are still unproven either way - one vector instruments
-#                     only the opcodes it happens to execute.
+#                     st16u in pfemu.h.  Two vectors now report nothing at
+#                     all, across two different table programs and one
+#                     complete game, so the shift counts >= width this file
+#                     used to predict are not in the code these games
+#                     execute.  Absence of a report is still only that:
+#                     ubsan instruments what runs.
 #   make fuzz         pfemu-fuzz-pfr, the .pfr parser under ASan+UBSan with a
 #                     standalone mutation driver (tests/fuzz/README.md).
 #                     docs/VERIFY.md gates the verification service on this:
