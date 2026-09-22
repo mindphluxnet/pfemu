@@ -315,6 +315,22 @@ what makes a round-trip comparable at all: run to a point, `-snapsave`,
 `-load` and continue to a later point, and compare against one
 uninterrupted run to the same point.
 
+`-unthrottle` removes the wall-clock pacer, so the loop runs batches as
+fast as the host manages instead of holding `emu_time` to `wall * speed`.
+It is host pacing only and overrides nothing a `.pfr` carries: a replay
+still forces its recorded `speed`, this simply stops the pacer acting on
+it. That matters because a replay otherwise costs one wall second per
+emulated second - `-speed` is discarded during replay by design, so before
+this flag there was no way to replay a session faster than it was played.
+
+Where batches begin and end is unchanged: that is set by
+`dev_next_deadline()`, `replay_next_deadline()`, `until_cycles()` and the
+256-instruction cap, all emulated-clock quantities that cannot see
+`plat_time()`. The pacer only ever decided how many batches ran per outer
+iteration. `tests/golden/speed-ab.sh` is the measurement rather than the
+argument - it replays a vector paced and unthrottled and compares footer,
+wav hash and every frame.
+
 Pair it with `-freezetime`. `INT 21h` `AH=2Ah`/`2Ch` are the only
 host-clock reads the guest can see (`INT 1Ah` runs off the emulated BDA
 tick), and the game folds the result into its own state, so without the

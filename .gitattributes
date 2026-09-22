@@ -3,3 +3,7 @@
 # something nobody recorded.  End-of-line conversion would change those bytes
 # and break every committed vector on checkout, so these are handled verbatim.
 tests/golden/*.pfr -text
+
+# The suite scripts run under sh, so a CRLF checkout on Windows would put a
+# carriage return in the shebang and every command line. Pin them to LF.
+tests/golden/*.sh text eol=lf

@@ -501,6 +501,16 @@ minutes of one core; a 4-vCPU box verifies about 20 gameplay-hours per
 wall-clock hour. For a community this size the queue is permanently empty on
 the cheapest VPS available. Cap accepted session duration anyway.
 
+**That paragraph assumes an unthrottled replay, which until recently did not
+exist.** Every replay paced itself to wall time: `replay.c` forces the
+recorded `speed` (always 1) over `-speed`, and the loop gates on
+`emu_time < wall * speed`. A 200-second vector took 200 seconds of wall
+clock at `host_mips=6.00`, against a host ceiling five times that. So the
+real figure was 1:1 - four gameplay-hours per wall-clock hour on that
+4-vCPU box, not twenty. `-unthrottle` (EMULATOR.md) is the switch that
+makes the estimate above true; measure the multiplier on the target host
+rather than inheriting 5x from a windowed build.
+
 If that ever stops being true, attempts can be verified in parallel: have the
 client upload periodic snapshots, verify chunk *N* by re-simulating from
 snapshot *N* and checking the result equals the declared snapshot *N+1*. A
@@ -517,7 +527,12 @@ Still open:
 - Do **Angle** and **Scrolling** affect physics, or only the view? Pinned
   either way for now; the answer decides whether either becomes a split axis
   like Resolution.
-- Is `speed` truly guest-invisible during replay?
+- Is `speed` truly guest-invisible during replay? There is now a mechanism
+  argument that it is - the pacer decides how many batches run per outer
+  iteration, never where one begins or ends, since every batch deadline is
+  an emulated-clock quantity - and `tests/golden/speed-ab.sh` turns that
+  argument into a measurement on whatever vectors the suite holds. Still
+  open until it has been run.
 - **Does directory enumeration order reach the guest?** `INT 21h` `AH=4Eh/4Fh`
   hands `FindFirstFile`/`FindNextFile` results straight to the program, so the
   order is guest-visible. `src/posix.c` sorts, case-insensitively, so the

@@ -219,6 +219,22 @@ int emu_main(int argc, char **argv){
      * the capture site in the batch loop below. */
     double shot_every = 0, next_shot = 0;
     double speed = 1.0;
+    /* -unthrottle: drop the wall-clock pacer and run as fast as the host
+     * allows.  Host pacing only - it overrides nothing the .pfr carries,
+     * so a replay's recorded speed still travels with the file exactly as
+     * REPLAY.md says it does; this bypasses the pacer rather than arguing
+     * with it.  Verification wants it: a paced replay burns one wall
+     * second per emulated second, which is ~5x the hardware for nothing.
+     *
+     * The reason it should be guest-invisible is that the pacer only
+     * decides HOW MANY batches run per outer iteration.  Where a batch
+     * begins and ends is set below by dev_next_deadline(),
+     * replay_next_deadline(), until_cycles() and the 256-instruction cap -
+     * all emulated-clock quantities, none of which can see plat_time().
+     * That is an argument, not a measurement: docs/VERIFY.md lists
+     * "is speed truly guest-invisible during replay?" as open, and the A/B
+     * this flag makes possible is what closes it. */
+    int unthrottle = 0;
     int vol_override = -1;    /* -vol N overrides the saved slider position */
     unsigned long mem_lo = 0;
     int shot_n = 0;
@@ -310,6 +326,7 @@ int emu_main(int argc, char **argv){
         else if(!strcmp(argv[i],"-trap") && i+2<argc){ extern uint32_t x_trap_lo, x_trap_hi; extern int x_on;
             x_on = 1; x_trap_lo = strtoul(argv[++i],NULL,16); x_trap_hi = strtoul(argv[++i],NULL,16); }
         else if(!strcmp(argv[i],"-speed") && i+1<argc){ speed = atof(argv[++i]); speed_given = 1; }
+        else if(!strcmp(argv[i],"-unthrottle")) unthrottle = 1;
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
         else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
@@ -412,6 +429,9 @@ int emu_main(int argc, char **argv){
     }
     if(emu_ips <= 0.0) emu_ips = 6000000.0;
     emu_inv_ips = 1.0 / emu_ips;
+    if(unthrottle)
+        fprintf(stderr, "[pfemu] -unthrottle: wall-clock pacing off,"
+                        " batch deadlines unchanged\n");
 
     if(list_releases){
         static RelResult found[8];
@@ -829,7 +849,7 @@ relaunch:
         if(!replay_is_replaying()) plat_kbd_reconcile();
         int guard = 0;
         { double t0e = plat_time();
-        while(emu_time < real && !cpu.shutdown && guard < 10000){
+        while((unthrottle || emu_time < real) && !cpu.shutdown && guard < 10000){
             int n;
             /* Emu-time injection (REPLAY.md 2.1): due events fire on the
              * emulated clock before the next batch runs. */
@@ -1035,7 +1055,7 @@ relaunch:
             guard++;
         }
         t_emu_w += plat_time() - t0e; }
-        if(emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; fell_n++; }  /* fell behind */
+        if(!unthrottle && emu_time < real - 0.25*speed) { t0 = plat_time() - emu_time/speed; fell_n++; }  /* fell behind */
         /* Replay end condition (REPLAY.md 3.3): the footer's emu_time, with
          * the event list exhausted.  ScrollLock / window close still end it
          * early through plat_pump(), exactly as in normal play.  Paused
