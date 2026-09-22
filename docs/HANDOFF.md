@@ -1,6 +1,6 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `7194e47`.
+State as of 2026-09-22, `main` at `a9fa5e0`.
 
 Read this with the determinism section of `VERIFY.md`, which is the document
 this work serves. This file is the short version plus what to do next.
@@ -34,6 +34,8 @@ documents now say what was actually found.
 | The unaligned accesses are gone | **Verified** - 0 ubsan reports, and the vector is still byte-identical |
 | `-ffp-contract=off` is *necessary* | **Not demonstrated.** VERIFY.md records `-ffp-contract=fast -march=x86-64-v3` emitting 50 FMAs and producing the same wav and frames. A justified precaution, not a proven need |
 | Shift counts >= width in `cpu.c` | **Unproven either way.** ubsan instruments only the opcodes a vector executes, and one 200s Table 3 replay does not cover the opcode space |
+| The suite catches a wrong **score** | **Verified** as a mechanism, on one vector. `deluxe-table1-partyon-295s` pins `[RANKABLE] 20,652,570`, and `run.sh` fails the vector if a replay disagrees or if the ball-counter watchdog fires |
+| Two platforms agree on a whole game | **Not yet.** The complete-game vector has only been replayed on this Windows machine. The Debian result is from the older 200s excerpt, which pins no score |
 | Host pacing is guest-invisible | **Verified**, on one vector, on two hosts. `tests/golden/speed-ab.sh` replays paced and unthrottled: footer, wav hash and all 11 frames byte-identical, and both still match the original Windows session |
 | A replay can run faster than real time | **Verified** - 3.7x on the server, 3.3x under WSL. It could not before `-unthrottle`: `-speed` is discarded during replay by design |
 | The `.pfr` parser refuses hostile input | **Verified** for the cases in `tests/fuzz` - 22 of them, 14 of which the previous parser accepted. `-selftest` is the regression test |
@@ -59,10 +61,18 @@ reason item 1 below matters.
    the suite can hold, and the suite currently has exactly one vector, which
    is not one.
 
-2. **Re-run `make ubsan` once more vectors exist.** This is what settles the
-   shift-count question, and it is nearly free once step 1 is done. A second
-   vector exercising different opcodes is the only way to find out whether
-   the original prediction was wrong or merely unexercised.
+2. **Re-run `make ubsan`. The precondition is met - do this one first if
+   you only have half an hour.** This item waited on "a second vector
+   exercising different opcodes", and `deluxe-table1-partyon-295s` is
+   better than that: it is a different *table program* (`TABLE1.PRG`, not
+   `TABLE3.PRG`), so it is different code rather than a different session
+   through the same code. It is also a complete game, which reaches the
+   end-of-game paths the 200s excerpt never enters.
+
+   This is what settles the shift-count question - whether the UB the
+   Makefile and VERIFY.md both predicted in `cpu.c` was wrong or merely
+   unexercised. Command in "Running the gate" below; it needs no new
+   recording and nobody has to get lucky with a 1-in-10 draw.
 
 3. **CI: the free half is done, the other half needs a decision.**
    `.github/workflows/ci.yml` runs on every push on `ubuntu-latest`:
@@ -107,11 +117,17 @@ The ubsan run must **not** go through `run.sh`, which deletes its work
 directory on exit and would take the stderr you want with it:
 
     wsl make ubsan
-    wsl bash -c 'mkdir -p /tmp/ub && cd /tmp/ub && \
+    wsl bash -c 'for v in deluxe-table3-200s deluxe-table1-partyon-295s; do
+        mkdir -p "/tmp/ub/$v" && cd "/tmp/ub/$v"
         "$OLDPWD/pfemu-headless-ubsan" -d "$OLDPWD/FANTASYDX" -freezetime \
-        -replay "$OLDPWD/tests/golden/deluxe-table3-200s.pfr" \
-        -wav out.wav -shotevery 20 >run.log 2>&1
-      grep -i "runtime error" /tmp/ub/run.log | sort -u'
+            -replay "$OLDPWD/tests/golden/$v.pfr" \
+            -wav out.wav -shotevery 20 >run.log 2>&1
+        cd "$OLDPWD"
+      done
+      grep -ih "runtime error" /tmp/ub/*/run.log | sort -u'
+
+The second vector is the one that might say something new: a different
+table program, and a complete game rather than a 200-second excerpt.
 
 `make ubsan` builds `pfemu-headless-ubsan` and deletes its object files on the
 way out, so the two configurations no longer contaminate each other and no
