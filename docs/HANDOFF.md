@@ -1,6 +1,6 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `c24cf6a` plus this file.
+State as of 2026-09-22, `main` at `3f9b265` plus this file.
 
 Read this with `VERIFY.md`, which is the document this work serves. This file
 is the short version plus what to do next.
@@ -63,7 +63,7 @@ compile.
 | The `.pfr` parser refuses hostile input | **Verified** for the 22 cases in `tests/fuzz`, 14 of which the previous parser accepted |
 | The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. 1,000,004 mutation cases under ASan+UBSan, no crash. A hand-rolled gcc mutator is not a coverage-guided campaign |
 | Shift counts >= width in `cpu.c` | **Looked for properly, not found**, in the code the two vectors execute. `TABLE2`, `TABLE4`, the intro and three other releases are unexercised |
-| `-strict -unthrottle -verify` together | **Verified** once, through the service under WSL: the Party Land vector came back `verified` at 20,652,570, 87.7 s wall for 295.6 s emulated. Not yet under bwrap on the Mac Mini, which is the service's first next step |
+| `-strict -unthrottle -verify` together | **Verified** through the service, on the Mac Mini under bwrap: the Party Land vector came back `verified` and `rankable` at 20,652,570, build `3f9b265d674c` from a clean clone, 78.2 s wall for 295.6 s emulated (3.8x). The install was mounted read-only, so the replay needs no write access to it |
 | `-ffp-contract=off` is *necessary* | **Not demonstrated.** A justified precaution: `-ffp-contract=fast` emitted 50 FMAs and changed nothing |
 | Big-endian correctness | **Untested.** The memory helpers are host-endian, like the puns they replaced |
 
