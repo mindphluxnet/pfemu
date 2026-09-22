@@ -55,9 +55,11 @@ f_smp=$(awk '$1=="wav_samples:"{print $2; exit}' "$PFR")
 
 [ -n "$f_emu" ] && [ -n "$f_cyc" ] || { echo "$name: no footer in the .pfr"; exit 2; }
 if [ -z "$f_wav" ] || [ "$f_wav" = none ]; then
-    echo "$name: the recording carries no wav hash (recorded without -wav)."
-    echo "  A vector without it cannot check a replay against the original"
-    echo "  session, only against another replay.  Re-record with -wav."
+    echo "$name: the recording carries no capture hash."
+    echo "  Either it was made with sound off, or by a build from before the"
+    echo "  hash was decoupled from -wav (it used to need the flag).  Without"
+    echo "  it a vector cannot check a replay against the original session,"
+    echo "  only against another replay, so re-record it."
     exit 2
 fi
 

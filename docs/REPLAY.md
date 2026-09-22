@@ -77,8 +77,8 @@ header:  magic + version, release_id, code hash vector, summary (display only),
          overlay hash/snapshot ref, source dir (hint only)
 events:  cycles, emu_time, scancode, down/up - sorted (cycles are the clock;
          integer-exact so a fast-counter RNG reads what it read on record)
-footer:  final emu_time + cpu.cycles, -wav capture hash (FNV-1a over the
-         sample bytes, "none" without -wav) + sample count,
+footer:  final emu_time + cpu.cycles, capture hash (FNV-1a over the sample
+         bytes, "none" only when the session had no sound at all) + count,
          FNV-1a file hash (mismatch refused loudly)
 ```
 

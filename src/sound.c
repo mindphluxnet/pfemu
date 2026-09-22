@@ -560,12 +560,27 @@ static void host_flush(int nframes){
     hdr_i = (hdr_i + 1) % NBUF;
 }
 
-/* -wav <file>: also write everything we hand to the host, so a headless run
- * can be listened to (and measured) afterwards. */
+/* The capture hash is maintained ALWAYS; -wav <file> only decides whether
+ * the same bytes are also written somewhere you can listen to them.
+ *
+ * They used to be one thing, and the hash lived inside `if(wav_fp)` purely
+ * because that is where the bytes already were.  That made a .pfr's single
+ * self-check depend on somebody having remembered a command-line flag while
+ * recording - and a session recorded without it carries `wav_hash: none`,
+ * which means a replay can only be compared against another replay instead
+ * of against what the player actually heard.  Several recordings were lost
+ * to exactly that before anyone noticed.  The hash costs one FNV-1a round
+ * per sample byte - about 20 ms over a five-minute session - so there is no
+ * reason for it to be optional.
+ *
+ * wav_samples counts everything hashed; wav_fsamples counts only what
+ * reached the file, because the RIFF header has to describe the file and
+ * the file can open later than the first push. */
 static FILE *wav_fp;
-static unsigned long wav_samples;
+static unsigned long wav_samples;      /* hashed */
+static unsigned long wav_fsamples;     /* written to -wav */
 static uint64_t wav_hash = 1469598103934665603ULL;
-static int wav_ok = 0;
+static int wav_ok = 0;                 /* any sample seen at all */
 const char *wav_path;
 
 static void wav_open(int hz){
@@ -573,7 +588,6 @@ static void wav_open(int hz){
     if(!wav_path || wav_fp) return;
     wav_fp = fopen(wav_path, "wb");
     if(!wav_fp) return;
-    wav_ok = 1;
     memset(h, 0, sizeof(h));
     memcpy(h, "RIFF", 4); memcpy(h+8, "WAVEfmt ", 8);
     h[16] = 16; h[20] = 1; h[22] = 1;
@@ -588,13 +602,13 @@ static void wav_open(int hz){
 void wav_close(void){
     unsigned long d, r;
     if(!wav_fp) return;
-    d = wav_samples * 2; r = d + 36;
+    d = wav_fsamples * 2; r = d + 36;
     fseek(wav_fp, 4, SEEK_SET);  fputc((int)(r&0xFF),wav_fp); fputc((int)((r>>8)&0xFF),wav_fp);
     fputc((int)((r>>16)&0xFF),wav_fp); fputc((int)((r>>24)&0xFF),wav_fp);
     fseek(wav_fp, 40, SEEK_SET); fputc((int)(d&0xFF),wav_fp); fputc((int)((d>>8)&0xFF),wav_fp);
     fputc((int)((d>>16)&0xFF),wav_fp); fputc((int)((d>>24)&0xFF),wav_fp);
     fclose(wav_fp); wav_fp = NULL;
-    fprintf(stderr, "[snd] wrote %s: %lu samples\n", wav_path, wav_samples);
+    fprintf(stderr, "[snd] wrote %s: %lu samples\n", wav_path, wav_fsamples);
 }
 
 /* Queue-full drops: pushed faster than waveOut consumes, i.e. the emulated
@@ -606,14 +620,19 @@ void plat_audio_push(const int16_t *s, int n){
     /* -wav stays exactly where it was: raw mono at the guest rate, upstream
      * of every knob below (volume included), so captures and the replay
      * hash over them never move. */
-    if(wav_fp){
+    if(n > 0){
         const uint8_t *b = (const uint8_t*)s;
         int i, m = n * 2;
-        fwrite(s, 2, (size_t)n, wav_fp); wav_samples += (unsigned long)n;
         /* Running FNV-1a over the raw sample bytes (captured upstream of
          * the host gain, so volume/mute never move it).  Queryable at any
-         * time, so record/replay footers don't depend on close order. */
+         * time, so record/replay footers don't depend on close order.
+         * Pure observation: nothing here is visible to the guest, and no
+         * batch is shortened to take it - the samples have already been
+         * produced by the time this is called. */
+        wav_ok = 1;
+        wav_samples += (unsigned long)n;
         for(i=0;i<m;i++){ wav_hash ^= b[i]; wav_hash *= 1099511628211ULL; }
+        if(wav_fp){ fwrite(s, 2, (size_t)n, wav_fp); wav_fsamples += (unsigned long)n; }
     }
     if(!hwo || n <= 0) return;
     dsp_recheck();
@@ -697,14 +716,16 @@ void plat_audio_close(void){
     if(hwo){ waveOutReset(hwo); waveOutClose(hwo); hwo = NULL; }
 }
 
-/* Current -wav capture hash for the replay footer (src/replay.c).  "none"
- * when no -wav file was requested or the open failed; otherwise FNV-1a
- * over every sample byte written so far.  Safe to call before wav_close:
- * no more pushes happen after the main loop, so record- and replay-end
- * both observe the final value. */
+/* Current capture hash for the replay footer (src/replay.c): FNV-1a over
+ * every sample byte the guest has produced.  "none" only when there were
+ * no samples at all - a session recorded with sound off, which is a real
+ * configuration and not a missing flag.  No longer conditional on -wav:
+ * see the note above the declarations.  Safe to call before wav_close: no
+ * more pushes happen after the main loop, so record- and replay-end both
+ * observe the final value. */
 void wav_current_hash(char out[17], unsigned long *samples_out){
     if(samples_out) *samples_out = wav_ok ? wav_samples : 0;
-    if(!wav_path || !wav_ok){ snprintf(out, 17, "none"); return; }
+    if(!wav_ok){ snprintf(out, 17, "none"); return; }
     snprintf(out, 17, "%016llx", (unsigned long long)wav_hash);
 }
 

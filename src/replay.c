@@ -28,8 +28,11 @@
  *
  * Volume is deliberately absent: it is host sink gain only (src/sound.c) and
  * stays live in every mode.  The footer carries a running FNV-1a over the
- * -wav capture bytes ("none" when no capture ran), so replay-twice checks
- * are self-contained; -shotevery frames stay external.  v1 records from
+ * sample bytes ("none" only for a session with no sound at all), so
+ * replay-twice checks are self-contained; -shotevery frames stay external.
+ * The hash does not depend on -wav: that flag only also writes the bytes
+ * to a file, and making the footer's one self-check conditional on a flag
+ * somebody had to remember cost several recordings their value.  v1 records from
  * the boot program; anything else in program: stays refused.
  */
 #include "compat.h"
