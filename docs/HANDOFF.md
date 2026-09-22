@@ -1,6 +1,6 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `8da135b`.
+State as of 2026-09-22, `main` at `7194e47`.
 
 Read this with the determinism section of `VERIFY.md`, which is the document
 this work serves. This file is the short version plus what to do next.
@@ -64,32 +64,31 @@ reason item 1 below matters.
    vector exercising different opcodes is the only way to find out whether
    the original prediction was wrong or merely unexercised.
 
-3. **CI, in two halves - the first is free.** `.github/workflows/release.yml`
-   already builds with MSVC on `windows-latest`, tag-triggered, so the
-   infrastructure works and only has no test job.
+3. **CI: the free half is done, the other half needs a decision.**
+   `.github/workflows/ci.yml` runs on every push on `ubuntu-latest`:
+   `make`, the 22-case parser regression suite, a 50k-case fuzz run over
+   the committed vector, and `make ubsan` as a compile check. None of it
+   needs an installation.
 
-   - *Do now:* a `ubuntu-latest` job running `make`. It needs no game files
-     at all and would catch POSIX-host compile breakage on every push, which
-     nothing currently does - this session's refactor touched shared headers
-     and only a local WSL build stood between it and a broken Linux tree.
-     Worth adding `make ubsan` as a compile check too.
-   - *Needs a decision:* running the golden suite in CI at all. `run.sh`
-     needs an installation, and the game files are deliberately not in this
-     repository - VERIFY.md calls that "the one thing between it and CI".
-     Either a self-hosted runner that already has an install, or a tiny
-     synthetic guest program committed as a fixture so at least *some* vector
-     runs on a stock runner.
+   *Still open:* running the golden suite in CI at all. `run.sh` needs an
+   installation, and the game files are deliberately not in this
+   repository - VERIFY.md calls that "the one thing between it and CI".
+   Either a self-hosted runner that already has an install, or a tiny
+   synthetic guest program committed as a fixture so at least *some*
+   vector runs on a stock runner. Same question applies to
+   `speed-ab.sh`.
+
+   *Also open, smaller:* there is still no Windows job on push. MSVC is
+   the primary build and `release.yml` only exercises it on a tag, so a
+   change made on the POSIX side can sit broken until release time -
+   the mirror image of the risk the Linux job just closed.
 
 4. **A vector that reaches the PIT and VGA phase math hard.** That is what
    would turn `-ffp-contract=off` from a precaution into a demonstrated
    necessity, or reveal it as unnecessary. Lower priority than 1-3 because
    the flag stays either way.
 
-5. **Small, still open:** `tests/golden/run.sh` is mode `100644`, so it needs
-   `sh run.sh` rather than `./run.sh`. `git update-index --chmod=+x
-   tests/golden/run.sh` fixes that if wanted; it was offered and not decided.
-
-6. **Optional, low priority:** make the new helpers explicitly little-endian
+5. **Optional, low priority:** make the new helpers explicitly little-endian
    instead of host-endian. Correct in principle, unobservable on any host we
    build for, and not something the golden vector can check - so it buys
    nothing measurable today.
