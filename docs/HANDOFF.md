@@ -42,7 +42,8 @@ documents now say what was actually found.
 | The `.pfr` parser refuses hostile input | **Verified** for the cases in `tests/fuzz` - 22 of them, 14 of which the previous parser accepted. `-selftest` is the regression test |
 | The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. 1,000,004 mutation cases under ASan+UBSan across four seeds, ~1.8% of them accepted deep into the parser. No crash, no assertion. A gcc mutation driver is still not a coverage-guided campaign |
 | The verdict object is stable | **Verified** for its own logic. `tests/verify/` drives 17 cases through `src/verify.c` against stubs under ASan+UBSan: field names, the three statuses, the exit codes, the eligibility rule, JSON escaping, write-once. Every emitted object was also parsed with a real JSON parser |
-| The verdict matches the report | **Verified** as a mechanism, not yet on a machine. `run.sh` now rides `-verify` along on the `-scoredbg` replay and cross-checks `best` against the `[RANKABLE]` lines the same run printed. Both shell extractors were tested against real emitter output; the suite itself has not been run since |
+| The verdict matches the report | **Verified** on the laptop (WSL/gcc), on the vector with a score. The JSON `best` and the `[RANKABLE]` line printed by the same replay both say 20,652,570, and the status is `verified`. This is the half the stub tests cannot see: the accessors feed the emitter the right numbers in a real run. The Mac Mini result is still pending |
+| The golden vector pins **rankability** | **Verified.** `deluxe-table1-partyon-295s.expected` was regenerated and now ends `attract yes`. The diff was that one token plus the column comment. Header, hashes and all 15 frames came out unchanged, which is a good check on its own. Until now the file had seven tokens, and `run.sh` quietly cut its own side down to match |
 | Big-endian correctness | **Untested.** The new helpers are host-endian, exactly like the puns they replaced. No regression, but no progress either |
 
 The verifier's **output** is done too, which was the last thing between
@@ -83,24 +84,7 @@ reason item 1 below matters.
    what lands, and if a match fires in one of them, that vector is the
    valuable one.
 
-2. **Re-run the golden suite, and regenerate the one vector's `.expected`.**
-   Two things, one replay each, both on the user's side.
-
-   The suite gained a `verdict` check and has not been run since, so that
-   check is written and reasoned about but not observed. Both shell
-   extractors were tested against real emitter output, which is not the
-   same as the gate being green.
-
-   Separately: `deluxe-table1-partyon-295s.expected` carries a SEVEN-token
-   attempt line, from before the `rankable` column existed.
-   `mkexpected.sh` emits eight now, and `run.sh` truncates its own side to
-   seven to keep the older file passing - so the one vector that pins a
-   score does **not** pin its rankability, which is the thing `fb4f59a`
-   set out to pin. Regenerating it closes that, and it is one
-   `mkexpected.sh` run. It was not done here because an `.expected` is
-   generated from a measured replay, never typed in.
-
-3. **CI: the free half is done, the other half needs a decision.**
+2. **CI: the free half is done, the other half needs a decision.**
    `.github/workflows/ci.yml` runs on every push on `ubuntu-latest`:
    `make`, the 22-case parser regression suite, a 50k-case fuzz run over
    the committed vector, the 17-case verdict suite, and `make ubsan` as a
@@ -119,12 +103,12 @@ reason item 1 below matters.
    change made on the POSIX side can sit broken until release time -
    the mirror image of the risk the Linux job just closed.
 
-4. **A vector that reaches the PIT and VGA phase math hard.** That is what
+3. **A vector that reaches the PIT and VGA phase math hard.** That is what
    would turn `-ffp-contract=off` from a precaution into a demonstrated
-   necessity, or reveal it as unnecessary. Lower priority than 1-3 because
+   necessity, or reveal it as unnecessary. Lower priority than 1-2 because
    the flag stays either way.
 
-5. **Optional, low priority:** make the new helpers explicitly little-endian
+4. **Optional, low priority:** make the new helpers explicitly little-endian
    instead of host-endian. Correct in principle, unobservable on any host we
    build for, and not something the golden vector can check - so it buys
    nothing measurable today.

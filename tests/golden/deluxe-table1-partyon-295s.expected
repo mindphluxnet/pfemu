@@ -30,5 +30,5 @@ frame 011 a24ba33c4adba40a06fc87cbf45ce509
 frame 012 061ef8e8266cb67ea36383ba0d981cb8
 frame 013 fa73280581185da0d5abe27462d61137
 frame 014 5b97ce53e8df9914305aab8d925b736f
-# -scoredbg, one line per attempt (from a separate replay)
-attempt 1 1 20652570 4 5 attract
+# -scoredbg: index table score ball_reached launches ended rankable
+attempt 1 1 20652570 4 5 attract yes
