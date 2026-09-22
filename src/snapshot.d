@@ -1,0 +1,3 @@
+src/snapshot.o: src/snapshot.c src/compat.h src/pfemu.h
+src/compat.h:
+src/pfemu.h:

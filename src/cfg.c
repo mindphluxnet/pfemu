@@ -21,8 +21,7 @@
  * or partial file just reads as defaults - these are preferences, and losing
  * one is a smaller problem than refusing to start over it.
  */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "compat.h"
 #include "pfemu.h"
 
 #define CFG_NAME "pfemu.cfg"
@@ -206,4 +205,94 @@ void cfg_write(const char *dir, const PfCfg *c){
     fprintf(f, "session=%s\n", c->session);
     fclose(f);
     drop_legacy(dir);
+}
+
+/* ----------------------------------------------- effective-setting readers
+ *
+ * These four used to live in src/launch.c, purely because the launcher was
+ * their first caller.  Nothing in them is a dialog: they are the same
+ * settings this file already owns, read the way the rest of the program
+ * needs them - the effective value, which for sound means the overlay's
+ * SOUND.CFG before the installed one before the mirror kept here.
+ *
+ * src/run.c calls all four on every run, headless included, so leaving them
+ * in the Win32-only launcher meant a build without a GUI could not read its
+ * own configuration.  They are plain stdio and belong here.
+ */
+/* 1 when the effective config (overlay first, then installed file) selects
+ * a SoundBlaster-family driver; used for the checkbox initial state. */
+int read_sound_is_sb(const char *dir){
+    FILE *f;
+    char name[13];
+    int i;
+    const char *cands[2];
+    static char ov[600], orig[600];
+    snprintf(ov, sizeof(ov), "%s/PFEMU-STATE/SOUND.CFG", dir);
+    snprintf(orig, sizeof(orig), "%s/SOUND.CFG", dir);
+    cands[0]=ov; cands[1]=orig;
+    for(i=0;i<2;i++){
+        f = fopen(cands[i], "rb");
+        if(!f) continue;
+        memset(name, 0, sizeof(name));
+        fread(name, 1, 12, f);
+        fclose(f);
+        return strncmp(name, "SBLASTER", 8)==0 || strncmp(name, "SBPRO", 5)==0 ||
+               strncmp(name, "SB16", 4)==0 || strncmp(name, "SB20", 4)==0;
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------- audio I/O
+ *
+ * Two of the settings in the install's PFEMU-STATE/pfemu.cfg (src/cfg.c):
+ * volume 0-100 and the quality notch 0-4.
+ *
+ * Volume is host-only by nature.  The guest has nothing to configure: the
+ * driver mixes at full scale, and the card's mixer registers are an SB Pro
+ * feature this DSP-1.05 card does not have - so the setting is a property of
+ * the host sink alone (see the comment over audio_volume in src/sound.c).
+ *
+ * Quality *is* a guest setting - it goes in SOUND.CFG byte 0x14, where the
+ * driver reads it - but it is mirrored here so that turning sound off and on
+ * again doesn't silently reset it: a NOSOUND.SDR config is 16 bytes long and
+ * has no byte 0x14 to remember it in.  SOUND.CFG still wins when it has one,
+ * so running the real SETSOUND (-setup) is still picked up here. */
+int read_volume_cfg(const char *dir){
+    PfCfg c;
+    cfg_read(dir, &c);
+    return c.volume;
+}
+
+/* Volume alone, for the in-window -/+ keys on their way out (src/main.c).
+ * Reads the whole file first so every other setting survives: the game
+ * window can change none of them, and clobbering one would silently undo
+ * the launcher. */
+void write_volume_cfg(const char *dir, int vol){
+    PfCfg c;
+    cfg_read(dir, &c);
+    c.volume = vol;
+    cfg_write(dir, &c);
+}
+
+/* Quality notch actually in force: the effective SOUND.CFG when it is an SB
+ * config long enough to carry one (overlay first, then installed, same order
+ * as read_sound_is_sb), otherwise the mirror above. */
+int read_sound_quality(const char *dir){
+    FILE *f;
+    uint8_t buf[25];
+    size_t n;
+    int i;
+    char path[600];
+    PfCfg c;
+    for(i=0;i<2;i++){
+        snprintf(path, sizeof(path), i==0 ? "%s/PFEMU-STATE/SOUND.CFG" : "%s/SOUND.CFG", dir);
+        f = fopen(path, "rb");
+        if(!f) continue;
+        n = fread(buf, 1, sizeof(buf), f);
+        fclose(f);
+        if(n > 0x14 && buf[0x14] <= 4) return buf[0x14];
+        break;
+    }
+    cfg_read(dir, &c);
+    return c.quality;
 }

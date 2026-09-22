@@ -16,6 +16,7 @@
  * time of day.
  */
 #include <stdarg.h>
+#include "compat.h"
 #include "pfemu.h"
 
 extern void  emu_advance(void);
@@ -787,6 +788,19 @@ relaunch:
     plat_init("Pinball Fantasies - pfemu");
     if(start_fullscreen) plat_set_fullscreen(1);
     }   /* end of the retry scope: the session is committed from here */
+
+    /* Parse -keys into the sorted event list the injector reads.
+     *
+     * This call went missing when the wall-clock keyscript path was replaced
+     * by the emu-time one: run_keyscript() was removed and keys_parse() was
+     * written, but nothing ever called it.  -keys has therefore been accepted
+     * and silently ignored ever since - keyev_n stayed 0, so keys_inject_due()
+     * had nothing to inject and keys_next_deadline() never clamped a batch.
+     *
+     * Here rather than at the flag, because replay nulls keyscript in two
+     * places above (a script beside a replay would double-drive the guest)
+     * and both have had their say by now. */
+    if(keyscript) keys_parse(keyscript);
 
     t0 = plat_time();
     /* A snapshot resumes mid-stream: anchor the wall clock behind the

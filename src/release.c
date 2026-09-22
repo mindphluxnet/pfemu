@@ -43,8 +43,7 @@
  * Unknown extra files (PINBALL.BAT, 21STINFO.DAT, readmes, logs) never make a
  * known installation fail; they are listed in the report and ignored.
  */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "compat.h"
 #include <stdarg.h>
 #include "pfemu.h"
 

@@ -57,9 +57,7 @@
  * DSP transfer; -dmairq goes back to the controller wrap if something ever
  * turns up that wants it.
  */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <mmsystem.h>
+#include "compat.h"
 #include <math.h>
 #include "pfemu.h"
 

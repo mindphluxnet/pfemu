@@ -1,9 +1,7 @@
 /* A small MS-DOS 5 work-alike: MCB memory chain, PSPs, file handles, EXEC */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "compat.h"
 #include "pfemu.h"
 #include <sys/stat.h>
-#include <direct.h>
 #include <time.h>
 
 extern void (*cb_table[256])(void);
@@ -723,7 +721,10 @@ static void fill_dta(const WIN32_FIND_DATAA *fd){
     mem_w16(d+0x18, dt);
     mem_w16(d+0x1A, (uint16_t)fd->nFileSizeLow);
     mem_w16(d+0x1C, (uint16_t)(fd->nFileSizeLow>>16));
-    for(i=0;i<13;i++) mem_w8(d+0x1E+i, (uint8_t)(i<(int)strlen(nm)?nm[i]:0));
+    /* 0x1E + i, spaced: "0x1E+i" with no space is a single preprocessing
+     * number in C99 (the 'E+' is read as an exponent), which MSVC accepts and
+     * gcc rejects. */
+    for(i=0;i<13;i++) mem_w8(d + 0x1E + i, (uint8_t)(i<(int)strlen(nm)?nm[i]:0));
 }
 
 int dos_log_all = 0;

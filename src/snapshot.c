@@ -19,9 +19,7 @@
  *  - an in-flight FindFirst iteration is reset on load (boot-time ops in
  *    practice); open handles are re-resolved by name and seeked back.
  */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <direct.h>
+#include "compat.h"
 #include "pfemu.h"
 
 extern double emu_time;

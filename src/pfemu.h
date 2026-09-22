@@ -9,6 +9,18 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* MSVC spellings used throughout, given their standard names off Windows.
+ * These are the only three, and they are here rather than in src/compat.h so
+ * that a core file needing one does not have to pull in the Win32 API shim to
+ * get it. */
+#ifndef _WIN32
+#include <strings.h>
+#include <sys/stat.h>
+#define _stricmp  strcasecmp
+#define _strnicmp strncasecmp
+#define _mkdir(p) mkdir((p), 0777)
+#endif
+
 #define RAM_SIZE 0x1000000u          /* 16 MB linear space (we only use <1MB) */
 
 /* ---------------------------------------------------------------- CPU ---- */

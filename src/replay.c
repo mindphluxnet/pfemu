@@ -32,9 +32,7 @@
  * are self-contained; -shotevery frames stay external.  v1 records from
  * the boot program; anything else in program: stays refused.
  */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <direct.h>
+#include "compat.h"
 #include "pfemu.h"
 
 extern double emu_time;
