@@ -473,8 +473,9 @@ reconstructed source alone:
 Two independent spikes gate everything. Either can be done first; both are
 cheap; nothing else should start until both come back green.
 
-- **Spike A - score and segmentation. Built; two games played, three bugs
-  found and fixed; wider playtest pending.** `-scoredbg` prints the
+- **Spike A - score and segmentation. Built; two games played and confirmed
+  against the game's own display; three bugs found and fixed; two tables and
+  the multi-player path still unplayed.** `-scoredbg` prints the
   per-attempt table the verifier would emit, and every locator it rests on
   was confirmed unique by static byte-scan across all twelve `TABLE1-4.PRG`
   of the three ranked releases before it was written.
@@ -511,12 +512,29 @@ cheap; nothing else should start until both come back green.
   100 ms after it; Table 1 clears it twice. The instruction hook is 1:1 on
   both.
 
-  What is still unverified is the one thing none of this can check from the
-  inside: that the number in the log is the number the game itself has. Both
-  games so far are only self-consistent - the instrument agreeing with
-  itself.
+  The last thing none of this could check from the inside - that the number
+  in the log is the number the game itself has - is now checked, on Deluxe
+  Table 3. A sweep of the recording (`-shotevery 5`, 55 frames) was
+  transcribed with `tools/dmdpanel.py` and compared against the log at the
+  same moments:
 
-  The game sometimes answers that in writing. `SAVE_HIGHS` writes
+  | Frame | Emulated time | Panel | `-scoredbg` |
+  | --- | --- | --- | --- |
+  | `seq020` | ~100 s, ball 3 | `1553240` | 1,553,240 (t=96.3 to 100.3) |
+  | `seq053` | ~265 s, ball 4 | `8739490` | 8,739,490 (t=263.9 to 270.8) |
+
+  Both taken inside a stretch where the score was not changing, so the
+  comparison is not a race. The panel's own `PLAYER 1` / `BALL 4` agrees with
+  the log's `ball=4 player=1/1` in the same frame, which checks the ball and
+  player locators the same way. Two readings, on two different balls, from
+  guest memory and from the pixels the player sees.
+
+  `tools/dmdpanel.py` deliberately stops at the ASCII and leaves the digits
+  to a person: the score field is right aligned, so a fixed glyph grid
+  mis-slices as soon as the digit count changes, and a confident wrong
+  transcription would be worse than none.
+
+  The game also sometimes answers in writing. `SAVE_HIGHS` writes
   `TABLEn.HI` - four records of 12 unpacked BCD digits and three initials,
   the same encoding as the live buffer, in a file pfemu had no part in
   producing - and `tools/hiscore.py` decodes it. A replay writes into the
@@ -538,26 +556,30 @@ cheap; nothing else should start until both come back green.
   assumes, which confirms the *encoding* from outside the instrument even
   though it confirms no particular run.
 
-  The check that always applies is a screenshot of the panel. `-shot` fires
-  at exit and `-untilemu` says when that is, but a single frame is a guess -
-  the panel spends much of the end of a game on scrolling messages rather
-  than digits, which is what an attempt at t=274 on this recording ran into.
-  One run with `-shotevery` covers the whole session instead:
+  The panel check itself is one replay. `-shot` fires at exit and `-untilemu`
+  says when that is, but a single frame is a guess - the panel spends much of
+  the end of a game on scrolling messages rather than digits, which is what
+  an attempt at t=274 on this recording ran into. `-shotevery` covers a whole
+  session instead:
 
   ```
-  pfemu.exe -replay sessions\FANTASYDX_20260918_062237.pfr -shotevery 5 -untilemu 272 -scoredbg > score.log 2>&1
+  pfemu.exe -replay sessions\FANTASYDX_20260918_062237.pfr -shotevery 5 -untilemu 272 -scoredbg > sweep.log 2>&1
+  python tools/dmdpanel.py seq053.ppm 205 240 190 320
   ```
 
   That writes `seq000.ppm`, `seq001.ppm`, ... one per five seconds of replay
   (`-shotevery` counts wall time scaled by speed, and replay pins speed to 1,
   so the index is roughly the emulated second divided by five). Pick frames
-  that fall inside a long gap between `score=` lines - this recording has a
-  seven-second one at 8,739,490 - and the panel should be showing exactly
-  that number.
+  that fall inside a long gap between `score=` lines; the region arguments
+  crop to the score field, which on the 320x240 table view is the right-hand
+  end of the bottom strip.
 
-  Beyond that the spike is not green until someone plays a game on **each
-  table of each release** - tables 2 and 4 have never been run at all - and
-  compares:
+  What is left is coverage, not method. Two tables have been played end to
+  end - floppy Table 1 and Deluxe Table 3, both to a clean attract-mode
+  finish including a match ball - and every locator is confirmed statically
+  in all twelve programs. But **tables 2 and 4 have never been run at all**,
+  Power Pack has never been run, and no two-player game has ever been played,
+  so the early-abort path is still pure theory. Each of those is one game:
 
   ```
   pfemu.exe -d FANTASYDX -scoredbg > score.log 2>&1
