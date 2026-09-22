@@ -1,11 +1,23 @@
 # False score decrease during new-ball reset
 
-> **Status: fixed in code, not yet confirmed against the recording.**
-> `-scoredbg` now hooks both brackets of the clear/restore sequence and
-> ignores the live buffer in between, as recommended below. The locators pass
-> `tools/scorescan.py` on all twelve ranked programs. Validation plan item 1 -
-> replaying `sessions/FANTASYDX_20260918_062237.pfr` and getting a rankable
-> 8,826,490 - has not been run yet. See the implementation notes at the end.
+> **Status: fixed and confirmed.** `-scoredbg` now hooks both brackets of the
+> clear/restore sequence and ignores the live buffer in between, as
+> recommended below. The locators pass `tools/scorescan.py` on all twelve
+> ranked programs, and validation plan item 1 passes: replaying
+> `sessions/FANTASYDX_20260918_062237.pfr` reports
+>
+> ```
+> attempt 1 table=3 ... score=8826490 players=1 balls=3 ball_reached=4
+>           launches=4 extra_after_last=1 springflips=4 resets=4
+>           ended=attract  [RANKABLE]
+> ```
+>
+> with no `score went DOWN` anywhere in the log, four transactions observed
+> and closed, and no watchdog trips. Item 2 passes in a stronger form than
+> asked: the recording was made without `-scoredbg` and the replay with it
+> ended at the same `278.499884s / 1670999301 cycles`, to the cycle. Neither
+> run captured audio, so the wav hash is still uncovered. See the
+> implementation notes at the end.
 
 ## Conclusion
 

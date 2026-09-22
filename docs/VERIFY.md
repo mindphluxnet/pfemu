@@ -494,27 +494,56 @@ cheap; nothing else should start until both come back green.
   decreased" on a transient zero inside the game's own new-ball score rebuild.
   That is the sampling-model bug written up in [VERIFY-BUG.md](VERIFY-BUG.md)
   and fixed by the transaction brackets described under
-  [Locating the score](#what-that-found). **That fix is not yet confirmed
-  against the recording** - replaying it is the first thing to do.
+  [Locating the score](#what-that-found). Replaying that recording against the
+  fix now reports the run as `[RANKABLE]` at 8,826,490, with four
+  transactions opened and closed, no spurious decrease and no watchdog trip.
 
-  What is still unverified is the part only a human can check: that the
-  number in the log is the number on the panel. So the spike is not green
-  until someone plays a game on each table of each release and compares:
+  That replay also settles the read-only question, in a stronger form than
+  the A/B it was meant to be: the recording was made *without* `-scoredbg`,
+  the replay ran *with* it, and the two agree on `278.499884s /
+  1670999301 cycles` exactly. Five `cpu_step()` hooks and a 500 Hz poll cost
+  the guest nothing it can observe. Only the wav hash is still uncovered,
+  because neither run captured audio.
+
+  One incidental finding from the two logs, and the reason the flag-based
+  launch counter had to go: the relationship between `SPRING_VALID` and a
+  launch is table-dependent. Table 3 clears the flag once per launch, about
+  100 ms after it; Table 1 clears it twice. The instruction hook is 1:1 on
+  both.
+
+  What is still unverified is the one thing none of this can check from the
+  inside: that the number in the log is the number on the panel. Both games
+  so far are only self-consistent - the instrument agreeing with itself. The
+  cheapest external check is a screenshot, because `-shot` fires at exit and
+  `-untilemu` says when that is, so a replay can be stopped on a frame whose
+  panel is showing a score the log also names:
+
+  ```
+  pfemu.exe -replay sessions\FANTASYDX_20260918_062237.pfr -untilemu 274 ^
+            -shot dmd.ppm -scoredbg > shot.log 2>&1
+  ```
+
+  Beyond that the spike is not green until someone plays a game on **each
+  table of each release** - tables 2 and 4 have never been run at all - and
+  compares:
 
   ```
   pfemu.exe -d FANTASYDX -scoredbg > score.log 2>&1
   ```
 
-  What to check, in order: the `[score] table N:` locator line appears on
+  What to check, in order: the `[score] table N:` locator lines appear on
   every table load; the running `score=` lines agree with the dot matrix; the
   attempt closes on `ended=attract` with the final score the panel shows, and
-  not one ball early; `launches` now counts one per plunger shot (the log also
-  prints `springflips`, and the two are expected to differ - that is the bug
-  above, kept visible on purpose); a game that ran into the match reports
+  not one ball early; `launches` counts one per plunger shot (`springflips`
+  is printed beside it and may differ - that is the table-dependence above,
+  kept visible on purpose); a game that ran into the match reports
   `extra_after_last=1` or more; and a two-player game locks at `players=2` and
   says so seconds after the first launch rather than at the end of the run.
-  The flag is read-only by construction, which is directly testable: replay
-  the same `.pfr` with and without it and the footers must be identical.
+
+  Two numbers in the per-attempt line are worth reading as instrument health
+  rather than as results: `resets` should be one per ball started, and any
+  `new-ball score clear was never followed by a restore` line means the
+  transaction brackets are wrong for that build.
 - **Spike B - determinism.** Build the core on Linux with a stub host,
   replay one existing `.pfr` unthrottled on both platforms, compare
   `end_emu` / `end_cycles` / wav hash. Match means the rest is plumbing.
