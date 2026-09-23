@@ -62,10 +62,10 @@ static int snap_have_rel = 0;
  * needs it: see the volume keys in wndproc() and the save in main(). */
 int vol_premute = -1, vol_muted = 0;
 
-/* 1 once the launcher dialog returned Launch: refusals after that point get
- * a MessageBox as well as stderr.  A windowed process has no console, so a
- * stderr-only message looks exactly like "Launch does nothing, the emulator
- * just quits".  CLI runs (from_launcher == 0) never pop up. */
+/* 1 in a game the launcher started (-launched): refusals get a MessageBox as
+ * well as stderr.  A windowed process has no console, so a stderr-only
+ * message looks exactly like "Launch does nothing, the emulator just quits".
+ * CLI runs (from_launcher == 0) never pop up. */
 int from_launcher = 0;
 static void fail_msg(const char *fmt, ...){
     char buf[512];
@@ -196,7 +196,6 @@ int emu_main(int argc, char **argv){
     const char *force_release = NULL; /* -release ID: skip detection's verdict */
     int list_releases = 0;    /* -releases: print the detection report and exit */
     RelResult rel;
-    LaunchChoice lc;
     int no_launcher = 0;      /* -nolauncher: skip the picker dialog */
     int explicit_prog = 0;    /* -p / -setup names the program directly */
     int prog_opt = 0;         /* -p alone (not -setup) */
@@ -345,6 +344,9 @@ int emu_main(int argc, char **argv){
          * score is not one. */
         else if(!strcmp(argv[i],"-verify") && i+1<argc) verify_arm(argv[++i]);
         else if(!strcmp(argv[i],"-nolauncher")) no_launcher = 1;
+        /* -launched: this process is a game the launcher started.  Refusals
+         * get a message box, since a windowed process has no console. */
+        else if(!strcmp(argv[i],"-launched")) from_launcher = 1;
         else if(!strcmp(argv[i],"-fullscreen")) start_fullscreen = 1;
         else if(!strcmp(argv[i],"-flipdbg")) vga_flipdbg = 1;
         else if(!strcmp(argv[i],"-dmd")) vga_dmdlog = 1;
@@ -487,73 +489,13 @@ int emu_main(int argc, char **argv){
         return 0;
     }
 
-    /* The command line's own values, kept because the launcher merges its
-     * choices into these same variables and a refused attempt leaves them
-     * half-merged.  A second trip through the picker has to start from the
-     * command line again, not from the attempt that just failed. */
-    {
-    const char *cli_dir = dir, *cli_prog = prog, *cli_keys = keyscript;
-    int cli_fullscreen = start_fullscreen, cli_table = start_table;
-    int cli_nopatch = dos_no_patch, cli_nolzexe = dos_no_lzexe;
-    double cli_ips = emu_ips, cli_speed = speed;
-    int attempt = 0;
-
-    /* One pass from here to the first executed instruction is one attempt to
-     * start a session.  A refusal along the way - a replay that does not
-     * match the installation, a record target that will not open, a boot
-     * program that will not load - used to show its message box and then
-     * exit, which from the picker looks exactly like "Launch quits the app".
-     * It now refuses only the thing that was asked for and brings the picker
-     * back, so the user can pick something else.  A command-line run has no
-     * picker to return to and still exits with a status; that path comes
-     * through here exactly once. */
-relaunch:
-    if(attempt++){
-        /* Undo everything the refused attempt merged in or armed. */
-        replay_abort();
-        record_path = replay_path = NULL;
-        replay_set_ranked(0);
-        dir = cli_dir; prog = cli_prog; keyscript = cli_keys;
-        start_fullscreen = cli_fullscreen; start_table = cli_table;
-        dos_no_patch = cli_nopatch; dos_no_lzexe = cli_nolzexe;
-        emu_ips = cli_ips; emu_inv_ips = 1.0 / emu_ips; speed = cli_speed;
-        dos_set_time_frozen(freeze_time);
-        from_launcher = 0;
-    }
-
-    /* Game picker, unless the run is explicit or automated: -p/-setup name
+    /* The launcher, unless the run is explicit or automated: -p/-setup name
      * the program, -secs means a headless benchmark, -nolauncher forces the
-     * old behaviour (boot dir/prog straight away).  In picker mode -d is
-     * ignored: the directory comes from the selected installation. */
-    if(!no_launcher && !explicit_prog && max_secs <= 0.0 && !record_path && !replay_path){
-        if(!show_launcher(&lc)) return 0;
-        from_launcher = 1;
-        dir = lc.dir; prog = lc.prog;
-        if(lc.fullscreen) start_fullscreen = 1;
-        if(lc.start_table) start_table = lc.start_table;
-        /* The launcher's record/replay mode is the same frontend as the
-         * CLI flags above (docs/REPLAY.md section 4). */
-        if(lc.mode == LAUNCH_RECORD) record_path = lc.replay_path;
-        else if(lc.mode == LAUNCH_REPLAY) replay_path = lc.replay_path;
-        if(replay_path && replay_begin_replay(replay_path) != 0){
-            const char *e = replay_parse_error();
-            if(e) fail_msg("%s", e);
-            else fail_msg("cannot replay '%s'", replay_path);
-            goto relaunch;
-        }
-        if(replay_path){
-            int h;
-            double f = replay_forced_ips(&h);
-            if(h){ emu_ips = f; emu_inv_ips = 1.0 / emu_ips; }
-            f = replay_forced_speed(&h);
-            if(h) speed = f;
-            if(keyscript){
-                fprintf(stderr, "[replay] ignoring -keys during replay\n");
-                keyscript = NULL;
-            }
-        }
-        if(record_path) speed = 1.0;
-    }
+     * old behaviour (boot dir/prog straight away).  The launcher runs every
+     * game as a child process of its own (-nolauncher -launched), stays open
+     * while it plays, and only returns here when it is closed. */
+    if(!no_launcher && !explicit_prog && max_secs <= 0.0 && !record_path && !replay_path)
+        return run_launcher();
     /* No -d and no launcher: take the first installation the detector finds
      * (GAME, then the rest alphabetically), so a headless run needs no more
      * arguments than an interactive one.
@@ -704,14 +646,12 @@ relaunch:
         verify_code("trainer_enabled");
         fail_msg("[replay] refused: the trainer is enabled for '%s'."
                  " Recording and replay need it off.", dir);
-        if(from_launcher) goto relaunch;
         return 1;
     }
     if(record_path && !release_runnable(&rel)){
         fail_msg("[record] refused: '%s' is not a recognised release"
                  " (%s: %s).",
                  dir, release_state_name(rel.state), rel.summary);
-        if(from_launcher) goto relaunch;
         return 1;
     }
     if(replay_path){
@@ -737,8 +677,7 @@ relaunch:
             }
             verify_code("install_mismatch");
             fail_msg("%s%s", why, hint);
-            if(from_launcher) goto relaunch;
-            return 1;
+                return 1;
         }
         replay_apply_recorded_env();
         /* The session runs the recorded view, not the install's current
@@ -759,16 +698,15 @@ relaunch:
                                dos_no_patch, dos_no_lzexe, sound, quality, opts,
                                start_fullscreen, start_table) != 0){
             fail_msg("[record] cannot write '%s'", record_path);
-            if(from_launcher) goto relaunch;
-            return 1;
+                return 1;
         }
     }
 
-    /* Allocated once, wiped per attempt: a retry re-runs every init below,
-     * so the machine starts as fresh as on the first pass, but calloc()ing
-     * again would simply leak the previous attempt's RAM.  This is the one
-     * failure here that really is fatal, so it does end the process - but
-     * through fail_msg, so a launcher run sees why rather than vanishing. */
+    /* One session per process: the launcher starts a fresh one for every
+     * game, so nothing from an earlier session can reach this one.  This is
+     * the one failure here that really is fatal, so it does end the process -
+     * but through fail_msg, so a launcher run sees why rather than
+     * vanishing. */
     if(!ram) ram = (uint8_t*)calloc(RAM_SIZE,1);
     else memset(ram, 0, RAM_SIZE);
     if(!ram){ fail_msg("out of memory"); return 1; }
@@ -814,7 +752,6 @@ relaunch:
        replay_make_canonical_overlay(replay_recorded_sound(),
                                      replay_recorded_quality(NULL)) != 0){
         fail_msg("[replay] cannot build the canonical state");
-        if(from_launcher) goto relaunch;
         replay_cleanup_overlay();
         return 1;
     }
@@ -843,24 +780,21 @@ relaunch:
         char why[512] = "";
         if(snapshot_load(snap_load_path, &rel, why, sizeof(why)) != 0){
             fail_msg("%s", why[0] ? why : "cannot load snapshot");
-            if(from_launcher) goto relaunch;
-            return 1;
+                return 1;
         }
     } else if(dos_exec(prog, 0, 0, 0, 0) != 0){
         fail_msg("could not load %s from %s", prog, dir);
-        if(from_launcher) goto relaunch;
         return 1;
     }
 
     /* The window opens here, after the last thing that can refuse the
      * session.  Creating it with the machine (where this used to sit) meant
      * a refused boot flashed an empty game window up and tore it down again
-     * behind the message box - and now that the picker comes back, it would
-     * have left that window standing behind it.  Nothing between dos_init()
+     * behind the message box, in front of the launcher the player goes back
+     * to.  Nothing between dos_init()
      * and this point draws or reads input, so there is nothing to miss. */
     plat_init("Pinball Fantasies - pfemu");
     if(start_fullscreen) plat_set_fullscreen(1);
-    }   /* end of the retry scope: the session is committed from here */
 
     /* Parse -keys into the sorted event list the injector reads.
      *

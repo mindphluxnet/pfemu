@@ -105,8 +105,10 @@ compile.
      it builds a commit from after `e50929c`. Push first.
    - **`pfemu-web/docs/API.md`** needs the new refusal `state_not_canonical`
      and what to tell the player ("record it as a ranked run").
-   - **The launcher has no Ranked switch yet**, only the CLI flag. The
-     launcher upload (item 1) needs one, or should always record ranked.
+   - **The validator has to build `e50929c` or later before a ranked
+     file can verify.** An older build ignores the `state:` line, replays
+     the file against its own `PFEMU-STATE/`, and so mismatches wherever
+     the high-score tables matter.
 
 1. **The service** lives in `pfemu-service` and `pfemu-web`; their HANDOFFs
    have the order. From this repository they need two things:
@@ -114,11 +116,23 @@ compile.
      never rename or remove them, and bump `pfemu_verify` if that ever has
      to happen. Push before the Mac Mini builds, because it pins a commit
      that has to exist on `origin`.
-   - **The launcher upload**, once both services are deployed: log in or
-     register, keep the token, upload a recording, poll it, and show the
-     result. This is C in `launch.c` over WinHTTP. Its contract is
-     `pfemu-web/docs/API.md`, which also has a table of what to tell the
-     player for each `reason`.
+   - **The launcher upload is built, and a person has not tried it
+     yet.** `src/online.c` is the client for `pfemu-web/docs/API.md`
+     over WinHTTP: register, log in, the token encrypted with DPAPI in
+     `pfemu-online.cfg`, upload, poll every 10 s, the list, and the
+     `reason` table. `launch.c` has the Leaderboard group, a login
+     window and the **Ranked** checkbox (default on). A console test
+     against the client passed 22 checks, including live calls against
+     `https://pf.dark-secrets.eu`: GET, 401 on a bad token, a POST with a
+     body, and an unreachable host. The windows themselves, and a real
+     upload, are still to be tried by hand.
+   - **The launcher no longer closes.** Launch starts the game as a
+     child process (`-nolauncher -launched ...`), the launcher waits and
+     comes back to the front when the game ends, with the fresh
+     recording ready to submit. The in-process `goto relaunch` path in
+     `run.c` is gone: a refusal now shows its box and ends the child,
+     and the launcher is still there. One process per session is also
+     what keeps state from one session out of the next recording.
 
 2. **A real fuzzing campaign, before the service takes uploads from
    strangers.** This is the only item on the list with a deadline attached.

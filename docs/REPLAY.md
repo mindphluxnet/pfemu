@@ -146,11 +146,17 @@ footer:  final emu_time + cpu.cycles, capture hash (FNV-1a over the sample
 
 ## Launcher
 
-`show_launcher()` owns every replay-relevant setting per install. A mode row
-(`Play` / `Record` / `Replay`) plus file field (default
+`run_launcher()` owns every replay-relevant setting per install. A mode row
+(`Play` / `Record` / `Replay`, plus **Ranked** for record, see Ranked
+recordings) and a file field (default
 `sessions/<install>_<date>.pfr`, `Browse...` for both modes - save dialog
-with overwrite confirm for record, open dialog for replay) feeds the same
-`{dir, prog, fullscreen, mode, path}` commit path as normal launch. The
+with overwrite confirm for record, open dialog for replay) turn into the
+command line of the game it starts: this executable with `-nolauncher
+-launched -d DIR` and `-record FILE [-ranked]` or `-replay FILE`. The
+launcher stays open while that child process runs and comes back to the
+front when it ends. A finished recording then gets a fresh target name, so
+the next one cannot overwrite it. A new process per session is deliberate:
+nothing from an earlier session can reach a recording. The
 last-used session file per install is remembered as the `session` key in
 `PFEMU-STATE/pfemu.cfg` and restored into the field **in replay mode
 only** - so the file you just recorded is the one offered to replay. Record

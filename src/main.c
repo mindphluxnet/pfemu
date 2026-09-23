@@ -672,9 +672,14 @@ void plat_early_init(void){
       } }
 }
 
-/* Paired with the timeBeginPeriod(1) in plat_init(). */
+/* Paired with the timeBeginPeriod(1) in plat_init().  A game the launcher
+ * started also hands the foreground on as it ends: Windows only lets a
+ * process take the foreground when the one holding it allows it, and the
+ * launcher waiting behind this window is meant to come back to the front
+ * (src/launch.c, on_child_done). */
 void plat_shutdown(void){
     timeEndPeriod(1);
+    if(from_launcher) AllowSetForegroundWindow(ASFW_ANY);
 }
 
 /* run.c has already put the text on stderr; this adds the box a windowed

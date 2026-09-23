@@ -415,14 +415,10 @@ void cfg_write(const char *dir, const PfCfg *c);
 /* Win32 installation picker + sound toggle (launch.c).  The dialog writes SOUND.CFG
  * into the game's PFEMU-STATE/ overlay so installed files stay pristine. */
 typedef enum { LAUNCH_PLAY = 0, LAUNCH_RECORD, LAUNCH_REPLAY } LaunchMode;
-typedef struct {
-    char dir[512], prog[16];
-    int fullscreen;
-    int start_table;      /* 0 = menu, 1-4 = start at that table */
-    LaunchMode mode;            /* play | record | replay (docs/REPLAY.md section 4) */
-    char replay_path[512];      /* -record target / -replay source, "" when play */
-} LaunchChoice;
-int  show_launcher(LaunchChoice *out);   /* 1 = launch, 0 = quit */
+/* The whole launcher session.  Each Launch starts the game as a child
+ * process (this executable with -nolauncher -launched); the launcher stays
+ * open and returns only when it is closed.  Returns the exit code. */
+int  run_launcher(void);
 void write_sound_cfg(const char *dir, int on, int quality);
 int  read_sound_is_sb(const char *dir);
 int  read_sound_quality(const char *dir);      /* SOUND.CFG byte 14h, 0-4 */

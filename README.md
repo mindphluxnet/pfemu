@@ -207,6 +207,31 @@ red `REC` badge appears while recording (green `PLAY` while replaying). The
 badge is drawn by the host and never reaches the game, the `.pfr` file, or any
 capture. [Replay](docs/REPLAY.md) has the full details.
 
+The launcher stays open while the game runs. It starts each game as a
+process of its own and comes back to the front when you quit, so the next
+game, or submitting the one you just recorded, is one click away.
+
+### Leaderboard
+
+**Ranked** (next to Record, on by default) records against a fixed
+starting state instead of your own high-score tables, which is what the
+leaderboard needs to verify a game: the tables change how the game plays.
+Your own table is not shown during a ranked game and is not updated by it.
+Unticked, recording works as before but the file cannot be submitted.
+
+The **Leaderboard** group logs in to the leaderboard server, or registers an
+account (the email is optional, but without one a forgotten password cannot
+be recovered). After a ranked recording ends, **Submit** uploads it; in
+Replay mode it uploads the picked ranked file. The server replays the game
+itself and the launcher shows the result when it has one, usually a minute
+or two for a five-minute game. **Submissions** lists everything you sent.
+Only a finished one-player 3-ball game that ran until the table was back in
+attract mode counts.
+
+The login is kept in `pfemu-online.cfg` next to `pfemu.exe`, encrypted for
+your Windows account. The file also holds the server address (`server=`,
+default `https://pf.dark-secrets.eu`).
+
 
 ### Starting at a table
 
@@ -240,7 +265,9 @@ development.
 | `-nolzexe` | Don't unpack LZEXE programs at load |
 | `-speed X` | Run at X times normal speed |
 | `-unthrottle` | Drop the wall-clock pacer entirely; host pacing only, so it overrides nothing a replay carries |
-| `-strict` | Verification-grade input policy: refuse a replay with no integrity line, or with pre-cycle events |
+| `-ranked` | With `-record`: record against the canonical state the leaderboard verifies, instead of this install's `PFEMU-STATE/` |
+| `-strict` | Verification-grade input policy: refuse a replay with no integrity line, with pre-cycle events, or recorded without `-ranked` |
+| `-launched` | Set by the launcher on the games it starts: refusals show a message box |
 | `-verify FILE` | Write the machine-readable verdict (one JSON object) for a replay: status, footer/capture comparison, every scored attempt, and the best **rankable** score. Implies `-scoredbg`, and sets the exit code from the verdict. This is the output a verification service reads - see [Verification](docs/VERIFY.md) |
 | `-ips N` | Emulated instructions per second (default 6,000,000; 12,000,000 when Resolution is High unless `-ips` or a replay overrides) |
 | `-vol N` | Volume 0-100 for this run only |

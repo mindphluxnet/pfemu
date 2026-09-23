@@ -48,12 +48,11 @@ void plat_fail_msg(const char *msg){ (void)msg; }   /* run.c already did stderr 
 void osd_show(const char *text){ (void)text; }
 void osd_clear(void){}
 
-/* The picker is a Win32 dialog.  Returning 0 means "quit", which run.c only
- * ever asks about on an interactive run - and an interactive run is not a
- * thing this host can have, so any path that reaches here was a mistake worth
- * reporting rather than a silent exit. */
-int show_launcher(LaunchChoice *out){
-    (void)out;
+/* The launcher is a Win32 dialog.  run.c only starts it on an interactive
+ * run - and an interactive run is not a thing this host can have, so any
+ * path that reaches here was a mistake worth reporting rather than a silent
+ * exit. */
+int run_launcher(void){
     fprintf(stderr, "[pfemu] headless build: no launcher."
                     " Name the session with -replay, or the install with -d.\n");
     return 0;

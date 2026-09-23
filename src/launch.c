@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "pfemu.h"
+#include "online.h"
 #include "../res/resource.h"
 
 /* Which release is in front of us is not something this dialog decides any
@@ -84,6 +85,17 @@
 #define ID_TREBLE       132
 #define ID_OOMPH        133
 #define ID_HEADPHONE    134
+#define ID_RANKED       135
+#define ID_LOGIN        136
+#define ID_SUBMIT       137
+#define ID_SUBLIST      138
+
+/* The game runs in a child process (see spawn_game()), and network calls
+ * on worker threads; both report back to the launcher window. */
+#define WM_APP_CHILD    (WM_APP + 1)   /* wParam = the game's exit code */
+#define WM_APP_NET      (WM_APP + 2)   /* lParam = the finished NetJob */
+#define TIMER_POLL      1
+#define POLL_MS         10000          /* API.md: every 10 s is enough */
 
 /* ------------------------------------------------------- SOUND.CFG I/O */
 /* Sound off: byte-identical to what SETSOUND writes for NOSOUND.SDR. */
@@ -305,6 +317,24 @@ typedef struct {
     ReplayHeader rhdr;
     int rhdr_ok;
     char replay_err[256];
+    /* The running game.  The launcher stays up while it plays and comes
+     * back to the front when it ends, so the recording can be submitted
+     * straight away.  NULL when no game is running. */
+    HANDLE child;
+    LaunchMode child_mode;
+    char child_path[512];    /* what that session recorded or replayed */
+    HWND hLaunch, hRanked;
+    /* The leaderboard (src/online.c, pfemu-web/docs/API.md). */
+    OnlineCfg online;
+    HWND hAccount, hLogin, hSubList;
+    HWND hSubFile, hSubmit;  /* what Submit would send, and the button */
+    HWND hSubState;          /* the last submission's status */
+    char last_rec[512];      /* the last finished recording, until submitted */
+    int  submitting;         /* an upload is in flight */
+    int  polling;            /* a poll is in flight */
+    long long sub_id;        /* the submission being followed, 0 if none */
+    int  sub_pending;        /* ...and it is not done yet */
+    char sub_line[256];      /* what the status line says about it */
 } LaunchState;
 
 static void set_vol_label(LaunchState *st){
@@ -355,6 +385,7 @@ static void write_session_path(const char *dir, const char *p){
 static void show_detection(HWND h, LaunchState *st);
 static void reload_for_dir(HWND h, LaunchState *st);
 static void launch_save_pos(HWND h);
+static void update_online_ui(HWND h, LaunchState *st);
 
 /* Default record target: sessions/<install>_<date>.pfr (REPLAY.md section
  * 4), next to pfemu.exe.  The install dir is sanitised: it is only ever a
@@ -502,6 +533,8 @@ static void replay_load_file(HWND h, LaunchState *st){
         replay_autorestore(h, st);
     }
     show_detection(h, st);
+    /* A picked ranked recording can be submitted from Replay mode. */
+    update_online_ui(h, st);
 }
 
 /* Fill the path field on mode entry: a fresh record target in record mode,
@@ -561,6 +594,7 @@ static void apply_mode_ui(HWND h, LaunchState *st){
         CheckDlgButton(h, ID_CHEAT_ENABLE, st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
     }
     show_detection(h, st);
+    update_online_ui(h, st);
 }
 
 /* The one read-only line that replaced the version radio buttons: whatever
@@ -615,6 +649,9 @@ static void show_detection(HWND h, LaunchState *st){
         for(i=0;i<6;i++)
             if(st->hOpt[i]) EnableWindow(st->hOpt[i], has_opts);
     }
+    /* One game at a time: it owns the audio device and the install's
+     * PFEMU-STATE/ while it runs. */
+    if(st->child && btn) EnableWindow(btn, FALSE);
 }
 
 /* Re-reads every per-install setting for whichever directory is now selected
@@ -973,8 +1010,9 @@ static LRESULT CALLBACK details_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     return DefWindowProcA(h,m,w,l);
 }
 
-/* Modal report window, owned by and centred on the launcher. */
-static void show_details(HWND owner, const char *text){
+/* Modal report window, owned by and centred on the launcher.  Also shows
+ * the submission list, which is the same kind of text. */
+static void show_details(HWND owner, const char *title, const char *text){
     DetState d;
     MSG msg;
     HINSTANCE hinst = GetModuleHandleA(NULL);
@@ -1017,7 +1055,7 @@ static void show_details(HWND owner, const char *text){
     }
     if(x < 0) x = 0;
     if(y < 0) y = 0;
-    {   HWND hwnd = CreateWindowExA(0,"pfemu-details","pfemu - details",
+    {   HWND hwnd = CreateWindowExA(0,"pfemu-details",title,
                         WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME,
                         x, y, winw, winh, owner, NULL, hinst, &d);
         if(!hwnd){ DeleteObject(d.hMono); return; }
@@ -1036,6 +1074,669 @@ static void show_details(HWND owner, const char *text){
     EnableWindow(owner, TRUE);
     SetActiveWindow(owner);
     DeleteObject(d.hMono);
+}
+
+/* ----------------------------------------------------------- leaderboard
+ *
+ * Log in, submit a ranked recording, follow it until the service has an
+ * answer (pfemu-web/docs/API.md).  Every request runs on a worker thread
+ * and comes back to the window that asked as WM_APP_NET, so the dialog
+ * never freezes on a slow or absent server.  The window frees the job; if
+ * it is gone by then, the thread does. */
+typedef enum {
+    NJ_LOGIN, NJ_REGISTER, NJ_LOGOUT, NJ_SUBMIT, NJ_POLL, NJ_LIST, NJ_LIST_SHOW
+} NetKind;
+typedef struct {
+    NetKind kind;
+    HWND reply;
+    char server[256], token[160];
+    char method[8], path[96], ctype[40];
+    char *data;
+    size_t n;
+    char file[512];          /* NJ_SUBMIT: the recording sent */
+    HttpResp r;
+} NetJob;
+
+static void net_free(NetJob *j){
+    if(!j) return;
+    online_resp_free(&j->r);
+    if(j->data){ SecureZeroMemory(j->data, j->n); free(j->data); }
+    free(j);
+}
+
+static DWORD WINAPI net_thread(LPVOID p){
+    NetJob *j = (NetJob*)p;
+    online_http(j->server, j->method, j->path, j->token, j->ctype,
+                j->data, j->n, &j->r);
+    if(!PostMessageA(j->reply, WM_APP_NET, 0, (LPARAM)j)) net_free(j);
+    return 0;
+}
+
+static NetJob *net_new(NetKind k, HWND reply, const OnlineCfg *c,
+                       const char *method, const char *path){
+    NetJob *j = (NetJob*)calloc(1, sizeof(*j));
+    if(!j) return NULL;
+    j->kind = k;
+    j->reply = reply;
+    snprintf(j->server, sizeof(j->server), "%s", c->server);
+    snprintf(j->token, sizeof(j->token), "%s", c->token);
+    snprintf(j->method, sizeof(j->method), "%s", method);
+    snprintf(j->path, sizeof(j->path), "%s", path);
+    return j;
+}
+
+static int net_start(NetJob *j){
+    HANDLE t = CreateThread(NULL, 0, net_thread, j, 0, NULL);
+    if(!t){ net_free(j); return 0; }
+    CloseHandle(t);
+    return 1;
+}
+
+/* The sentence to show for a failed request: the server's own message when
+ * it sent one (API.md: "an English sentence to show the player as is"),
+ * else what went wrong on the way. */
+static void resp_message(const HttpResp *r, char *out, size_t n){
+    if(r->status == 0){
+        snprintf(out, n, "%s", r->err[0] ? r->err : "No answer from the server.");
+        return;
+    }
+    if(json_str(r->body, r->body + r->len, "message", out, n) && out[0]) return;
+    snprintf(out, n, "The server answered with status %d.", r->status);
+}
+
+static void fmt_score(long long v, char *out, size_t n){
+    char d[32];
+    int len, i;
+    size_t k = 0;
+    snprintf(d, sizeof(d), "%lld", v);
+    len = (int)strlen(d);
+    for(i = 0; i < len && k + 2 < n; i++){
+        if(i && d[0] != '-' && (len - i) % 3 == 0) out[k++] = ',';
+        out[k++] = d[i];
+    }
+    out[k] = 0;
+}
+
+static const char *base_name(const char *p){
+    const char *b = p, *s;
+    for(s = p; *s; s++) if(*s == '\\' || *s == '/') b = s + 1;
+    return b;
+}
+
+/* One submission object, as a line for the status row. */
+static void sub_describe(const char *s, const char *e, char *out, size_t n,
+                         int *pending){
+    long long id = 0, score = 0;
+    char state[24] = "", reason[96] = "", sc[32];
+    const char *rs, *re;
+    int rankable = 0;
+    json_num(s, e, "id", &id);
+    json_str(s, e, "state", state, sizeof(state));
+    if(strcmp(state, "done") || !json_obj(s, e, "result", &rs, &re)){
+        *pending = 1;
+        snprintf(out, n, "Submission #%lld: %s", id,
+                 !strcmp(state, "queued") ? "queued for verification..."
+                                          : "being verified...");
+        return;
+    }
+    *pending = 0;
+    json_bool(rs, re, "rankable", &rankable);
+    json_str(rs, re, "reason", reason, sizeof(reason));
+    if(rankable && json_num(rs, re, "score", &score)){
+        fmt_score(score, sc, sizeof(sc));
+        snprintf(out, n, "Submission #%lld: %s points. It counts!", id, sc);
+    } else {
+        snprintf(out, n, "Submission #%lld: %s", id, online_reason_text(reason));
+    }
+}
+
+/* The recording Submit would send: in Replay mode the picked file, else the
+ * last recording that finished.  Only a complete ranked one qualifies, and
+ * why names the reason when the picked file does not. */
+static const char *submit_candidate(const LaunchState *st, const char **why){
+    *why = NULL;
+    if(st->mode == LAUNCH_REPLAY){
+        if(!st->rhdr_ok || !st->replay_path[0]) return NULL;
+        if(!st->rhdr.state[0]){
+            *why = "Recorded without Ranked, so it cannot be submitted.";
+            return NULL;
+        }
+        if(!st->rhdr.have_end){ *why = "This recording is incomplete."; return NULL; }
+        return st->replay_path;
+    }
+    return st->last_rec[0] ? st->last_rec : NULL;
+}
+
+/* Every leaderboard control, from the state alone. */
+static void update_online_ui(HWND h, LaunchState *st){
+    const char *why, *cand = submit_candidate(st, &why);
+    int logged = st->online.token[0] != 0;
+    char line[320];
+    (void)h;
+    if(st->hRanked) EnableWindow(st->hRanked, st->mode == LAUNCH_RECORD);
+    if(!st->hAccount) return;
+    if(logged) snprintf(line, sizeof(line), "Logged in as %s", st->online.username);
+    else snprintf(line, sizeof(line), "Not logged in");
+    SetWindowTextA(st->hAccount, line);
+    SetWindowTextA(st->hLogin, logged ? "Log out" : "Log in...");
+    EnableWindow(st->hSubList, logged);
+    EnableWindow(st->hSubmit, logged && cand && !st->submitting);
+    if(st->submitting) snprintf(line, sizeof(line), "Uploading...");
+    else if(cand && logged) snprintf(line, sizeof(line), "Ready to submit: %s", base_name(cand));
+    else if(cand) snprintf(line, sizeof(line), "Log in to submit %s", base_name(cand));
+    else if(why) snprintf(line, sizeof(line), "%s", why);
+    else if(!logged) snprintf(line, sizeof(line), "Log in to submit ranked recordings.");
+    else line[0] = 0;
+    SetWindowTextA(st->hSubFile, line);
+    SetWindowTextA(st->hSubState, st->sub_line);
+}
+
+/* A 401 on any call: API.md says forget the token and ask again.  It
+ * happens after a password change, which logs out every client. */
+static void auth_lost(HWND h, LaunchState *st){
+    st->online.token[0] = 0;
+    st->online.username[0] = 0;
+    online_save(&st->online);
+    st->sub_id = 0;
+    st->sub_pending = 0;
+    KillTimer(h, TIMER_POLL);
+    snprintf(st->sub_line, sizeof(st->sub_line),
+             "You were logged out. Log in again to continue.");
+    update_online_ui(h, st);
+}
+
+/* Follow one submission: poll it every POLL_MS until it is done. */
+static void follow(HWND h, LaunchState *st, long long id, int pending){
+    st->sub_id = id;
+    st->sub_pending = pending;
+    if(pending) SetTimer(h, TIMER_POLL, POLL_MS, NULL);
+    else KillTimer(h, TIMER_POLL);
+}
+
+static void start_list(HWND h, LaunchState *st, int show){
+    NetJob *j;
+    if(!st->online.token[0]) return;
+    j = net_new(show ? NJ_LIST_SHOW : NJ_LIST, h, &st->online, "GET", "/api/v1/submissions");
+    if(j) net_start(j);
+}
+
+static void start_submit(HWND h, LaunchState *st){
+    const char *why, *cand = submit_candidate(st, &why);
+    NetJob *j;
+    FILE *f;
+    long len;
+    if(!cand || st->submitting || !st->online.token[0]) return;
+    j = net_new(NJ_SUBMIT, h, &st->online, "POST", "/api/v1/submissions");
+    if(!j) return;
+    snprintf(j->file, sizeof(j->file), "%s", cand);
+    snprintf(j->ctype, sizeof(j->ctype), "application/octet-stream");
+    /* The bytes exactly as pfemu wrote them: the file is hashed over its raw
+     * disk bytes, so "rb" and nothing in between. */
+    f = fopen(cand, "rb");
+    if(!f){ net_free(j); MessageBoxA(h, "The recording cannot be read.", "pfemu",
+                                     MB_OK|MB_ICONEXCLAMATION); return; }
+    fseek(f, 0, SEEK_END);
+    len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if(len <= 0 || len > 16L * 1024 * 1024){
+        fclose(f);
+        net_free(j);
+        MessageBoxA(h, "The recording is empty or far too large to upload.", "pfemu",
+                    MB_OK|MB_ICONEXCLAMATION);
+        return;
+    }
+    j->data = (char*)malloc((size_t)len);
+    j->n = j->data ? fread(j->data, 1, (size_t)len, f) : 0;
+    fclose(f);
+    if(!j->data || j->n != (size_t)len){ net_free(j); return; }
+    st->submitting = 1;
+    update_online_ui(h, st);
+    if(!net_start(j)){ st->submitting = 0; update_online_ui(h, st); }
+}
+
+/* The Submissions window: the same fixed-pitch report window as Details. */
+static void show_submission_list(HWND h, const HttpResp *r){
+    static char raw[DET_MAX], text[DET_MAX*2];
+    const char *e = r->body + r->len, *p, *oe;
+    size_t k = 0;
+    int count = 0;
+    k += (size_t)snprintf(raw + k, sizeof(raw) - k,
+                          "%6s  %-16s  %-8s  %12s  %s\n%s\n",
+                          "#", "Received (UTC)", "State", "Score", "Result", DET_RULE);
+    p = NULL;
+    { const char *s = r->body, *v;
+      /* The array after "submissions": walk its objects in order. */
+      for(v = s; v && v < e; v++) if(*v == '[') { p = v + 1; break; } }
+    while(p && (p = json_next_obj(p, e, &oe)) != NULL && k + 200 < sizeof(raw)){
+        long long id = 0, score = 0;
+        char recv[40] = "", state[24] = "", reason[96] = "", sc[32] = "";
+        const char *rs, *re;
+        int rankable = 0;
+        json_num(p, oe, "id", &id);
+        json_str(p, oe, "received_at", recv, sizeof(recv));
+        json_str(p, oe, "state", state, sizeof(state));
+        if(recv[10] == 'T') recv[10] = ' ';
+        recv[16] = 0;
+        if(json_obj(p, oe, "result", &rs, &re)){
+            json_bool(rs, re, "rankable", &rankable);
+            json_str(rs, re, "reason", reason, sizeof(reason));
+            if(json_num(rs, re, "score", &score)) fmt_score(score, sc, sizeof(sc));
+        }
+        k += (size_t)snprintf(raw + k, sizeof(raw) - k, "%6lld  %-16s  %-8s  %12s  %s\n",
+                              id, recv, state, sc,
+                              !strcmp(state, "done") ? online_reason_text(reason) : "");
+        count++;
+        p = oe;
+    }
+    if(!count) snprintf(raw + k, sizeof(raw) - k, "No submissions yet.\n");
+    det_crlf(raw, text, sizeof(text));
+    show_details(h, "pfemu - submissions", text);
+}
+
+/* The launcher's side of every finished request except login/register,
+ * which the login window handles itself. */
+static void on_net_done(HWND h, LaunchState *st, NetJob *j){
+    const char *s = j->r.body, *e = j->r.body + j->r.len;
+    char msg[300];
+    int pending = 0;
+    if(j->kind == NJ_LOGOUT){ net_free(j); return; }
+    if(j->r.status == 401){
+        if(j->kind == NJ_SUBMIT) st->submitting = 0;
+        if(j->kind == NJ_POLL) st->polling = 0;
+        /* A stale answer to a token this launcher already dropped says
+         * nothing about the current one. */
+        if(!strcmp(j->token, st->online.token)) auth_lost(h, st);
+        net_free(j);
+        return;
+    }
+    switch(j->kind){
+    case NJ_SUBMIT:
+        st->submitting = 0;
+        if(j->r.status == 200 || j->r.status == 202){
+            long long id = 0;
+            json_num(s, e, "id", &id);
+            sub_describe(s, e, st->sub_line, sizeof(st->sub_line), &pending);
+            follow(h, st, id, pending);
+            if(!strcmp(j->file, st->last_rec)) st->last_rec[0] = 0;
+        } else {
+            resp_message(&j->r, msg, sizeof(msg));
+            MessageBoxA(h, msg, "pfemu - submit", MB_OK|MB_ICONEXCLAMATION);
+        }
+        break;
+    case NJ_POLL:
+        st->polling = 0;
+        if(j->r.status == 200){
+            long long id = 0;
+            json_num(s, e, "id", &id);
+            if(id == st->sub_id){
+                sub_describe(s, e, st->sub_line, sizeof(st->sub_line), &pending);
+                follow(h, st, id, pending);
+                /* The answer arrived while the player looks elsewhere,
+                 * possibly at the next game: say so in the taskbar. */
+                if(!pending && GetForegroundWindow() != h) FlashWindow(h, TRUE);
+            }
+        } else if(j->r.status == 404){
+            follow(h, st, 0, 0);
+        }
+        /* No answer: keep the line, the timer tries again. */
+        break;
+    case NJ_LIST:
+        if(j->r.status == 200){
+            const char *v = NULL, *oe, *o;
+            for(o = s; o < e; o++) if(*o == '['){ v = o + 1; break; }
+            /* Newest first (API.md), so the first object is the one to
+             * show and, while it is still running, to follow. */
+            if(v && (o = json_next_obj(v, e, &oe)) != NULL){
+                long long id = 0;
+                json_num(o, oe, "id", &id);
+                sub_describe(o, oe, st->sub_line, sizeof(st->sub_line), &pending);
+                follow(h, st, id, pending);
+            }
+        }
+        break;
+    case NJ_LIST_SHOW:
+        if(j->r.status == 200) show_submission_list(h, &j->r);
+        else {
+            resp_message(&j->r, msg, sizeof(msg));
+            MessageBoxA(h, msg, "pfemu - submissions", MB_OK|MB_ICONEXCLAMATION);
+        }
+        break;
+    default:
+        break;
+    }
+    net_free(j);
+    update_online_ui(h, st);
+}
+
+/* ------------------------------------------------------------ login window */
+#define ID_LG_USER      300
+#define ID_LG_PASS      301
+#define ID_LG_EMAIL     302
+#define ID_LG_REGISTER  303
+#define ID_LG_MSG       304
+
+typedef struct {
+    LaunchState *st;
+    HWND owner, hUser, hPass, hEmail, hMsg, hOk, hReg;
+    HFONT hUi;
+    int done, ok;
+} LoginState;
+static int login_registered = 0;
+
+static HWND lg_ctl(HWND h, LoginState *d, const char *cls, const char *text,
+                   DWORD style, int x, int y, int w, int hh, int id){
+    HWND c = CreateWindowExA(!strcmp(cls, "EDIT") ? WS_EX_CLIENTEDGE : 0, cls, text,
+                             WS_CHILD|WS_VISIBLE|style, x, y, w, hh, h,
+                             (HMENU)(INT_PTR)id, GetModuleHandleA(NULL), 0);
+    SendMessageA(c, WM_SETFONT, (WPARAM)d->hUi, 0);
+    return c;
+}
+
+static void login_busy(LoginState *d, int busy, const char *msg){
+    EnableWindow(d->hOk, !busy);
+    EnableWindow(d->hReg, !busy);
+    SetWindowTextA(d->hMsg, msg ? msg : "");
+}
+
+static void login_send(HWND h, LoginState *d, int reg){
+    char user[80], pass[300], email[300], eu[200], ep[700], ee[700];
+    static char body[1800];
+    NetJob *j;
+    GetWindowTextA(d->hUser, user, (int)sizeof(user));
+    GetWindowTextA(d->hPass, pass, (int)sizeof(pass));
+    GetWindowTextA(d->hEmail, email, (int)sizeof(email));
+    if(!user[0] || !pass[0]){
+        SetWindowTextA(d->hMsg, "Enter a username and a password.");
+        return;
+    }
+    json_esc(user, eu, sizeof(eu));
+    json_esc(pass, ep, sizeof(ep));
+    if(reg && email[0]){
+        json_esc(email, ee, sizeof(ee));
+        snprintf(body, sizeof(body),
+                 "{\"username\":\"%s\",\"password\":\"%s\",\"email\":\"%s\"}", eu, ep, ee);
+    } else if(reg){
+        snprintf(body, sizeof(body),
+                 "{\"username\":\"%s\",\"password\":\"%s\",\"email\":null}", eu, ep);
+    } else {
+        snprintf(body, sizeof(body), "{\"username\":\"%s\",\"password\":\"%s\"}", eu, ep);
+    }
+    SecureZeroMemory(pass, sizeof(pass));
+    SecureZeroMemory(ep, sizeof(ep));
+    j = net_new(reg ? NJ_REGISTER : NJ_LOGIN, h, &d->st->online, "POST",
+                reg ? "/api/v1/register" : "/api/v1/login");
+    if(!j){ SecureZeroMemory(body, sizeof(body)); return; }
+    j->token[0] = 0;
+    snprintf(j->ctype, sizeof(j->ctype), "application/json");
+    j->n = strlen(body);
+    j->data = (char*)malloc(j->n + 1);
+    if(j->data) memcpy(j->data, body, j->n + 1);
+    SecureZeroMemory(body, sizeof(body));
+    if(!j->data){ net_free(j); return; }
+    login_busy(d, 1, reg ? "Creating the account..." : "Logging in...");
+    if(!net_start(j)) login_busy(d, 0, "Could not start the request.");
+}
+
+static LRESULT CALLBACK login_proc(HWND h, UINT m, WPARAM w, LPARAM l){
+    LoginState *d = (LoginState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
+    switch(m){
+    case WM_CREATE: {
+        CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
+        d = (LoginState*)cs->lpCreateParams;
+        SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)d);
+        lg_ctl(h, d, "STATIC", "Username:", 0, 14, 17, 80, 16, 0);
+        d->hUser = lg_ctl(h, d, "EDIT", d->st->online.username,
+                          WS_TABSTOP|ES_AUTOHSCROLL, 100, 14, 226, 22, ID_LG_USER);
+        lg_ctl(h, d, "STATIC", "Password:", 0, 14, 47, 80, 16, 0);
+        d->hPass = lg_ctl(h, d, "EDIT", "", WS_TABSTOP|ES_AUTOHSCROLL|ES_PASSWORD,
+                          100, 44, 226, 22, ID_LG_PASS);
+        lg_ctl(h, d, "STATIC", "Email:", 0, 14, 77, 80, 16, 0);
+        d->hEmail = lg_ctl(h, d, "EDIT", "", WS_TABSTOP|ES_AUTOHSCROLL,
+                           100, 74, 226, 22, ID_LG_EMAIL);
+        lg_ctl(h, d, "STATIC",
+               "Email is optional and only used by Register. Without one,"
+               " a forgotten password cannot be recovered.",
+               0, 100, 100, 226, 30, 0);
+        d->hMsg = lg_ctl(h, d, "STATIC", "", 0, 14, 136, 312, 32, ID_LG_MSG);
+        d->hOk = lg_ctl(h, d, "BUTTON", "Log in", WS_TABSTOP|BS_DEFPUSHBUTTON,
+                        74, 176, 80, 24, IDOK);
+        d->hReg = lg_ctl(h, d, "BUTTON", "Register", WS_TABSTOP,
+                         160, 176, 80, 24, ID_LG_REGISTER);
+        lg_ctl(h, d, "BUTTON", "Cancel", WS_TABSTOP, 246, 176, 80, 24, IDCANCEL);
+        return 0; }
+    case WM_COMMAND:
+        if(!d) return 0;
+        switch(LOWORD(w)){
+        case IDOK:           login_send(h, d, 0); return 0;
+        case ID_LG_REGISTER: login_send(h, d, 1); return 0;
+        case IDCANCEL:       SendMessageA(h, WM_CLOSE, 0, 0); return 0;
+        }
+        return 0;
+    case WM_APP_NET: {
+        NetJob *j = (NetJob*)l;
+        char tok[160] = "", name[64] = "", msg[300];
+        const char *s = j->r.body, *e = j->r.body + j->r.len;
+        if(d && (j->r.status == 200 || j->r.status == 201) &&
+           json_str(s, e, "token", tok, sizeof(tok)) && tok[0]){
+            json_str(s, e, "username", name, sizeof(name));
+            snprintf(d->st->online.token, sizeof(d->st->online.token), "%s", tok);
+            snprintf(d->st->online.username, sizeof(d->st->online.username), "%s",
+                     name[0] ? name : "?");
+            online_save(&d->st->online);
+            SecureZeroMemory(tok, sizeof(tok));
+            d->ok = 1;
+            net_free(j);
+            SendMessageA(h, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        if(d){
+            resp_message(&j->r, msg, sizeof(msg));
+            login_busy(d, 0, msg);
+        }
+        net_free(j);
+        return 0; }
+    case WM_CLOSE:
+        if(d){
+            d->done = 1;
+            if(d->owner) EnableWindow(d->owner, TRUE);
+        }
+        DestroyWindow(h);
+        return 0;
+    }
+    return DefWindowProcA(h, m, w, l);
+}
+
+/* Modal, like the Details window.  Returns 1 when it ended logged in. */
+static int show_login(HWND owner, LaunchState *st){
+    LoginState d;
+    MSG msg;
+    HINSTANCE hinst = GetModuleHandleA(NULL);
+    RECT ro, rc = { 0, 0, 340, 214 };
+    DWORD style = WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU;
+    int winw, winh, x, y;
+    HWND hwnd;
+    memset(&d, 0, sizeof(d));
+    d.st = st;
+    d.owner = owner;
+    d.hUi = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    if(!login_registered){
+        WNDCLASSEXA wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = login_proc;
+        wc.hInstance = hinst;
+        wc.lpszClassName = "pfemu-login";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+        wc.hIcon = LoadIcon(hinst, MAKEINTRESOURCE(IDI_PFEMU));
+        wc.hIconSm = (HICON)LoadImage(hinst, MAKEINTRESOURCE(IDI_PFEMU),
+                                      IMAGE_ICON, 16, 16, 0);
+        if(!RegisterClassExA(&wc)) return 0;
+        login_registered = 1;
+    }
+    AdjustWindowRect(&rc, style, FALSE);
+    winw = rc.right - rc.left;
+    winh = rc.bottom - rc.top;
+    if(owner && GetWindowRect(owner, &ro)){
+        x = (int)ro.left + ((int)(ro.right-ro.left) - winw)/2;
+        y = (int)ro.top + ((int)(ro.bottom-ro.top) - winh)/2;
+    } else {
+        x = (GetSystemMetrics(SM_CXSCREEN)-winw)/2;
+        y = (GetSystemMetrics(SM_CYSCREEN)-winh)/2;
+    }
+    if(x < 0) x = 0;
+    if(y < 0) y = 0;
+    hwnd = CreateWindowExA(0, "pfemu-login", "pfemu - leaderboard account", style,
+                           x, y, winw, winh, owner, NULL, hinst, &d);
+    if(!hwnd) return 0;
+    EnableWindow(owner, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetFocus(st->online.username[0] ? d.hPass : d.hUser);
+    while(!d.done && GetMessageA(&msg, NULL, 0, 0) > 0){
+        if(!IsDialogMessageA(hwnd, &msg)){
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+    }
+    EnableWindow(owner, TRUE);
+    SetActiveWindow(owner);
+    return d.ok;
+}
+
+/* ------------------------------------------------------------- the game
+ *
+ * The game runs as a child process: this same executable with -nolauncher
+ * -launched and the choices as flags.  The launcher stays open while it
+ * plays and comes back to the front when it ends, which is also when a
+ * finished ranked recording becomes submittable.
+ *
+ * A fresh process per session is deliberate.  Running the emulator a second
+ * time inside this process would need every static in it reset exactly, and
+ * a ranked recording is only worth something if nothing from the session
+ * before can reach it. */
+typedef struct { HANDLE proc; HWND reply; } ChildWait;
+
+static DWORD WINAPI child_wait_thread(LPVOID p){
+    ChildWait *cw = (ChildWait*)p;
+    DWORD code = 0;
+    WaitForSingleObject(cw->proc, INFINITE);
+    GetExitCodeProcess(cw->proc, &code);
+    PostMessageA(cw->reply, WM_APP_CHILD, (WPARAM)code, 0);
+    free(cw);
+    return 0;
+}
+
+static void cmd_add(char *cmd, size_t n, const char *fmt, ...){
+    size_t k = strlen(cmd);
+    va_list ap;
+    if(k >= n) return;
+    va_start(ap, fmt);
+    vsnprintf(cmd + k, n - k, fmt, ap);
+    va_end(ap);
+}
+
+/* A quoted path argument.  A trailing backslash would escape the closing
+ * quote under the C runtime's argument rules, so it is dropped. */
+static void cmd_add_path(char *cmd, size_t n, const char *flag, const char *path){
+    char p[600];
+    size_t l;
+    snprintf(p, sizeof(p), "%s", path);
+    l = strlen(p);
+    while(l && (p[l-1] == '\\' || p[l-1] == '/')) p[--l] = 0;
+    cmd_add(cmd, n, " %s \"%s\"", flag, p);
+}
+
+static void last_save(const RelResult *r);
+
+static int spawn_game(HWND h, LaunchState *st){
+    const RelResult *r = cur_inst(st);
+    char exe[1024], cmd[4096];
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    ChildWait *cw;
+    HANDLE t;
+    DWORD len = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+    if(!r || st->child || len == 0 || len >= sizeof(exe)) return 0;
+    snprintf(cmd, sizeof(cmd), "\"%s\" -nolauncher -launched", exe);
+    cmd_add_path(cmd, sizeof(cmd), "-d", r->dir);
+    if(st->fullscreen) cmd_add(cmd, sizeof(cmd), " -fullscreen");
+    /* A replay carries its own start; run.c would only ignore this. */
+    if(st->mode != LAUNCH_REPLAY && st->start_table)
+        cmd_add(cmd, sizeof(cmd), " -table %d", st->start_table);
+    if(st->mode == LAUNCH_RECORD){
+        cmd_add_path(cmd, sizeof(cmd), "-record", st->replay_path);
+        if(st->online.ranked) cmd_add(cmd, sizeof(cmd), " -ranked");
+    } else if(st->mode == LAUNCH_REPLAY){
+        cmd_add_path(cmd, sizeof(cmd), "-replay", st->replay_path);
+    }
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    /* Same working directory as this process: install directories are
+     * stored relative to it. */
+    if(!CreateProcessA(exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)){
+        char msg[200];
+        snprintf(msg, sizeof(msg), "The game could not be started (error %lu).",
+                 (unsigned long)GetLastError());
+        MessageBoxA(h, msg, "pfemu", MB_OK|MB_ICONEXCLAMATION);
+        return 0;
+    }
+    CloseHandle(pi.hThread);
+    last_save(r);
+    cw = (ChildWait*)malloc(sizeof(*cw));
+    t = NULL;
+    if(cw){
+        cw->proc = pi.hProcess;
+        cw->reply = h;
+        t = CreateThread(NULL, 0, child_wait_thread, cw, 0, NULL);
+        if(!t) free(cw);
+    }
+    if(!t){
+        /* Nothing would tell us when it ends; leave Launch usable rather
+         * than stuck on "Running...". */
+        CloseHandle(pi.hProcess);
+        return 1;
+    }
+    CloseHandle(t);
+    st->child = pi.hProcess;
+    st->child_mode = st->mode;
+    snprintf(st->child_path, sizeof(st->child_path), "%s",
+             st->mode == LAUNCH_PLAY ? "" : st->replay_path);
+    SetWindowTextA(st->hLaunch, "Running...");
+    EnableWindow(st->hLaunch, FALSE);
+    return 1;
+}
+
+/* The game ended.  Come back to the front, and if it was a recording that
+ * can rank, offer it for submission. */
+static void on_child_done(HWND h, LaunchState *st){
+    ReplayHeader hd;
+    if(st->child){ CloseHandle(st->child); st->child = NULL; }
+    SetWindowTextA(st->hLaunch, "Launch");
+    if(st->child_mode == LAUNCH_RECORD && st->child_path[0]){
+        if(replay_read_header(st->child_path, &hd) == 0 && hd.have_end){
+            if(hd.state[0]){
+                snprintf(st->last_rec, sizeof(st->last_rec), "%s", st->child_path);
+            } else {
+                st->last_rec[0] = 0;
+                snprintf(st->sub_line, sizeof(st->sub_line),
+                         "Recorded without Ranked: %s cannot be submitted.",
+                         base_name(st->child_path));
+            }
+        }
+        /* The next recording gets a fresh name.  A finished session is a
+         * playthrough that cannot be reproduced, and aiming the next one at
+         * the same file would overwrite it. */
+        if(st->mode == LAUNCH_RECORD){
+            st->path_custom = 0;
+            restore_session_path(h, st, 0);
+        }
+    }
+    show_detection(h, st);
+    update_online_ui(h, st);
+    if(IsIconic(h)) ShowWindow(h, SW_RESTORE);
+    SetForegroundWindow(h);
+    if(st->last_rec[0] && IsWindowEnabled(st->hSubmit)) SetFocus(st->hSubmit);
 }
 
 static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
@@ -1253,6 +1954,14 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         CheckDlgButton(h,ID_MODE_PLAY,st->mode==LAUNCH_PLAY?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_MODE_RECORD,st->mode==LAUNCH_RECORD?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_MODE_REPLAY,st->mode==LAUNCH_REPLAY?BST_CHECKED:BST_UNCHECKED);
+        /* Ranked: record against the canonical state (docs/REPLAY.md,
+         * Ranked recordings), which is what the leaderboard accepts.  Off
+         * shows the install's own high-score table instead. */
+        st->hRanked = CreateWindowExA(0,"BUTTON","Ranked",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_GROUP|BS_AUTOCHECKBOX,
+                            290,gy+18,108,20,h,(HMENU)ID_RANKED,cs->hInstance,0);
+        SendMessageA(st->hRanked,WM_SETFONT,(WPARAM)st->hFont,0);
+        CheckDlgButton(h,ID_RANKED,st->online.ranked?BST_CHECKED:BST_UNCHECKED);
         st->hPathLabel = CreateWindowExA(0,"STATIC","File:",WS_CHILD|WS_VISIBLE,
                             24,gy+46,32,16,h,0,cs->hInstance,0);
         SendMessageA(st->hPathLabel,WM_SETFONT,(WPARAM)st->hFont,0);
@@ -1265,8 +1974,36 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
                             334,gy+44,64,22,h,(HMENU)ID_BROWSE,cs->hInstance,0);
         SendMessageA(st->hBrowse,WM_SETFONT,(WPARAM)st->hFont,0);
+        y += gh + 8;
+        /* Leaderboard (pfemu-web/docs/API.md): the account, the recording
+         * Submit would send, and the last submission's status. */
+        gy = y; gh = 96;
+        c = CreateWindowExA(0,"BUTTON","Leaderboard",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            12,gy,416,gh,h,0,cs->hInstance,0);
+        SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hAccount = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
+                            24,gy+22,206,16,h,0,cs->hInstance,0);
+        SendMessageA(st->hAccount,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hLogin = CreateWindowExA(0,"BUTTON","Log in...",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                            236,gy+18,76,22,h,(HMENU)ID_LOGIN,cs->hInstance,0);
+        SendMessageA(st->hLogin,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hSubList = CreateWindowExA(0,"BUTTON","Submissions",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                            318,gy+18,80,22,h,(HMENU)ID_SUBLIST,cs->hInstance,0);
+        SendMessageA(st->hSubList,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hSubFile = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
+                            24,gy+48,288,16,h,0,cs->hInstance,0);
+        SendMessageA(st->hSubFile,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hSubmit = CreateWindowExA(0,"BUTTON","Submit",
+                            WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                            318,gy+44,80,22,h,(HMENU)ID_SUBMIT,cs->hInstance,0);
+        SendMessageA(st->hSubmit,WM_SETFONT,(WPARAM)st->hFont,0);
+        st->hSubState = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
+                            24,gy+72,374,16,h,0,cs->hInstance,0);
+        SendMessageA(st->hSubState,WM_SETFONT,(WPARAM)st->hFont,0);
         y += gh + 12;
-        c = CreateWindowExA(0,"BUTTON","Launch",
+        st->hLaunch = c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
                             260,y,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
@@ -1320,7 +2057,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             static char text[DET_MAX*2];
             details_build(st, raw, sizeof(raw));
             det_crlf(raw, text, sizeof(text));
-            show_details(h, text);
+            show_details(h, "pfemu - details", text);
         } else if(id==ID_MODE_PLAY || id==ID_MODE_RECORD || id==ID_MODE_REPLAY){
             st->mode = (id==ID_MODE_RECORD) ? LAUNCH_RECORD :
                        (id==ID_MODE_REPLAY) ? LAUNCH_REPLAY : LAUNCH_PLAY;
@@ -1367,10 +2104,34 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             }
             if(st->mode == LAUNCH_REPLAY) replay_load_file(h, st);
             else show_detection(h, st);
+        } else if(id==ID_RANKED){
+            st->online.ranked = IsDlgButtonChecked(h,ID_RANKED)==BST_CHECKED;
+            online_save(&st->online);
+        } else if(id==ID_LOGIN){
+            if(st->online.token[0]){
+                /* Log out: end the token on the server (the answer does not
+                 * matter) and forget it here straight away. */
+                NetJob *j = net_new(NJ_LOGOUT, h, &st->online, "POST", "/api/v1/logout");
+                if(j) net_start(j);
+                st->online.token[0] = 0;
+                st->online.username[0] = 0;
+                online_save(&st->online);
+                follow(h, st, 0, 0);
+                st->sub_line[0] = 0;
+            } else if(show_login(h, st)){
+                st->sub_line[0] = 0;
+                start_list(h, st, 0);
+            }
+            update_online_ui(h, st);
+        } else if(id==ID_SUBMIT){
+            start_submit(h, st);
+        } else if(id==ID_SUBLIST){
+            start_list(h, st, 1);
         } else if(id==ID_LAUNCH){
             int i;
             const RelResult *r = cur_inst(st);
             const char *dir;
+            if(st->child) return 0;
             if(st->mode == LAUNCH_REPLAY){
                 /* No config writes in replay mode: the install's files are
                  * the session's inputs, and replay promises never to write
@@ -1385,8 +2146,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                     return 0;
                 }
                 write_session_path(cur_game_dir(st), st->replay_path);
-                st->ok = 1; st->done = 1;
-                DestroyWindow(h);
+                spawn_game(h, st);
                 return 0;
             }
             if(!release_runnable(r)) return 0;
@@ -1442,16 +2202,38 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
               if(st->mode == LAUNCH_RECORD && st->replay_path[0])
                   snprintf(c.session, sizeof(c.session), "%s", st->replay_path);
               cfg_write(dir, &c); }
-            st->ok = 1; st->done = 1;
-            DestroyWindow(h);
+            spawn_game(h, st);
         } else if(id==ID_QUIT){
-            st->ok = 0; st->done = 1;
-            DestroyWindow(h);
+            SendMessageA(h, WM_CLOSE, 0, 0);
         }
         return 0; }
     case WM_CLOSE:
+        /* The game is its own process and keeps running; say so rather than
+         * let it look as if Quit had closed it. */
+        if(st && st->child &&
+           MessageBoxA(h, "The game is still running. Close the launcher anyway?"
+                          " The game keeps running.",
+                       "pfemu", MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2) != IDYES)
+            return 0;
         if(st){ st->ok = 0; st->done = 1; }
         DestroyWindow(h);
+        return 0;
+    case WM_APP_CHILD:
+        if(st) on_child_done(h, st);
+        return 0;
+    case WM_APP_NET:
+        if(st) on_net_done(h, st, (NetJob*)l);
+        else net_free((NetJob*)l);
+        return 0;
+    case WM_TIMER:
+        if(st && w == TIMER_POLL && st->sub_id && st->sub_pending &&
+           !st->polling && st->online.token[0]){
+            char path[96];
+            NetJob *j;
+            snprintf(path, sizeof(path), "/api/v1/submissions/%lld", st->sub_id);
+            j = net_new(NJ_POLL, h, &st->online, "GET", path);
+            if(j && net_start(j)) st->polling = 1;
+        }
         return 0;
     /* Persist the dialog position.  WM_DESTROY fires on every teardown path
      * (Launch, Quit, X), so one hook here covers them all; EXITSIZEMOVE
@@ -1459,6 +2241,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
      * window was created in: mixing aware-thread geometry with this window
      * rescales the coordinates, so the save would never match the restore. */
     case WM_DESTROY:
+        KillTimer(h, TIMER_POLL);
         launch_save_pos(h);
         return 0;
     case WM_EXITSIZEMOVE:
@@ -1480,11 +2263,6 @@ static void launch_save_pos(HWND h){
         last_save_launchpos((int)rc.left, (int)rc.top);
     if(setthread) setthread(prev ? prev : (void*)(INT_PTR)-4);
 }
-
-/* The installation the last showing launched.  main() comes back here when
- * it has to refuse a launch, and the picker should reopen on what was
- * chosen rather than on the first runnable install. */
-static char last_dir[512] = "";
 
 /* Persistent memory of the last launched installation, across runs.
  * One tiny host-only file next to the exe (a file can never be mistaken
@@ -1699,22 +2477,24 @@ static int last_restore(LaunchState *st){
     return 0;
 }
 
-/* Modal launcher.  Returns 1 with *out filled when the user picks Launch,
- * 0 when they quit (caller should exit without booting).  It can be shown
- * more than once per run: a refused launch returns to it. */
-int show_launcher(LaunchChoice *out){
+/* The launcher, for as long as it is open.  Launch starts the game as a
+ * child process (spawn_game()) and the window stays; the process exits
+ * when the launcher is closed.  Returns the exit code. */
+int run_launcher(void){
     WNDCLASSEXA wc;
     HWND hwnd;
     MSG msg;
     /* static: it now carries a RelResult per installation, which is a lot of
      * report text to put on the stack for a dialog that runs once. */
     static LaunchState st;
-    int winw = 458, winh = 640;   /* Extras grew a row for "Start at",
-                                   then Enhancement added its own group */
+    int winw = 458, winh = 744;   /* Extras grew a row for "Start at",
+                                   Enhancement added its own group, and
+                                   Leaderboard another */
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     wc.cbSize = sizeof(wc);
     memset(&st,0,sizeof(st));
+    online_load(&st.online);
     /* The volume slider is a common control; without this its window class
      * is not registered and CreateWindowEx for it just returns NULL. */
     icc.dwSize = sizeof(icc);
@@ -1744,12 +2524,6 @@ int show_launcher(LaunchChoice *out){
      * PFEMU-STATE/pfemu.cfg is then what the dialog below loads, so the
      * settings come back with it. */
     last_restore(&st);
-    /* ...but a second showing (main() comes back here when a launch was
-     * refused) lands on whatever was picked last, or the user would have to
-     * find their installation again every time something is refused. */
-    if(last_dir[0]){ int i;
-      for(i=0;i<st.ninst;i++)
-          if(!_stricmp(st.inst[i].dir, last_dir)){ st.sel = i; break; } }
     if(st.ninst > 1) winh += 24;
     { const char *dir = cur_game_dir(&st);
       PfCfg c;
@@ -1842,6 +2616,9 @@ int show_launcher(LaunchChoice *out){
     if(!hwnd) return 0;
     ShowWindow(hwnd,SW_SHOW);
     UpdateWindow(hwnd);
+    /* Logged in from an earlier run: show where the last submission stands,
+     * and follow it if the service is still on it. */
+    start_list(hwnd, &st, 0);
     while(!st.done && GetMessageA(&msg,NULL,0,0)>0){
         if(!IsDialogMessageA(hwnd,&msg)){
             TranslateMessage(&msg);
@@ -1850,23 +2627,7 @@ int show_launcher(LaunchChoice *out){
     }
     UnregisterClassA("pfemu-launcher",wc.hInstance);
     if(det_registered){ UnregisterClassA("pfemu-details",wc.hInstance); det_registered = 0; }
-    if(!st.ok) return 0;
-    {   /* The boot program comes from the detected release, not from a
-         * constant: Power Pack's is PF.EXE, the other two ship PINBALL.EXE.
-         * ID_LAUNCH already refused anything not recognised. */
-        const RelResult *r = cur_inst(&st);
-        snprintf(out->dir, sizeof(out->dir), "%s", r->dir);
-        snprintf(out->prog, sizeof(out->prog), "%s",
-                 r->boot[0] ? r->boot : r->rel->boot);
-        snprintf(last_dir, sizeof(last_dir), "%s", r->dir);
-        /* Remember for next run (same dir, else same release): the next
-         * showing restores the selection above, and the per-install
-         * pfemu.cfg it loads brings the settings back with it. */
-        last_save(r);
-    }
-    out->fullscreen = st.fullscreen;
-    out->start_table = st.start_table;
-    out->mode = st.mode;
-    snprintf(out->replay_path, sizeof(out->replay_path), "%s", st.replay_path);
-    return 1;
+    if(login_registered){ UnregisterClassA("pfemu-login",wc.hInstance); login_registered = 0; }
+    if(st.child) CloseHandle(st.child);
+    return 0;
 }
