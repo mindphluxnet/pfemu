@@ -146,6 +146,10 @@ static int hash_file(const char *path, uint32_t prefix_len,
     return 0;
 }
 
+int release_hash_file(const char *path, uint8_t out[32], uint32_t *size_out){
+    return hash_file(path, 0, out, size_out);
+}
+
 static void hex32(const uint8_t d[32], char out[65]){
     static const char *x = "0123456789abcdef";
     int i;

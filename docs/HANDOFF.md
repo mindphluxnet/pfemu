@@ -141,6 +141,13 @@ compile.
      (`sublist_proc`) with Copy and a website button; the Leaderboard group
      has links to the site and to `/me`, opened only when the server is an
      http(s) address.
+   - **The Replays window** (2026-09-23, not tried by hand yet) replaced
+     Browse in play/replay mode: `show_replays()` lists `sessions\*.pfr`
+     with per-row Submit/Delete cells, matches uploads by SHA-256
+     (`release_hash_file()`), and deletes to the Recycle Bin. Submitting
+     now takes a path (`start_submit_check(h, st, path)`), and message
+     boxes about requests go to `ui_owner()` so they never re-enable the
+     launcher under a modal window.
    - **The launcher no longer closes.** Launch starts the game as a
      child process (`-nolauncher -launched ...`), the launcher waits and
      comes back to the front when the game ends, with the fresh

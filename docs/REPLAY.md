@@ -157,8 +157,9 @@ never sees this file, so a missing or edited one costs only that question.
 `run_launcher()` owns every replay-relevant setting per install. A mode row
 (`Play` / `Record` / `Replay`, plus **Ranked** for record, see Ranked
 recordings) and a file field (default
-`sessions/<install>_<date>.pfr`, `Browse...` for both modes - save dialog
-with overwrite confirm for record, open dialog for replay) turn into the
+`sessions/<install>_<date>.pfr`; `Browse...` in record mode is a save
+dialog with overwrite confirm, and in play and replay mode the same button
+is `Replays...`, the list of `sessions/*.pfr` described below) turn into the
 command line of the game it starts: this executable with `-nolauncher
 -launched -d DIR` and `-record FILE [-ranked]` or `-replay FILE`. The
 launcher stays open while that child process runs and comes back to the
@@ -181,6 +182,20 @@ window: whether the file can play and why not, the recorded session
 (events, duration, options, sound, capture hash), the recorded code vector
 compared program by program against the selected install, and that
 install's own detection report.
+
+**The Replays window** lists every `sessions/*.pfr`, newest first: its
+best rankable three-ball game per table (from the `.games` file), its
+length, and where it stands on the leaderboard. That status is matched on
+the SHA-256 of the file against `GET /api/v1/submissions`, which is how the
+server keys an upload. Each row has a **Submit** cell (a complete ranked
+recording the server does not have yet) and a **Delete** cell; Del deletes
+the selection. Delete moves the `.pfr` and its `.games` to the Recycle
+Bin, never deletes outright, and asks first, naming ranked recordings that
+were never submitted. The recording the running game is still writing is
+left alone. The pane below the list shows the selected file's header, every
+game its `.games` file claims, and its submission. **Replay** (or a double
+click) switches the launcher to replay mode with that file; **Other file...**
+is the old open dialog, for a recording kept elsewhere.
 
 **Submit asks first when an upload would change nothing.** Before it
 uploads, the launcher reads the recording's `.games` file and the player's

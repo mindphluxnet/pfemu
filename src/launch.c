@@ -97,6 +97,7 @@
  * on worker threads; both report back to the launcher window. */
 #define WM_APP_CHILD    (WM_APP + 1)   /* wParam = the game's exit code */
 #define WM_APP_NET      (WM_APP + 2)   /* lParam = the finished NetJob */
+#define WM_APP_RLSYNC   (WM_APP + 3)   /* to the Replays window: a submission moved */
 #define TIMER_POLL      1
 #define POLL_MS         10000          /* API.md: every 10 s is enough */
 
@@ -340,6 +341,7 @@ typedef struct {
     DWORD last_list;         /* GetTickCount() of the last status refresh */
     char sub_line[256];      /* what the status line says about it */
     HWND hWebLink, hMeLink;  /* the website, and the account page on it */
+    HWND hReplays;           /* the Replays window while it is open */
     HFONT hLinkFont;         /* hFont, underlined */
     int cw, ch;              /* the client size the layout needs */
 } LaunchState;
@@ -584,8 +586,11 @@ static void apply_mode_ui(HWND h, LaunchState *st){
      * that has to win, so replay owns this control. */
     if(st->hTable) EnableWindow(st->hTable, st->mode != LAUNCH_REPLAY);
     if(st->hPath) EnableWindow(st->hPath, rec);
-    if(st->hBrowse) EnableWindow(st->hBrowse, rec);
     if(st->hPathLabel) EnableWindow(st->hPathLabel, rec);
+    /* Record picks a target file; otherwise the button is the Replays
+     * window, which lists the recordings and switches to Replay for one. */
+    if(st->hBrowse) SetWindowTextA(st->hBrowse,
+                                   st->mode == LAUNCH_RECORD ? "Browse..." : "Replays...");
     if(rec){
         st->cheat_enable = 0;
         CheckDlgButton(h, ID_CHEAT_ENABLE, BST_UNCHECKED);
@@ -1305,8 +1310,16 @@ static void start_list(HWND h, LaunchState *st, int show){
     if(j) net_start(j);
 }
 
-static void start_submit(HWND h, LaunchState *st){
-    const char *why, *cand = submit_candidate(st, &why);
+/* Where a message box about a request goes: the Replays window while it is
+ * open (it is modal, and a box owned by the disabled launcher would enable
+ * the launcher again when it closes), else the launcher. */
+static HWND ui_owner(const LaunchState *st, HWND h){
+    return st->hReplays ? st->hReplays : h;
+}
+
+/* Upload one recording.  cand is the file; the Submit button passes
+ * submit_candidate(), the Replays window the row that was clicked. */
+static void start_submit(HWND h, LaunchState *st, const char *cand){
     NetJob *j;
     FILE *f;
     long len;
@@ -1318,7 +1331,7 @@ static void start_submit(HWND h, LaunchState *st){
     /* The bytes exactly as pfemu wrote them: the file is hashed over its raw
      * disk bytes, so "rb" and nothing in between. */
     f = fopen(cand, "rb");
-    if(!f){ net_free(j); MessageBoxA(h, "The recording cannot be read.", "pfemu",
+    if(!f){ net_free(j); MessageBoxA(ui_owner(st, h), "The recording cannot be read.", "pfemu",
                                      MB_OK|MB_ICONEXCLAMATION); return; }
     fseek(f, 0, SEEK_END);
     len = ftell(f);
@@ -1326,7 +1339,7 @@ static void start_submit(HWND h, LaunchState *st){
     if(len <= 0 || len > 16L * 1024 * 1024){
         fclose(f);
         net_free(j);
-        MessageBoxA(h, "The recording is empty or far too large to upload.", "pfemu",
+        MessageBoxA(ui_owner(st, h), "The recording is empty or far too large to upload.", "pfemu",
                     MB_OK|MB_ICONEXCLAMATION);
         return;
     }
@@ -1367,34 +1380,33 @@ static int read_claims(const char *pfr, long long best[5]){
     return 1;
 }
 
-static void start_submit_check(HWND h, LaunchState *st){
-    const char *why, *cand = submit_candidate(st, &why);
+static void start_submit_check(HWND h, LaunchState *st, const char *cand){
     long long claim[5];
     NetJob *j;
     if(!cand || st->submitting || !st->online.token[0]) return;
-    if(!read_claims(cand, claim)){ start_submit(h, st); return; }
+    if(!read_claims(cand, claim)){ start_submit(h, st, cand); return; }
     j = net_new(NJ_ME, h, &st->online, "GET", "/api/v1/me");
-    if(!j){ start_submit(h, st); return; }
+    if(!j){ start_submit(h, st, cand); return; }
     snprintf(j->file, sizeof(j->file), "%s", cand);
     st->submitting = 1;
     update_online_ui(h, st);
-    if(!net_start(j)){ st->submitting = 0; start_submit(h, st); }
+    if(!net_start(j)){ st->submitting = 0; start_submit(h, st, cand); }
 }
 
 /* The answer to start_submit_check(): upload, or ask first.  A tie does not
  * beat a best, because on a board the earlier of two equal scores stays. */
 static void submit_after_check(HWND h, LaunchState *st, const NetJob *j){
     const char *s = j->r.body, *e = j->r.body + j->r.len, *as, *ae, *o, *oe;
-    const char *why, *cand = submit_candidate(st, &why);
+    const char *cand = j->file;
     long long claim[5], mine[5];
     char box[900], a[32], b[32];
     size_t k = 0;
     int t, any = 0, beats = 0;
     st->submitting = 0;
-    /* No answer, or no longer the recording that was checked: upload, and
-     * let the server say what it thinks. */
-    if(j->r.status != 200 || !cand || strcmp(cand, j->file) || !read_claims(cand, claim)){
-        start_submit(h, st);
+    /* No answer, or no claims to hold against it: upload, and let the
+     * server say what it thinks. */
+    if(j->r.status != 200 || !read_claims(cand, claim)){
+        start_submit(h, st, cand);
         return;
     }
     for(t = 0; t < 5; t++) mine[t] = -1;
@@ -1410,7 +1422,7 @@ static void submit_after_check(HWND h, LaunchState *st, const NetJob *j){
         any = 1;
         if(claim[t] > mine[t]) beats = 1;
     }
-    if(beats){ start_submit(h, st); return; }
+    if(beats){ start_submit(h, st, cand); return; }
     if(!any)
         k += (size_t)snprintf(box + k, sizeof(box) - k,
                               "pfemu counted no finished three-ball game in this"
@@ -1432,9 +1444,9 @@ static void submit_after_check(HWND h, LaunchState *st, const NetJob *j){
                  "\nEvery upload is verified in turn, so one that changes nothing"
                  " only makes the queue longer for everybody.\n\nSubmit anyway?");
     update_online_ui(h, st);
-    if(MessageBoxA(h, box, "pfemu - submit",
+    if(MessageBoxA(ui_owner(st, h), box, "pfemu - submit",
                    MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2) == IDYES)
-        start_submit(h, st);
+        start_submit(h, st, cand);
 }
 
 /* A page of the website in the player's browser.  Only a web address is
@@ -1810,11 +1822,11 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
                          " to a new pfemu build, and the result below updates then."
                          "\n\n%s", id, st->sub_line);
                 update_online_ui(h, st);
-                MessageBoxA(h, box, "pfemu - submit", MB_OK|MB_ICONINFORMATION);
+                MessageBoxA(ui_owner(st, h), box, "pfemu - submit", MB_OK|MB_ICONINFORMATION);
             }
         } else {
             resp_message(&j->r, msg, sizeof(msg));
-            MessageBoxA(h, msg, "pfemu - submit", MB_OK|MB_ICONEXCLAMATION);
+            MessageBoxA(ui_owner(st, h), msg, "pfemu - submit", MB_OK|MB_ICONEXCLAMATION);
         }
         break;
     case NJ_POLL:
@@ -1863,6 +1875,7 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
     }
     net_free(j);
     update_online_ui(h, st);
+    if(st->hReplays) PostMessageA(st->hReplays, WM_APP_RLSYNC, 0, 0);
 }
 
 /* ------------------------------------------------------------ login window */
@@ -2059,6 +2072,782 @@ static int show_login(HWND owner, LaunchState *st){
     EnableWindow(owner, TRUE);
     SetActiveWindow(owner);
     return d.ok;
+}
+
+/* ----------------------------------------------------------- replays window
+ *
+ * Every recording in sessions\, newest first: what it holds, where it stands
+ * on the leaderboard, and on each row Submit and Delete.  It took Browse's
+ * place for picking a replay; Other file... is there for one kept elsewhere.
+ *
+ * Where a recording stands comes from GET /api/v1/submissions, matched on
+ * the SHA-256 of the file's bytes, which is what the server keeps an upload
+ * under.  Delete goes to the Recycle Bin: a recording is a playthrough that
+ * cannot be made again, and one click in a list is easy to get wrong. */
+#define ID_RL_LIST     500
+#define ID_RL_DETAIL   501
+#define ID_RL_OTHER    502
+#define RL_DIR         "sessions"
+
+enum { RC_FILE, RC_WHEN, RC_SCORES, RC_LENGTH, RC_BOARD, RC_SUBMIT, RC_DELETE, RC_COLS };
+static const char *rl_titles[RC_COLS] = {
+    "Recording", "Recorded", "Best 3-ball games", "Length", "Leaderboard", "", ""
+};
+static const int rl_widths[RC_COLS] = { 190, 104, 210, 56, 230, 56, 56 };
+
+typedef struct {
+    char path[MAX_PATH];     /* sessions\<name>.pfr, as record mode names it */
+    FILETIME mtime;
+    DWORD size;
+    ReplayHeader hd;
+    int hd_ok;
+    long long best[5];       /* read_claims() */
+    int have_games;
+    uint8_t sha[32];
+    int have_sha;
+    long sub_s, sub_e;       /* its object in RlState.subs, -1 when none */
+    int kind;                /* SL_*: how its Leaderboard cell is coloured */
+    int uploading;           /* its Submit was clicked, no answer yet */
+} RlItem;
+
+typedef struct {
+    LaunchState *st;
+    HWND hwnd, owner, hList, hDetail, hCount, hOther, hReplay, hClose;
+    HFONT hUi, hMono, hLink;
+    WNDPROC list_proc;       /* the list view's own, under rl_list_sub */
+    RlItem *it;
+    int n;
+    char *subs;              /* the last GET /api/v1/submissions body */
+    size_t nsubs;
+    int listing;             /* that request is out */
+    char picked[MAX_PATH];   /* the file to replay, "" when none was picked */
+    int done;
+} RlState;
+static int replays_registered = 0;
+
+static int rl_ends_pfr(const char *name){
+    size_t l = strlen(name);
+    return l > 4 && !_stricmp(name + l - 4, ".pfr");
+}
+
+static int rl_cmp(const void *a, const void *b){
+    return CompareFileTime(&((const RlItem*)b)->mtime, &((const RlItem*)a)->mtime);
+}
+
+static void rl_scan(RlState *d){
+    WIN32_FIND_DATAA fd;
+    HANDLE f = FindFirstFileA(RL_DIR "\\*.pfr", &fd);
+    int cap = 0;
+    free(d->it);
+    d->it = NULL;
+    d->n = 0;
+    if(f == INVALID_HANDLE_VALUE) return;
+    do {
+        RlItem *x;
+        /* "*.pfr" also matches through 8.3 short names; the name decides. */
+        if((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !rl_ends_pfr(fd.cFileName))
+            continue;
+        if(d->n == cap){
+            int nc = cap ? cap * 2 : 32;
+            RlItem *ni = (RlItem*)realloc(d->it, (size_t)nc * sizeof(*ni));
+            if(!ni) break;
+            d->it = ni;
+            cap = nc;
+        }
+        x = &d->it[d->n];
+        memset(x, 0, sizeof(*x));
+        snprintf(x->path, sizeof(x->path), RL_DIR "\\%s", fd.cFileName);
+        x->mtime = fd.ftLastWriteTime;
+        x->size = fd.nFileSizeLow;
+        x->hd_ok = replay_read_header(x->path, &x->hd) == 0;
+        x->have_games = read_claims(x->path, x->best);
+        x->sub_s = x->sub_e = -1;
+        d->n++;
+    } while(FindNextFileA(f, &fd));
+    FindClose(f);
+    if(d->n > 1) qsort(d->it, (size_t)d->n, sizeof(*d->it), rl_cmp);
+}
+
+/* The running game's own recording: still being written, so hands off. */
+static int rl_busy(const RlState *d, const RlItem *x){
+    return d->st->child && d->st->child_mode == LAUNCH_RECORD &&
+           !_stricmp(d->st->child_path, x->path);
+}
+
+/* A complete ranked recording that the server does not have yet. */
+static int rl_can_submit(const RlState *d, const RlItem *x){
+    return x->hd_ok && x->hd.state[0] && x->hd.have_end && x->sub_s < 0 &&
+           !rl_busy(d, x);
+}
+
+/* Each recording against the submissions answer, by hash. */
+static void rl_match(RlState *d){
+    const char *e, *p = NULL, *oe;
+    int i;
+    for(i = 0; i < d->n; i++) d->it[i].sub_s = d->it[i].sub_e = -1;
+    if(!d->subs) return;
+    e = d->subs + d->nsubs;
+    if(!json_arr(d->subs, e, "submissions", &p, &e)) return;
+    for(i = 0; i < d->n; i++){
+        RlItem *x = &d->it[i];
+        if(!x->have_sha && !rl_busy(d, x))
+            x->have_sha = release_hash_file(x->path, x->sha, NULL) == 0;
+    }
+    while((p = json_next_obj(p, e, &oe)) != NULL){
+        char hx[80] = "", mine[65];
+        json_str(p, oe, "sha256", hx, sizeof(hx));
+        /* Newest first, so the first object that matches is the one. */
+        for(i = 0; hx[0] && i < d->n; i++){
+            RlItem *x = &d->it[i];
+            if(!x->have_sha || x->sub_s >= 0) continue;
+            det_hex32(x->sha, mine);
+            if(!_stricmp(hx, mine)){
+                x->sub_s = (long)(p - d->subs);
+                x->sub_e = (long)(oe - d->subs);
+            }
+        }
+        p = oe;
+    }
+}
+
+static void rl_when(const FILETIME *ft, char *out, size_t n){
+    FILETIME lt;
+    SYSTEMTIME t;
+    if(!FileTimeToLocalFileTime(ft, &lt) || !FileTimeToSystemTime(&lt, &t)){
+        snprintf(out, n, "?");
+        return;
+    }
+    snprintf(out, n, "%04d-%02d-%02d %02d:%02d", t.wYear, t.wMonth, t.wDay,
+             t.wHour, t.wMinute);
+}
+
+static void rl_cells(RlState *d, RlItem *x, char c[RC_COLS][SL_CELL]){
+    static char sub[SL_COLS][SL_CELL];
+    const LaunchState *st = d->st;
+    const char *b = base_name(x->path);
+    size_t k = 0;
+    int t, i;
+    for(i = 0; i < RC_COLS; i++) c[i][0] = 0;
+    snprintf(c[RC_FILE], SL_CELL, "%.*s", (int)strlen(b) - 4, b);
+    rl_when(&x->mtime, c[RC_WHEN], SL_CELL);
+    if(x->have_games){
+        for(t = 1; t <= 4 && k < SL_CELL; t++){
+            char sc[32];
+            if(x->best[t] < 0) continue;
+            fmt_score(x->best[t], sc, sizeof(sc));
+            k += (size_t)snprintf(c[RC_SCORES] + k, SL_CELL - k, "%s%s %s",
+                                  k ? ", " : "", sc, table_name(t));
+        }
+        if(!k) snprintf(c[RC_SCORES], SL_CELL, "none finished");
+    }
+    if(x->hd_ok && x->hd.have_end){
+        int s = (int)(x->hd.end_emu + 0.5);
+        snprintf(c[RC_LENGTH], SL_CELL, "%d:%02d", s / 60, s % 60);
+    }
+    x->kind = SL_PLAIN;
+    if(rl_busy(d, x)) snprintf(c[RC_BOARD], SL_CELL, "being recorded");
+    else if(!x->hd_ok) snprintf(c[RC_BOARD], SL_CELL, "not a readable recording");
+    else if(!x->hd.state[0]) snprintf(c[RC_BOARD], SL_CELL, "not ranked");
+    else if(!x->hd.have_end) snprintf(c[RC_BOARD], SL_CELL, "incomplete");
+    else if(x->uploading && st->submitting) snprintf(c[RC_BOARD], SL_CELL, "uploading...");
+    else if(x->sub_s >= 0){
+        long long id = 0;
+        const char *s = d->subs + x->sub_s, *e = d->subs + x->sub_e;
+        x->kind = sl_row(s, e, sub);
+        json_num(s, e, "id", &id);
+        snprintf(c[RC_BOARD], SL_CELL, "#%lld %s", id,
+                 x->kind == SL_PENDING ? sub[2] : sub[4]);
+    }
+    else if(!st->online.token[0]) snprintf(c[RC_BOARD], SL_CELL, "log in to submit");
+    else if(!d->subs) snprintf(c[RC_BOARD], SL_CELL, "asking the server...");
+    else snprintf(c[RC_BOARD], SL_CELL, "not submitted");
+    if(rl_can_submit(d, x) && !(x->uploading && st->submitting))
+        snprintf(c[RC_SUBMIT], SL_CELL, "Submit");
+    if(!rl_busy(d, x)) snprintf(c[RC_DELETE], SL_CELL, "Delete");
+}
+
+/* Rows are it[] in order; lParam is the index for custom draw. */
+static void rl_fill(RlState *d, const char *select){
+    static char c[RC_COLS][SL_CELL];
+    char line[96];
+    int i, k, sel = d->n ? 0 : -1;
+    SendMessageA(d->hList, WM_SETREDRAW, FALSE, 0);
+    SendMessageA(d->hList, LVM_DELETEALLITEMS, 0, 0);
+    for(i = 0; i < d->n; i++){
+        LVITEMA it;
+        rl_cells(d, &d->it[i], c);
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_TEXT|LVIF_PARAM;
+        it.iItem = i;
+        it.pszText = c[0];
+        it.lParam = i;
+        if(SendMessageA(d->hList, LVM_INSERTITEMA, 0, (LPARAM)&it) < 0) break;
+        for(k = 1; k < RC_COLS; k++){
+            it.mask = LVIF_TEXT;
+            it.iSubItem = k;
+            it.pszText = c[k];
+            SendMessageA(d->hList, LVM_SETITEMTEXTA, (WPARAM)i, (LPARAM)&it);
+        }
+        if(select && select[0] && !_stricmp(d->it[i].path, select)) sel = i;
+    }
+    if(sel >= 0){
+        LVITEMA it;
+        memset(&it, 0, sizeof(it));
+        it.stateMask = it.state = LVIS_SELECTED|LVIS_FOCUSED;
+        SendMessageA(d->hList, LVM_SETITEMSTATE, (WPARAM)sel, (LPARAM)&it);
+        SendMessageA(d->hList, LVM_ENSUREVISIBLE, (WPARAM)sel, FALSE);
+    }
+    SendMessageA(d->hList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(d->hList, NULL, TRUE);
+    if(!d->n) snprintf(line, sizeof(line), "No recordings in " RL_DIR "\\ yet.");
+    else snprintf(line, sizeof(line), "%d recording%s in " RL_DIR "\\", d->n,
+                  d->n == 1 ? "" : "s");
+    SetWindowTextA(d->hCount, line);
+}
+
+/* New answers, same rows: only the texts change, so the selection stays. */
+static void rl_refresh(RlState *d){
+    static char c[RC_COLS][SL_CELL];
+    int i, k;
+    for(i = 0; i < d->n; i++){
+        rl_cells(d, &d->it[i], c);
+        for(k = 0; k < RC_COLS; k++){
+            LVITEMA it;
+            memset(&it, 0, sizeof(it));
+            it.iSubItem = k;
+            it.pszText = c[k];
+            SendMessageA(d->hList, LVM_SETITEMTEXTA, (WPARAM)i, (LPARAM)&it);
+        }
+    }
+}
+
+static int rl_selected(const RlState *d){
+    int i = (int)SendMessageA(d->hList, LVM_GETNEXTITEM, (WPARAM)-1, LVNI_FOCUSED);
+    if(i < 0 || i >= d->n || !SendMessageA(d->hList, LVM_GETITEMSTATE, (WPARAM)i, LVIS_SELECTED))
+        i = (int)SendMessageA(d->hList, LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED);
+    return i >= 0 && i < d->n ? i : -1;
+}
+
+/* Everything known about the selected recording, in the Details idiom. */
+static void rl_detail(RlState *d){
+    static char raw[8192], text[16384];
+    const LaunchState *st = d->st;
+    int i = rl_selected(d);
+    RlItem *x;
+    char buf[256], sz[32];
+    raw[0] = 0;
+    EnableWindow(d->hReplay, i >= 0 && d->it[i].hd_ok && d->it[i].hd.have_end &&
+                 !rl_busy(d, &d->it[i]));
+    if(i < 0){
+        SetWindowTextA(d->hDetail, d->n ? "Pick a recording to see what it holds." : "");
+        return;
+    }
+    x = &d->it[i];
+    fmt_score((long long)x->size, sz, sizeof(sz));
+    det_kv(raw, sizeof(raw), "File", "%s, %s bytes", x->path, sz);
+    rl_when(&x->mtime, buf, sizeof(buf));
+    det_kv(raw, sizeof(raw), "Recorded", "%s", buf);
+    if(!x->hd_ok){
+        det_kv(raw, sizeof(raw), "", "Not a readable recording.");
+    } else {
+        const ReplayHeader *h = &x->hd;
+        det_kv(raw, sizeof(raw), "Release", "%s - %s", h->release_id, h->summary);
+        det_kv(raw, sizeof(raw), "Starts at", "%s", (h->start_table >= 1 && h->start_table <= 4)
+               ? table_labels[h->start_table] : "the table menu");
+        if(rl_busy(d, x)) det_kv(raw, sizeof(raw), "Session", "being recorded");
+        else if(h->have_end)
+            det_kv(raw, sizeof(raw), "Session", "%d events, %.1f s", h->nevents, h->end_emu);
+        else det_kv(raw, sizeof(raw), "Session", "incomplete - the recording has no end");
+        det_kv(raw, sizeof(raw), "Ranked", "%s", h->state[0]
+               ? "yes, recorded against the canonical state"
+               : "no, recorded with the player's own high-score tables");
+    }
+    /* Every game the recording claims, not just the best per table. */
+    { char path[600], line[128];
+      FILE *f;
+      int any = 0;
+      snprintf(path, sizeof(path), "%s.games", x->path);
+      f = fopen(path, "r");
+      while(f && fgets(line, sizeof(line), f)){
+          int t, balls, rankable;
+          unsigned long long g;
+          char sc[32];
+          if(line[0] == '#' || sscanf(line, "%d %d %d %llu", &t, &balls, &rankable, &g) != 4)
+              continue;
+          fmt_score((long long)g, sc, sizeof(sc));
+          det_kv(raw, sizeof(raw), any ? "" : "Games", "%-18s %d balls %14s%s",
+                 table_name(t), balls, sc,
+                 !rankable ? "  not a finished one-player game" :
+                 balls != RANKED_BALLS ? "  only 3-ball games rank" : "");
+          any = 1;
+      }
+      if(f) fclose(f);
+      if(!any) det_kv(raw, sizeof(raw), "Games", "%s", x->have_games
+                      ? "none finished" : "not counted (no .games file beside it)"); }
+    if(x->sub_s >= 0){
+        int pending = 0;
+        sub_describe(d->subs + x->sub_s, d->subs + x->sub_e, buf, sizeof(buf), &pending);
+        det_kv(raw, sizeof(raw), "Leaderboard", "%s", buf);
+    } else if(x->hd_ok && x->hd.state[0] && x->hd.have_end && !rl_busy(d, x)){
+        det_kv(raw, sizeof(raw), "Leaderboard", "%s",
+               !st->online.token[0] ? "Log in to submit it and see its result." :
+               !d->subs ? "Asking the server..." : "Not submitted yet.");
+    }
+    det_crlf(raw, text, sizeof(text));
+    SetWindowTextA(d->hDetail, text);
+}
+
+static void rl_request(RlState *d){
+    NetJob *j;
+    if(d->listing || !d->st->online.token[0]) return;
+    j = net_new(NJ_LIST, d->hwnd, &d->st->online, "GET", "/api/v1/submissions");
+    if(j && net_start(j)) d->listing = 1;
+}
+
+/* Same file?  Record mode names files relative, a picked one is absolute. */
+static int rl_same_file(const char *a, const char *b){
+    char fa[MAX_PATH], fb[MAX_PATH];
+    if(!a[0] || !b[0]) return 0;
+    if(!GetFullPathNameA(a, sizeof(fa), fa, NULL) || !GetFullPathNameA(b, sizeof(fb), fb, NULL))
+        return !_stricmp(a, b);
+    return !_stricmp(fa, fb);
+}
+
+static void rl_submit(RlState *d, int i){
+    LaunchState *st = d->st;
+    RlItem *x = &d->it[i];
+    if(!rl_can_submit(d, x)) return;
+    if(!st->online.token[0]){
+        if(!show_login(d->hwnd, st)) return;
+        st->sub_line[0] = 0;
+        start_list(d->owner, st, 0);
+        update_online_ui(d->owner, st);
+        rl_request(d);
+    }
+    if(st->submitting){
+        MessageBoxA(d->hwnd, "Another upload is still on its way. Try again when it is done.",
+                    "pfemu - submit", MB_OK|MB_ICONINFORMATION);
+        return;
+    }
+    x->uploading = 1;
+    start_submit_check(d->owner, st, x->path);
+    rl_refresh(d);
+}
+
+/* Row one, or every selected row when one is -1. */
+static void rl_delete(RlState *d, int one){
+    LaunchState *st = d->st;
+    int *rows, nr = 0, unsent = 0, i;
+    char *from, box[600], sel_path[MAX_PATH] = "";
+    size_t k = 0, cap;
+    SHFILEOPSTRUCTA op;
+    rows = (int*)malloc(sizeof(int) * (size_t)(d->n ? d->n : 1));
+    if(!rows) return;
+    if(one >= 0) rows[nr++] = one;
+    else for(i = -1; (i = (int)SendMessageA(d->hList, LVM_GETNEXTITEM, (WPARAM)i,
+                                            LVNI_SELECTED)) >= 0 && i < d->n; )
+        if(!rl_busy(d, &d->it[i])) rows[nr++] = i;
+    if(!nr){ free(rows); return; }
+    for(i = 0; i < nr; i++)
+        if(rl_can_submit(d, &d->it[rows[i]])) unsent++;
+    if(nr == 1)
+        snprintf(box, sizeof(box), "Move %s to the Recycle Bin?%s",
+                 base_name(d->it[rows[0]].path),
+                 unsent ? "\n\nIt is a ranked recording that was never submitted." : "");
+    else
+        snprintf(box, sizeof(box), "Move %d recordings to the Recycle Bin?", nr);
+    if(nr > 1 && unsent)
+        snprintf(box + strlen(box), sizeof(box) - strlen(box),
+                 "\n\n%d of them %s ranked and never submitted.", unsent,
+                 unsent == 1 ? "is" : "are");
+    if(MessageBoxA(d->hwnd, box, "pfemu - delete",
+                   MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2) != IDYES){ free(rows); return; }
+    /* Full paths, double-NUL terminated: the Recycle Bin wants absolute
+     * paths, and a relative one is deleted outright instead. */
+    cap = (size_t)nr * 2 * MAX_PATH + 2;
+    from = (char*)calloc(1, cap);
+    if(!from){ free(rows); return; }
+    for(i = 0; i < nr; i++){
+        const char *p = d->it[rows[i]].path;
+        char games[MAX_PATH];
+        DWORD a;
+        a = GetFullPathNameA(p, MAX_PATH, from + k, NULL);
+        if(!a || a >= MAX_PATH) continue;
+        k += a + 1;
+        snprintf(games, sizeof(games), "%s.games", p);
+        if(GetFileAttributesA(games) != INVALID_FILE_ATTRIBUTES){
+            a = GetFullPathNameA(games, MAX_PATH, from + k, NULL);
+            if(a && a < MAX_PATH) k += a + 1;
+        }
+        /* The launcher must not keep pointing at a file that is gone. */
+        if(rl_same_file(p, st->last_rec)) st->last_rec[0] = 0;
+        if(rl_same_file(p, st->replay_path)){
+            st->replay_path[0] = 0;
+            if(st->hPath){
+                st->updating_path = 1;
+                SetWindowTextA(st->hPath, "");
+                st->updating_path = 0;
+            }
+            if(st->mode == LAUNCH_REPLAY) replay_load_file(d->owner, st);
+        }
+    }
+    memset(&op, 0, sizeof(op));
+    op.hwnd = d->hwnd;
+    op.wFunc = FO_DELETE;
+    op.pFrom = from;
+    op.fFlags = FOF_ALLOWUNDO|FOF_NOCONFIRMATION|FOF_SILENT;
+    if(k && SHFileOperationA(&op) != 0)
+        MessageBoxA(d->hwnd, "Not every recording could be moved to the Recycle Bin.",
+                    "pfemu - delete", MB_OK|MB_ICONEXCLAMATION);
+    free(from);
+    /* Keep the place in the list: the row after the first deleted one. */
+    { int after = rows[0];
+      for(i = 0; i < nr; i++) if(rows[i] < after) after = rows[i];
+      for(i = after; i < d->n; i++){
+          int j, gone = 0;
+          for(j = 0; j < nr; j++) if(rows[j] == i) gone = 1;
+          if(!gone){ snprintf(sel_path, sizeof(sel_path), "%s", d->it[i].path); break; }
+      } }
+    free(rows);
+    rl_scan(d);
+    rl_match(d);
+    rl_fill(d, sel_path);
+    rl_detail(d);
+    update_online_ui(d->owner, st);
+}
+
+/* Which action cell is under the cursor: 1 Submit, 2 Delete, 0 none. */
+static int rl_hit(RlState *d, int *row){
+    LVHITTESTINFO ht;
+    POINT pt;
+    memset(&ht, 0, sizeof(ht));
+    if(!GetCursorPos(&pt)) return 0;
+    ScreenToClient(d->hList, &pt);
+    ht.pt = pt;
+    if(SendMessageA(d->hList, LVM_SUBITEMHITTEST, 0, (LPARAM)&ht) < 0) return 0;
+    if(ht.iItem < 0 || ht.iItem >= d->n) return 0;
+    if(row) *row = ht.iItem;
+    if(ht.iSubItem == RC_SUBMIT && rl_can_submit(d, &d->it[ht.iItem]) &&
+       !(d->it[ht.iItem].uploading && d->st->submitting)) return 1;
+    if(ht.iSubItem == RC_DELETE && !rl_busy(d, &d->it[ht.iItem])) return 2;
+    return 0;
+}
+
+/* The list view, subclassed for one thing: the hand over an action cell. */
+static LRESULT CALLBACK rl_list_sub(HWND h, UINT m, WPARAM w, LPARAM l){
+    RlState *d = (RlState*)(INT_PTR)GetWindowLongPtrA(GetParent(h), GWLP_USERDATA);
+    if(m == WM_SETCURSOR && d && LOWORD(l) == HTCLIENT && rl_hit(d, NULL)){
+        SetCursor(LoadCursor(NULL, IDC_HAND));
+        return TRUE;
+    }
+    return d && d->list_proc ? CallWindowProcA(d->list_proc, h, m, w, l)
+                             : DefWindowProcA(h, m, w, l);
+}
+
+/* Other file...: a recording kept anywhere, picked the old way. */
+static void rl_other(RlState *d){
+    OPENFILENAMEA ofn;
+    char file[MAX_PATH];
+    memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = d->hwnd;
+    ofn.lpstrFilter = "Pinball replays (*.pfr)\0*.pfr\0All files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    snprintf(file, sizeof(file), "%s", d->st->replay_path);
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = (DWORD)sizeof(file);
+    ofn.lpstrDefExt = "pfr";
+    /* OFN_NOCHANGEDIR is load-bearing: install directories are relative to
+     * the process CWD, and so is sessions\ (see ID_BROWSE). */
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+    if(!GetOpenFileNameA(&ofn)) return;
+    snprintf(d->picked, sizeof(d->picked), "%s", file);
+    SendMessageA(d->hwnd, WM_CLOSE, 0, 0);
+}
+
+static void rl_pick(RlState *d){
+    int i = rl_selected(d);
+    if(i < 0 || !IsWindowEnabled(d->hReplay)) return;
+    snprintf(d->picked, sizeof(d->picked), "%s", d->it[i].path);
+    SendMessageA(d->hwnd, WM_CLOSE, 0, 0);
+}
+
+static LRESULT CALLBACK replays_proc(HWND h, UINT m, WPARAM w, LPARAM l){
+    RlState *d = (RlState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
+    switch(m){
+    case WM_CREATE: {
+        CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
+        HDC dc;
+        int i, dpi;
+        d = (RlState*)cs->lpCreateParams;
+        d->hwnd = h;
+        SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)d);
+        dc = GetDC(NULL);
+        dpi = GetDeviceCaps(dc, LOGPIXELSY);
+        ReleaseDC(NULL, dc);
+        d->hList = CreateWindowExA(WS_EX_CLIENTEDGE, "SysListView32", "",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP|LVS_REPORT|LVS_SHOWSELALWAYS|
+                        LVS_NOSORTHEADER,
+                        0,0,10,10,h,(HMENU)ID_RL_LIST,cs->hInstance,0);
+        SendMessageA(d->hList, WM_SETFONT, (WPARAM)d->hUi, 0);
+        SendMessageA(d->hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
+                     LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES);
+        for(i = 0; i < RC_COLS; i++){
+            LVCOLUMNA c;
+            memset(&c, 0, sizeof(c));
+            c.mask = LVCF_TEXT|LVCF_FMT|LVCF_WIDTH|LVCF_SUBITEM;
+            c.fmt = (i == RC_LENGTH) ? LVCFMT_RIGHT : LVCFMT_LEFT;
+            c.cx = MulDiv(rl_widths[i], dpi, 96);
+            c.pszText = (char*)rl_titles[i];
+            c.iSubItem = i;
+            SendMessageA(d->hList, LVM_INSERTCOLUMNA, (WPARAM)i, (LPARAM)&c);
+        }
+        d->list_proc = (WNDPROC)(INT_PTR)SetWindowLongPtrA(d->hList, GWLP_WNDPROC,
+                                                          (LONG_PTR)rl_list_sub);
+        d->hDetail = CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT","",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|
+                        ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL,
+                        0,0,10,10,h,(HMENU)ID_RL_DETAIL,cs->hInstance,0);
+        SendMessageA(d->hDetail, WM_SETFONT, (WPARAM)d->hMono, 0);
+        d->hCount = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
+                        0,0,10,10,h,0,cs->hInstance,0);
+        SendMessageA(d->hCount, WM_SETFONT, (WPARAM)d->hUi, 0);
+        d->hOther = CreateWindowExA(0,"BUTTON","Other file...",WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                        0,0,10,10,h,(HMENU)ID_RL_OTHER,cs->hInstance,0);
+        SendMessageA(d->hOther, WM_SETFONT, (WPARAM)d->hUi, 0);
+        d->hReplay = CreateWindowExA(0,"BUTTON","Replay",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
+                        0,0,10,10,h,(HMENU)IDOK,cs->hInstance,0);
+        SendMessageA(d->hReplay, WM_SETFONT, (WPARAM)d->hUi, 0);
+        d->hClose = CreateWindowExA(0,"BUTTON","Close",WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                        0,0,10,10,h,(HMENU)IDCANCEL,cs->hInstance,0);
+        SendMessageA(d->hClose, WM_SETFONT, (WPARAM)d->hUi, 0);
+        rl_scan(d);
+        rl_fill(d, d->st->replay_path);
+        rl_detail(d);
+        rl_request(d);
+        return 0; }
+    case WM_SIZE: {
+        int cw = LOWORD(l), ch = HIWORD(l);
+        int pad = 10, bw = 88, bh = 26, by = ch - pad - bh, dh = 150;
+        if(!d) return 0;
+        MoveWindow(d->hList, pad, pad, cw-2*pad, ch-4*pad-bh-dh, TRUE);
+        MoveWindow(d->hDetail, pad, ch-2*pad-bh-dh, cw-2*pad, dh, TRUE);
+        MoveWindow(d->hCount, pad, by + 6, cw-2*pad-3*bw-24, 16, TRUE);
+        MoveWindow(d->hOther, cw-pad-3*bw-16, by, bw, bh, TRUE);
+        MoveWindow(d->hReplay, cw-pad-2*bw-8, by, bw, bh, TRUE);
+        MoveWindow(d->hClose, cw-pad-bw, by, bw, bh, TRUE);
+        return 0; }
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO *mm = (MINMAXINFO*)l;
+        mm->ptMinTrackSize.x = 560;
+        mm->ptMinTrackSize.y = 380;
+        return 0; }
+    case WM_CTLCOLORSTATIC:
+        if(d && (HWND)l == d->hDetail){
+            SetBkColor((HDC)w, GetSysColor(COLOR_WINDOW));
+            SetTextColor((HDC)w, GetSysColor(COLOR_WINDOWTEXT));
+            return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        }
+        break;
+    case WM_NOTIFY: {
+        NMHDR *nh = (NMHDR*)l;
+        if(!d || nh->hwndFrom != d->hList) break;
+        switch(nh->code){
+        case NM_CUSTOMDRAW: {
+            NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW*)l;
+            int row = (int)cd->nmcd.lItemlParam;
+            if(cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+            if(cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) return CDRF_NOTIFYSUBITEMDRAW;
+            if(cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT|CDDS_SUBITEM)){
+                /* The action cells look like links; Leaderboard is green
+                 * when it counts and grey while it waits.  Every other
+                 * cell is set back, since the colour carries over. */
+                HFONT f = d->hUi;
+                cd->clrText = GetSysColor(COLOR_WINDOWTEXT);
+                if(cd->iSubItem == RC_SUBMIT || cd->iSubItem == RC_DELETE){
+                    cd->clrText = RGB(0, 102, 204);
+                    f = d->hLink;
+                } else if(cd->iSubItem == RC_BOARD && row >= 0 && row < d->n){
+                    if(d->it[row].kind == SL_COUNTS) cd->clrText = RGB(0, 120, 40);
+                    else if(d->it[row].kind == SL_PENDING)
+                        cd->clrText = GetSysColor(COLOR_GRAYTEXT);
+                }
+                SelectObject(cd->nmcd.hdc, f);
+                return CDRF_NEWFONT;
+            }
+            return CDRF_DODEFAULT; }
+        case NM_CLICK: {
+            int row = -1, what = rl_hit(d, &row);
+            if(what == 1) rl_submit(d, row);
+            else if(what == 2) rl_delete(d, row);
+            return 0; }
+        case NM_DBLCLK:
+            if(!rl_hit(d, NULL)) rl_pick(d);
+            return 0;
+        case LVN_ITEMCHANGED: {
+            NMLISTVIEW *lv = (NMLISTVIEW*)l;
+            if((lv->uChanged & LVIF_STATE) &&
+               ((lv->uNewState ^ lv->uOldState) & (LVIS_SELECTED|LVIS_FOCUSED)))
+                rl_detail(d);
+            return 0; }
+        case LVN_KEYDOWN:
+            if(((NMLVKEYDOWN*)l)->wVKey == VK_DELETE) rl_delete(d, -1);
+            return 0;
+        }
+        break; }
+    case WM_APP_NET: {
+        NetJob *j = (NetJob*)l;
+        if(d && j->kind == NJ_LIST){
+            d->listing = 0;
+            if(j->r.status == 200 && j->r.body){
+                char *copy = (char*)malloc(j->r.len + 1);
+                if(copy){
+                    memcpy(copy, j->r.body, j->r.len);
+                    copy[j->r.len] = 0;
+                    free(d->subs);
+                    d->subs = copy;
+                    d->nsubs = j->r.len;
+                    rl_match(d);
+                    rl_refresh(d);
+                    rl_detail(d);
+                }
+            }
+        }
+        net_free(j);
+        return 0; }
+    /* The launcher saw an upload, a poll or a list come back. */
+    case WM_APP_RLSYNC:
+        if(d){
+            int i;
+            if(!d->st->submitting)
+                for(i = 0; i < d->n; i++) d->it[i].uploading = 0;
+            rl_request(d);
+            rl_refresh(d);
+            rl_detail(d);
+        }
+        return 0;
+    case WM_SETFOCUS:
+        if(d && d->hList) SetFocus(d->hList);
+        return 0;
+    case WM_COMMAND:
+        if(!d) return 0;
+        switch(LOWORD(w)){
+        case ID_RL_OTHER: rl_other(d); return 0;
+        case IDOK:        rl_pick(d); return 0;
+        case IDCANCEL:    SendMessageA(h, WM_CLOSE, 0, 0); return 0;
+        }
+        return 0;
+    case WM_CLOSE:
+        if(d){
+            d->done = 1;
+            if(d->owner) EnableWindow(d->owner, TRUE);
+        }
+        DestroyWindow(h);
+        return 0;
+    }
+    return DefWindowProcA(h, m, w, l);
+}
+
+/* Modal, like Details.  A recording picked for replay lands in the Session
+ * group, switched to Replay. */
+static void show_replays(HWND owner, LaunchState *st){
+    RlState d;
+    MSG msg;
+    HINSTANCE hinst = GetModuleHandleA(NULL);
+    DWORD style = WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME;
+    RECT ro, rc;
+    int winw, winh, x, y, i, sum = 0, dpi, maxw;
+    HWND hwnd;
+    HDC dc;
+    LOGFONTA lf;
+    memset(&d, 0, sizeof(d));
+    d.st = st;
+    d.owner = owner;
+    d.hUi = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    dc = GetDC(NULL);
+    dpi = GetDeviceCaps(dc, LOGPIXELSY);
+    d.hMono = CreateFontA(-MulDiv(9, dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                          DEFAULT_QUALITY, FIXED_PITCH|FF_MODERN, "Consolas");
+    ReleaseDC(NULL, dc);
+    if(GetObjectA(d.hUi, sizeof(lf), &lf)){
+        lf.lfUnderline = TRUE;
+        d.hLink = CreateFontIndirectA(&lf);
+    }
+    if(!d.hLink) d.hLink = d.hUi;
+    if(!replays_registered){
+        WNDCLASSEXA wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = replays_proc;
+        wc.hInstance = hinst;
+        wc.lpszClassName = "pfemu-replays";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+        wc.hIcon = LoadIcon(hinst, MAKEINTRESOURCE(IDI_PFEMU));
+        wc.hIconSm = (HICON)LoadImage(hinst, MAKEINTRESOURCE(IDI_PFEMU),
+                                      IMAGE_ICON, 16, 16, 0);
+        if(RegisterClassExA(&wc)) replays_registered = 1;
+    }
+    hwnd = replays_registered
+         ? CreateWindowExA(0, "pfemu-replays", "pfemu - replays", style,
+                           0, 0, 800, 560, owner, NULL, hinst, &d)
+         : NULL;
+    if(hwnd){
+        for(i = 0; i < RC_COLS; i++)
+            sum += (int)SendMessageA(d.hList, LVM_GETCOLUMNWIDTH, (WPARAM)i, 0);
+        rc.left = 0; rc.top = 0;
+        rc.right = sum + GetSystemMetrics(SM_CXVSCROLL) + 4*GetSystemMetrics(SM_CXEDGE) + 20;
+        rc.bottom = MulDiv(540, dpi, 96);
+        AdjustWindowRect(&rc, style, FALSE);
+        winw = rc.right - rc.left;
+        winh = rc.bottom - rc.top;
+        maxw = GetSystemMetrics(SM_CXSCREEN) * 9 / 10;
+        if(winw > maxw) winw = maxw;
+        if(owner && GetWindowRect(owner, &ro)){
+            x = (int)ro.left + ((int)(ro.right-ro.left) - winw)/2;
+            y = (int)ro.top + ((int)(ro.bottom-ro.top) - winh)/2;
+        } else {
+            x = (GetSystemMetrics(SM_CXSCREEN)-winw)/2;
+            y = (GetSystemMetrics(SM_CYSCREEN)-winh)/2;
+        }
+        if(x < 0) x = 0;
+        if(y < 0) y = 0;
+        SetWindowPos(hwnd, NULL, x, y, winw, winh, SWP_NOZORDER|SWP_NOACTIVATE);
+        st->hReplays = hwnd;
+        EnableWindow(owner, FALSE);
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+        SetFocus(d.hList);
+        while(!d.done && GetMessageA(&msg, NULL, 0, 0) > 0){
+            if(!IsDialogMessageA(hwnd, &msg)){
+                TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+        }
+        st->hReplays = NULL;
+        EnableWindow(owner, TRUE);
+        SetActiveWindow(owner);
+    }
+    free(d.it);
+    free(d.subs);
+    if(d.hLink != d.hUi) DeleteObject(d.hLink);
+    DeleteObject(d.hMono);
+    if(d.picked[0]){
+        snprintf(st->replay_path, sizeof(st->replay_path), "%s", d.picked);
+        st->path_custom = 1;
+        if(st->mode != LAUNCH_REPLAY){
+            st->mode = LAUNCH_REPLAY;
+            apply_mode_ui(owner, st);   /* keeps the path: path_custom */
+        }
+        if(st->hPath){
+            st->updating_path = 1;
+            SetWindowTextA(st->hPath, st->replay_path);
+            st->updating_path = 0;
+        }
+        replay_load_file(owner, st);
+    }
 }
 
 /* ------------------------------------------------------------- the game
@@ -2586,6 +3375,8 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             st->mode = (id==ID_MODE_RECORD) ? LAUNCH_RECORD :
                        (id==ID_MODE_REPLAY) ? LAUNCH_REPLAY : LAUNCH_PLAY;
             apply_mode_ui(h, st);
+        } else if(id==ID_BROWSE && st->mode != LAUNCH_RECORD){
+            show_replays(h, st);
         } else if(id==ID_BROWSE){
             OPENFILENAMEA ofn;
             char file[512];
@@ -2604,13 +3395,8 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
              * the moment main() runs detection - a replay picked from
              * anywhere but here then "quits on Launch" with only a stderr
              * message nobody can see. */
-            if(st->mode == LAUNCH_REPLAY){
-                ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
-                if(!GetOpenFileNameA(&ofn)) return 0;
-            } else {
-                ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
-                if(!GetSaveFileNameA(&ofn)) return 0;
-            }
+            ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+            if(!GetSaveFileNameA(&ofn)) return 0;
             snprintf(st->replay_path, sizeof(st->replay_path), "%s", file);
             st->path_custom = 1;
             if(st->hPath){
@@ -2618,8 +3404,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                 SetWindowTextA(st->hPath, st->replay_path);
                 st->updating_path = 0;
             }
-            if(st->mode == LAUNCH_REPLAY) replay_load_file(h, st);
-            else show_detection(h, st);
+            show_detection(h, st);
         } else if(id==ID_REPLAY_PATH && HIWORD(w)==EN_CHANGE){
             if(st->updating_path) return 0;
             if(st->hPath){
@@ -2648,7 +3433,8 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             }
             update_online_ui(h, st);
         } else if(id==ID_SUBMIT){
-            start_submit_check(h, st);
+            const char *why;
+            start_submit_check(h, st, submit_candidate(st, &why));
         } else if(id==ID_SUBLIST){
             start_list(h, st, 1);
         } else if(id==ID_WEBLINK && HIWORD(w)==STN_CLICKED){
@@ -3191,6 +3977,7 @@ int run_launcher(void){
     if(det_registered){ UnregisterClassA("pfemu-details",wc.hInstance); det_registered = 0; }
     if(login_registered){ UnregisterClassA("pfemu-login",wc.hInstance); login_registered = 0; }
     if(sublist_registered){ UnregisterClassA("pfemu-submissions",wc.hInstance); sublist_registered = 0; }
+    if(replays_registered){ UnregisterClassA("pfemu-replays",wc.hInstance); replays_registered = 0; }
     if(st.child) CloseHandle(st.child);
     return 0;
 }

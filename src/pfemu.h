@@ -263,6 +263,9 @@ int  release_prog_slot(const Release *r, const char *base);
 int  release_detect(const char *dir, RelResult *out);
 int  release_scan(RelResult *out, int max);   /* GAME first, then any install */
 int  release_runnable(const RelResult *r);
+/* SHA-256 of a whole file, as the detector hashes programs.  The launcher
+ * uses it to find a recording among the leaderboard's submissions. */
+int  release_hash_file(const char *path, uint8_t out[32], uint32_t *size_out);
 const char *release_state_name(RelState s);
 const Release *release_by_id(const char *id);
 const Release *release_at(int i);

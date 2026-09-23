@@ -222,7 +222,12 @@ Unticked, recording works as before but the file cannot be submitted.
 The **Leaderboard** group logs in to the leaderboard server, or registers an
 account (the email is optional, but without one a forgotten password cannot
 be recovered). After a ranked recording ends, **Submit** uploads it; in
-Replay mode it uploads the picked ranked file. The server replays the game
+Replay mode it uploads the picked ranked file. **Replays...** (next to the
+file field, except in Record mode) lists your recordings with their best
+games, their length and where each stands on the leaderboard, with
+**Submit** and **Delete** on every row. Delete moves a recording to the
+Recycle Bin. **Replay** there switches the launcher to replaying the one
+you picked. The server replays the game
 itself and the launcher shows the result when it has one, usually a minute
 or two for a five-minute game. **Submissions** lists everything you sent,
 one row each, and **Copy** puts the table on the clipboard. **Leaderboards**
