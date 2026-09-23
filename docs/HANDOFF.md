@@ -74,8 +74,27 @@ compile.
 | `-strict -unthrottle -verify` together | **Verified** through the service, on the Mac Mini under bwrap: the Party Land vector came back `verified` and `rankable` at 20,652,570, build `3f9b265d674c` from a clean clone, 78.2 s wall for 295.6 s emulated (3.8x). The install was mounted read-only, so the replay needs no write access to it |
 | `-ffp-contract=off` is *necessary* | **Not demonstrated.** A justified precaution: `-ffp-contract=fast` emitted 50 FMAs and changed nothing |
 | Big-endian correctness | **Untested.** The memory helpers are host-endian, like the puns they replaced |
+| A replay is independent of the verifier's `PFEMU-STATE/` | **False, measured 2026-09-23.** Party Land vector, Deluxe: with `table1.hi` as recorded it verifies at 20,652,570. With every entry at 99,999,999 it mismatches, and the attempt ends at 175.3 s with 17,128,800. With the file missing it mismatches at 7,125,000. Same inputs, a different game. `replay.c` only warns when the overlay hash differs |
 
 ## What to do next, in order
+
+0. **Make a ranked recording independent of the player's local state.
+   This blocks the service from going live.** The replay sees the
+   operator's `PFEMU-STATE/`, the recording saw the player's, and the high
+   scores alone change the game (table above). Two ways out, and the
+   choice is a design decision, not yet taken:
+   - **A canonical state for ranked play.** Record with an isolated,
+     factory-fresh overlay: default high scores, a fixed `SOUND.CFG`, the
+     recorded options patched in, as replay already does. The validator
+     replays against the same state and refuses any `.pfr` whose
+     `overlay:` hash is not the canonical one, which a header check can
+     do. It is simple and cannot be manipulated, but the player's own
+     high-score table does not show during a ranked game.
+   - **Carry the state in the `.pfr`.** Embed the small files the guest
+     reads (`*.hi`, `*.CFG`), and have the replay rebuild the overlay from
+     them. The player keeps their own table, at the price of a format
+     change, a larger parser surface, and a hi-score table the player
+     chooses.
 
 1. **The service** lives in `pfemu-service` and `pfemu-web`; their HANDOFFs
    have the order. From this repository they need two things:
