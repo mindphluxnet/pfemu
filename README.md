@@ -327,3 +327,12 @@ Do not use it to force an unknown build to start.
 - [Archive format](docs/ARCHIVE.md): the floppy installer format and the
   extractor.
 - [Replay](docs/REPLAY.md): session recording, accuracy, and validation.
+
+## Legal
+
+pfemu is a fan-made community project. It is not affiliated with, sponsored,
+endorsed or approved by Rebellion or any other rights holder of Pinball
+Fantasies. Pinball Fantasies and all related names are the property of their
+respective owners.
+
+pfemu contains no game files. To play, you need your own copy of the game.
