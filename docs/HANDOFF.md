@@ -7,11 +7,19 @@ is the short version plus what to do next.
 
 ## Where things stand
 
-**The service has started, in its own repository**: `pfemu-service`, next
-to this checkout, Python on the Mac Mini. The reasons are in its
-`docs/HANDOFF.md`. The short version: the two meet only at the `-verify`
-object and the exit code, and the service pins which pfemu build it runs.
-That repository has its own handoff. This one covers the emulator side.
+**The leaderboard is three repositories.** They sit side by side in
+`source/`, and each has its own handoff:
+
+- **pfemu** (this one): the emulator, and `-verify`.
+- **pfemu-service**: the validator. It runs on the Mac Mini, is reachable
+  only from the web server, and turns a `.pfr` into facts.
+- **pfemu-web**: accounts, launcher uploads, the kept recordings, the
+  ranking policy and the boards. It runs on another server in the LAN and
+  is the only public part.
+
+This repository meets the other two only at the `-verify` object and the
+exit code, and the validator pins which pfemu build it runs. This file
+covers the emulator side.
 
 The work done before it is finished:
 
@@ -69,12 +77,17 @@ compile.
 
 ## What to do next, in order
 
-1. **The service** lives in `pfemu-service` now; its HANDOFF has the order.
-   What it needs from this repository is to leave things alone: the
-   `-verify` object is an interface, so add fields, never rename or
-   remove them, and bump `pfemu_verify` if that ever has to happen. Push
-   before the Mac Mini builds, because it pins a commit that has to exist
-   on `origin`.
+1. **The service** lives in `pfemu-service` and `pfemu-web`; their HANDOFFs
+   have the order. From this repository they need two things:
+   - **Leave the `-verify` object alone.** It is an interface: add fields,
+     never rename or remove them, and bump `pfemu_verify` if that ever has
+     to happen. Push before the Mac Mini builds, because it pins a commit
+     that has to exist on `origin`.
+   - **The launcher upload**, once both services are deployed: log in or
+     register, keep the token, upload a recording, poll it, and show the
+     result. This is C in `launch.c` over WinHTTP. Its contract is
+     `pfemu-web/docs/API.md`, which also has a table of what to tell the
+     player for each `reason`.
 
 2. **A real fuzzing campaign, before the service takes uploads from
    strangers.** This is the only item on the list with a deadline attached.
