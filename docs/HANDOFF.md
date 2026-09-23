@@ -134,6 +134,13 @@ compile.
      lists every table a submission ranked on (pfemu-web ranks each table
      of a session since `179c5b2`) and the queue position while it waits.
      Record mode now logs the `[score]` lines too.
+   - **The launcher is two columns now** (2026-09-23, not tried by hand
+     yet): Game across the top, Sound / Audio enhancement / Game options
+     on the left, Extras / Session / Leaderboard on the right, the window
+     sized from the layout in `WM_CREATE`. Submissions is a list view
+     (`sublist_proc`) with Copy and a website button; the Leaderboard group
+     has links to the site and to `/me`, opened only when the server is an
+     http(s) address.
    - **The launcher no longer closes.** Launch starts the game as a
      child process (`-nolauncher -launched ...`), the launcher waits and
      comes back to the front when the game ends, with the fresh

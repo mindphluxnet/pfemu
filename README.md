@@ -224,7 +224,10 @@ account (the email is optional, but without one a forgotten password cannot
 be recovered). After a ranked recording ends, **Submit** uploads it; in
 Replay mode it uploads the picked ranked file. The server replays the game
 itself and the launcher shows the result when it has one, usually a minute
-or two for a five-minute game. **Submissions** lists everything you sent.
+or two for a five-minute game. **Submissions** lists everything you sent,
+one row each, and **Copy** puts the table on the clipboard. The server's
+name under the buttons opens the website with the boards, and **My account**
+opens your account page there (the website asks you to log in separately).
 Only a finished one-player 3-ball game that ran until the table was back in
 attract mode counts. Each result names the pfemu build that produced it.
 Sending the same recording again does not verify it again: the server

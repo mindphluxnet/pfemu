@@ -38,6 +38,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include "pfemu.h"
@@ -89,6 +90,8 @@
 #define ID_LOGIN        136
 #define ID_SUBMIT       137
 #define ID_SUBLIST      138
+#define ID_WEBLINK      139
+#define ID_MELINK       140
 
 /* The game runs in a child process (see spawn_game()), and network calls
  * on worker threads; both report back to the launcher window. */
@@ -336,6 +339,9 @@ typedef struct {
     int  sub_pending;        /* ...and it is not done yet */
     DWORD last_list;         /* GetTickCount() of the last status refresh */
     char sub_line[256];      /* what the status line says about it */
+    HWND hWebLink, hMeLink;  /* the website, and the account page on it */
+    HFONT hLinkFont;         /* hFont, underlined */
+    int cw, ch;              /* the client size the layout needs */
 } LaunchState;
 
 static void set_vol_label(LaunchState *st){
@@ -1011,8 +1017,7 @@ static LRESULT CALLBACK details_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     return DefWindowProcA(h,m,w,l);
 }
 
-/* Modal report window, owned by and centred on the launcher.  Also shows
- * the submission list, which is the same kind of text. */
+/* Modal report window, owned by and centred on the launcher. */
 static void show_details(HWND owner, const char *title, const char *text){
     DetState d;
     MSG msg;
@@ -1255,6 +1260,9 @@ static void update_online_ui(HWND h, LaunchState *st){
     else snprintf(line, sizeof(line), "Not logged in");
     SetWindowTextA(st->hAccount, line);
     SetWindowTextA(st->hLogin, logged ? "Log out" : "Log in...");
+    /* The website keeps its own login, so the account page would work
+     * either way; offering it is only sensible once there is an account. */
+    if(st->hMeLink) ShowWindow(st->hMeLink, logged ? SW_SHOW : SW_HIDE);
     EnableWindow(st->hSubList, logged);
     EnableWindow(st->hSubmit, logged && cand && !st->submitting);
     if(st->submitting) snprintf(line, sizeof(line), "Uploading...");
@@ -1429,54 +1437,341 @@ static void submit_after_check(HWND h, LaunchState *st, const NetJob *j){
         start_submit(h, st);
 }
 
-/* The Submissions window: the same fixed-pitch report window as Details. */
-static void show_submission_list(HWND h, const HttpResp *r){
-    static char raw[DET_MAX], text[DET_MAX*2];
-    const char *e = r->body + r->len, *p, *oe;
-    size_t k = 0;
-    int count = 0;
-    k += (size_t)snprintf(raw + k, sizeof(raw) - k,
-                          "%5s  %-16s  %-8s  %12s  %-12s  %-16s  %s\n%s%s\n",
-                          "#", "Received (UTC)", "State", "Score", "Build",
-                          "Verified (UTC)", "Result", DET_RULE, DET_RULE);
-    p = NULL;
-    { const char *s = r->body, *v;
-      /* The array after "submissions": walk its objects in order. */
-      for(v = s; v && v < e; v++) if(*v == '[') { p = v + 1; break; } }
-    while(p && (p = json_next_obj(p, e, &oe)) != NULL && k + 200 < sizeof(raw)){
-        long long id = 0, score = 0;
-        char recv[40] = "", state[24] = "", reason[96] = "", sc[32] = "";
-        char build[40] = "", fin[40] = "";
-        const char *rs, *re;
-        int rankable = 0, have_result;
-        json_num(p, oe, "id", &id);
-        json_str(p, oe, "received_at", recv, sizeof(recv));
-        json_str(p, oe, "state", state, sizeof(state));
-        if(recv[10] == 'T') recv[10] = ' ';
-        recv[16] = 0;
-        have_result = json_obj(p, oe, "result", &rs, &re);
-        if(have_result){
-            json_bool(rs, re, "rankable", &rankable);
-            json_str(rs, re, "reason", reason, sizeof(reason));
-            json_str(rs, re, "build", build, sizeof(build));
-            json_str(rs, re, "finished_at", fin, sizeof(fin));
-            if(fin[10] == 'T') fin[10] = ' ';
-            fin[16] = 0;
-            if(json_num(rs, re, "score", &score)) fmt_score(score, sc, sizeof(sc));
+/* A page of the website in the player's browser.  Only a web address is
+ * handed to the shell: the server comes from pfemu-online.cfg, and
+ * ShellExecute would just as happily run a program named there. */
+static void open_web(HWND h, const char *server, const char *path){
+    char url[400];
+    if(_strnicmp(server, "https://", 8) && _strnicmp(server, "http://", 7)){
+        MessageBoxA(h, "The leaderboard server in pfemu-online.cfg is not a web address.",
+                    "pfemu", MB_OK|MB_ICONEXCLAMATION);
+        return;
+    }
+    snprintf(url, sizeof(url), "%s%s", server, path);
+    if((INT_PTR)ShellExecuteA(h, "open", url, NULL, NULL, SW_SHOWNORMAL) <= 32)
+        MessageBoxA(h, "No web browser could be started.", "pfemu", MB_OK|MB_ICONEXCLAMATION);
+}
+
+/* ------------------------------------------------------ submissions window
+ *
+ * One row per upload, newest first, the way GET /api/v1/submissions sends
+ * them.  This used to be the Details window's fixed-pitch text, where every
+ * column was a printf width and a long result pushed the rest off the line;
+ * a list view keeps the columns apart whatever is in them.  Copy puts the
+ * table on the clipboard tab-separated, which pastes as a table too. */
+#define ID_SL_LIST   400
+#define ID_SL_COPY   401
+#define ID_SL_WEB    402
+#define SL_COLS      7
+#define SL_CELL      200
+
+/* A row's lParam: how custom draw colours it. */
+enum { SL_PLAIN, SL_COUNTS, SL_PENDING };
+
+static const char *sl_titles[SL_COLS] = {
+    "#", "Received (UTC)", "State", "Score", "Result", "Verified (UTC)", "Build"
+};
+
+typedef struct {
+    const HttpResp *r;
+    const char *server;
+    HWND owner, hList, hCount, hCopy, hWeb, hClose;
+    HFONT hUi;
+    int done;
+} SubListState;
+static int sublist_registered = 0;
+
+/* "2026-09-23T10:00:00+00:00" -> "2026-09-23 10:00". */
+static void sl_time(char *t){
+    if(strlen(t) < 16) return;
+    if(t[10] == 'T') t[10] = ' ';
+    t[16] = 0;
+}
+
+/* One submission object as the table's cells.  Returns the row's colour. */
+static int sl_row(const char *p, const char *oe, char col[SL_COLS][SL_CELL]){
+    long long id = 0, qp = 0, score = 0;
+    char state[24] = "", reason[96] = "", sc[32];
+    const char *rs, *re, *as, *ae, *o, *ge;
+    int rankable = 0, have_result, done, i;
+    for(i = 0; i < SL_COLS; i++) col[i][0] = 0;
+    json_num(p, oe, "id", &id);
+    snprintf(col[0], SL_CELL, "%lld", id);
+    json_str(p, oe, "received_at", col[1], SL_CELL);
+    sl_time(col[1]);
+    json_str(p, oe, "state", state, sizeof(state));
+    done = !strcmp(state, "done");
+    have_result = json_obj(p, oe, "result", &rs, &re);
+    if(done) snprintf(col[2], SL_CELL, "done");
+    else {
+        /* The same words as the status line (sub_describe). */
+        json_num(p, oe, "queue_position", &qp);
+        snprintf(col[2], SL_CELL, "%s", have_result ? "verifying again" :
+                 !strcmp(state, "queued") || qp > 1 ? "queued" : "verifying");
+        if(qp > 1)
+            snprintf(col[2] + strlen(col[2]), SL_CELL - strlen(col[2]),
+                     " (position %lld)", qp);
+    }
+    if(!have_result) return SL_PENDING;
+    json_bool(rs, re, "rankable", &rankable);
+    json_str(rs, re, "reason", reason, sizeof(reason));
+    json_str(rs, re, "finished_at", col[5], SL_CELL);
+    sl_time(col[5]);
+    json_str(rs, re, "build", col[6], SL_CELL);
+    /* Every table the session ranked on, else the one-line summary. */
+    if(rankable && json_arr(rs, re, "games", &as, &ae)){
+        size_t k = 0;
+        for(o = as; (o = json_next_obj(o, ae, &ge)) != NULL && k < SL_CELL; o = ge){
+            long long t = 0, g = 0;
+            if(!json_num(o, ge, "table", &t) || !json_num(o, ge, "score", &g)) continue;
+            fmt_score(g, sc, sizeof(sc));
+            k += (size_t)snprintf(col[3] + k, SL_CELL - k, "%s%s %s",
+                                  k ? ", " : "", sc, table_name(t));
         }
-        /* Not done but with a result: the previous round's answer, shown
-         * as such while the server verifies it again. */
-        k += (size_t)snprintf(raw + k, sizeof(raw) - k,
-                              "%5lld  %-16s  %-8s  %12s  %-12.12s  %-16s  %s%s\n",
-                              id, recv, state, sc, build, fin,
-                              (have_result && strcmp(state, "done")) ? "previous: " : "",
-                              have_result ? online_reason_text(reason) : "");
+    }
+    if(!col[3][0] && json_num(rs, re, "score", &score) && score > 0)
+        fmt_score(score, col[3], SL_CELL);
+    /* Not done but with a result: the previous round's answer, shown as
+     * such while the server verifies it again. */
+    snprintf(col[4], SL_CELL, "%s%s", done ? "" : "previous: ",
+             online_reason_text(reason));
+    return !done ? SL_PENDING : rankable ? SL_COUNTS : SL_PLAIN;
+}
+
+static void sl_fill(SubListState *d){
+    const HttpResp *r = d->r;
+    const char *e = r->body + r->len, *p = NULL, *oe;
+    static char col[SL_COLS][SL_CELL];
+    char line[64];
+    int count = 0, i;
+    if(!json_arr(r->body, e, "submissions", &p, &e)) p = NULL;
+    while(p && (p = json_next_obj(p, e, &oe)) != NULL){
+        LVITEMA it;
+        int kind = sl_row(p, oe, col);
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_TEXT|LVIF_PARAM;
+        it.iItem = count;
+        it.pszText = col[0];
+        it.lParam = kind;
+        if(SendMessageA(d->hList, LVM_INSERTITEMA, 0, (LPARAM)&it) < 0) break;
+        for(i = 1; i < SL_COLS; i++){
+            it.mask = LVIF_TEXT;
+            it.iSubItem = i;
+            it.pszText = col[i];
+            SendMessageA(d->hList, LVM_SETITEMTEXTA, (WPARAM)count, (LPARAM)&it);
+        }
         count++;
         p = oe;
     }
-    if(!count) snprintf(raw + k, sizeof(raw) - k, "No submissions yet.\n");
-    det_crlf(raw, text, sizeof(text));
-    show_details(h, "pfemu - submissions", text);
+    if(!count) snprintf(line, sizeof(line), "No submissions yet.");
+    else snprintf(line, sizeof(line), "%d submission%s", count, count == 1 ? "" : "s");
+    SetWindowTextA(d->hCount, line);
+    /* Each column as wide as its widest cell or its title, whichever wins. */
+    for(i = 0; i < SL_COLS; i++){
+        int wc, wh = (int)SendMessageA(d->hList, LVM_GETSTRINGWIDTHA, 0,
+                                       (LPARAM)sl_titles[i]) + 16;
+        SendMessageA(d->hList, LVM_SETCOLUMNWIDTH, (WPARAM)i, LVSCW_AUTOSIZE);
+        wc = (int)SendMessageA(d->hList, LVM_GETCOLUMNWIDTH, (WPARAM)i, 0);
+        if(wc < wh) SendMessageA(d->hList, LVM_SETCOLUMNWIDTH, (WPARAM)i, wh);
+    }
+}
+
+/* The whole table as tab-separated text, title row first. */
+static void sl_copy(HWND h, SubListState *d){
+    int rows = (int)SendMessageA(d->hList, LVM_GETITEMCOUNT, 0, 0), r, i;
+    size_t cap = (size_t)(rows + 1) * SL_COLS * SL_CELL + 1, k = 0;
+    HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, cap);
+    char *out = g ? (char*)GlobalLock(g) : NULL;
+    if(!out){ if(g) GlobalFree(g); return; }
+    for(i = 0; i < SL_COLS; i++)
+        k += (size_t)snprintf(out + k, cap - k, "%s%s", sl_titles[i],
+                              i + 1 < SL_COLS ? "\t" : "\r\n");
+    for(r = 0; r < rows; r++)
+        for(i = 0; i < SL_COLS; i++){
+            char cell[SL_CELL];
+            LVITEMA it;
+            memset(&it, 0, sizeof(it));
+            it.iSubItem = i;
+            it.pszText = cell;
+            it.cchTextMax = (int)sizeof(cell);
+            cell[0] = 0;
+            SendMessageA(d->hList, LVM_GETITEMTEXTA, (WPARAM)r, (LPARAM)&it);
+            k += (size_t)snprintf(out + k, cap - k, "%s%s", cell,
+                                  i + 1 < SL_COLS ? "\t" : "\r\n");
+        }
+    GlobalUnlock(g);
+    if(OpenClipboard(h)){
+        EmptyClipboard();
+        if(SetClipboardData(CF_TEXT, g)) g = NULL;   /* the clipboard owns it now */
+        CloseClipboard();
+    }
+    if(g) GlobalFree(g);
+    SetWindowTextA(d->hCopy, "Copied");
+}
+
+static LRESULT CALLBACK sublist_proc(HWND h, UINT m, WPARAM w, LPARAM l){
+    SubListState *d = (SubListState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
+    switch(m){
+    case WM_CREATE: {
+        CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
+        int i;
+        d = (SubListState*)cs->lpCreateParams;
+        SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)d);
+        d->hList = CreateWindowExA(WS_EX_CLIENTEDGE, "SysListView32", "",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP|LVS_REPORT|LVS_SHOWSELALWAYS|
+                        LVS_NOSORTHEADER,
+                        0,0,10,10,h,(HMENU)ID_SL_LIST,cs->hInstance,0);
+        SendMessageA(d->hList, WM_SETFONT, (WPARAM)d->hUi, 0);
+        SendMessageA(d->hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
+                     LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES);
+        for(i = 0; i < SL_COLS; i++){
+            LVCOLUMNA c;
+            memset(&c, 0, sizeof(c));
+            c.mask = LVCF_TEXT|LVCF_FMT|LVCF_WIDTH|LVCF_SUBITEM;
+            c.fmt = LVCFMT_LEFT;
+            c.cx = 60;
+            c.pszText = (char*)sl_titles[i];
+            c.iSubItem = i;
+            SendMessageA(d->hList, LVM_INSERTCOLUMNA, (WPARAM)i, (LPARAM)&c);
+        }
+        d->hCount = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
+                        0,0,10,10,h,0,cs->hInstance,0);
+        SendMessageA(d->hCount, WM_SETFONT, (WPARAM)d->hUi, 0);
+        d->hCopy = CreateWindowExA(0,"BUTTON","Copy",WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                        0,0,10,10,h,(HMENU)ID_SL_COPY,cs->hInstance,0);
+        SendMessageA(d->hCopy, WM_SETFONT, (WPARAM)d->hUi, 0);
+        d->hWeb = CreateWindowExA(0,"BUTTON","Open on the website",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP,
+                        0,0,10,10,h,(HMENU)ID_SL_WEB,cs->hInstance,0);
+        SendMessageA(d->hWeb, WM_SETFONT, (WPARAM)d->hUi, 0);
+        d->hClose = CreateWindowExA(0,"BUTTON","Close",
+                        WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
+                        0,0,10,10,h,(HMENU)IDCANCEL,cs->hInstance,0);
+        SendMessageA(d->hClose, WM_SETFONT, (WPARAM)d->hUi, 0);
+        sl_fill(d);
+        return 0; }
+    case WM_SIZE: {
+        int cw = LOWORD(l), ch = HIWORD(l);
+        int pad = 10, bw = 88, ww = 132, bh = 26, by = ch - pad - bh;
+        if(!d) return 0;
+        MoveWindow(d->hList, pad, pad, cw-2*pad, ch-3*pad-bh, TRUE);
+        MoveWindow(d->hCount, pad, by + 6, cw-2*pad-2*bw-ww-16, 16, TRUE);
+        MoveWindow(d->hCopy, cw-pad-2*bw-ww-16, by, bw, bh, TRUE);
+        MoveWindow(d->hWeb, cw-pad-bw-ww-8, by, ww, bh, TRUE);
+        MoveWindow(d->hClose, cw-pad-bw, by, bw, bh, TRUE);
+        return 0; }
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO *mm = (MINMAXINFO*)l;
+        mm->ptMinTrackSize.x = 480;
+        mm->ptMinTrackSize.y = 220;
+        return 0; }
+    /* Rows that count in green, the ones still waiting in grey.  Custom
+     * draw is in every comctl32 this runs on; no version 6 manifest. */
+    case WM_NOTIFY: {
+        NMHDR *nh = (NMHDR*)l;
+        if(d && nh->hwndFrom == d->hList && nh->code == NM_CUSTOMDRAW){
+            NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW*)l;
+            if(cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+            if(cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT){
+                if(cd->nmcd.lItemlParam == SL_COUNTS) cd->clrText = RGB(0, 120, 40);
+                else if(cd->nmcd.lItemlParam == SL_PENDING)
+                    cd->clrText = GetSysColor(COLOR_GRAYTEXT);
+            }
+            return CDRF_DODEFAULT;
+        }
+        break; }
+    case WM_SETFOCUS:
+        if(d && d->hList) SetFocus(d->hList);
+        return 0;
+    case WM_COMMAND:
+        if(!d) return 0;
+        switch(LOWORD(w)){
+        case ID_SL_COPY: sl_copy(h, d); SetFocus(d->hList); return 0;
+        case ID_SL_WEB:  open_web(h, d->server, "/me/submissions"); return 0;
+        case IDOK: case IDCANCEL: SendMessageA(h, WM_CLOSE, 0, 0); return 0;
+        }
+        return 0;
+    case WM_CLOSE:
+        if(d){
+            d->done = 1;
+            if(d->owner) EnableWindow(d->owner, TRUE);
+        }
+        DestroyWindow(h);
+        return 0;
+    }
+    return DefWindowProcA(h, m, w, l);
+}
+
+/* Modal, like Details, and as wide as the columns need, up to the screen. */
+static void show_submission_list(HWND owner, const char *server, const HttpResp *r){
+    SubListState d;
+    MSG msg;
+    HINSTANCE hinst = GetModuleHandleA(NULL);
+    DWORD style = WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME;
+    RECT ro, rc;
+    int winw, winh, x, y, i, sum = 0, dpi, maxw;
+    HWND hwnd;
+    HDC dc;
+    memset(&d, 0, sizeof(d));
+    d.r = r;
+    d.server = server;
+    d.owner = owner;
+    d.hUi = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    if(!sublist_registered){
+        WNDCLASSEXA wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = sublist_proc;
+        wc.hInstance = hinst;
+        wc.lpszClassName = "pfemu-submissions";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE+1);
+        wc.hIcon = LoadIcon(hinst, MAKEINTRESOURCE(IDI_PFEMU));
+        wc.hIconSm = (HICON)LoadImage(hinst, MAKEINTRESOURCE(IDI_PFEMU),
+                                      IMAGE_ICON, 16, 16, 0);
+        if(!RegisterClassExA(&wc)) return;
+        sublist_registered = 1;
+    }
+    /* Born hidden: its width is the columns', known once the rows are in. */
+    hwnd = CreateWindowExA(0, "pfemu-submissions", "pfemu - submissions", style,
+                           0, 0, 600, 400, owner, NULL, hinst, &d);
+    if(!hwnd) return;
+    for(i = 0; i < SL_COLS; i++)
+        sum += (int)SendMessageA(d.hList, LVM_GETCOLUMNWIDTH, (WPARAM)i, 0);
+    dc = GetDC(NULL);
+    dpi = GetDeviceCaps(dc, LOGPIXELSY);
+    ReleaseDC(NULL, dc);
+    rc.left = 0; rc.top = 0;
+    rc.right = sum + GetSystemMetrics(SM_CXVSCROLL) + 4*GetSystemMetrics(SM_CXEDGE) + 20;
+    rc.bottom = MulDiv(400, dpi, 96);
+    AdjustWindowRect(&rc, style, FALSE);
+    winw = rc.right - rc.left;
+    winh = rc.bottom - rc.top;
+    maxw = GetSystemMetrics(SM_CXSCREEN) * 9 / 10;
+    if(winw > maxw) winw = maxw;
+    if(winw < 480) winw = 480;
+    if(owner && GetWindowRect(owner, &ro)){
+        x = (int)ro.left + ((int)(ro.right-ro.left) - winw)/2;
+        y = (int)ro.top + ((int)(ro.bottom-ro.top) - winh)/2;
+    } else {
+        x = (GetSystemMetrics(SM_CXSCREEN)-winw)/2;
+        y = (GetSystemMetrics(SM_CYSCREEN)-winh)/2;
+    }
+    if(x < 0) x = 0;
+    if(y < 0) y = 0;
+    SetWindowPos(hwnd, NULL, x, y, winw, winh, SWP_NOZORDER|SWP_NOACTIVATE);
+    EnableWindow(owner, FALSE);
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    SetFocus(d.hList);
+    while(!d.done && GetMessageA(&msg, NULL, 0, 0) > 0){
+        if(!IsDialogMessageA(hwnd, &msg)){
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+    }
+    EnableWindow(owner, TRUE);
+    SetActiveWindow(owner);
 }
 
 /* The launcher's side of every finished request except login/register,
@@ -1557,7 +1852,7 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
         submit_after_check(h, st, j);
         break;
     case NJ_LIST_SHOW:
-        if(j->r.status == 200) show_submission_list(h, &j->r);
+        if(j->r.status == 200) show_submission_list(h, st->online.server, &j->r);
         else {
             resp_message(&j->r, msg, sizeof(msg));
             MessageBoxA(h, msg, "pfemu - submissions", MB_OK|MB_ICONEXCLAMATION);
@@ -1901,27 +2196,64 @@ static void on_child_done(HWND h, LaunchState *st){
     if(st->last_rec[0] && IsWindowEnabled(st->hSubmit)) SetFocus(st->hSubmit);
 }
 
+/* The launcher's layout: the Game group across the top, the others in two
+ * columns of LC_W below it.  One column of seven groups had grown taller
+ * than a laptop screen. */
+#define LC_W     416                      /* one group's width */
+#define LC_GAP   12                       /* between the columns */
+#define LC_FULL  (2*LC_W + LC_GAP)        /* the Game group's width */
+#define LC_CW    (12 + LC_FULL + 12)      /* the client area's width */
+
+/* A line of text that opens a web page: a STATIC with SS_NOTIFY, coloured
+ * and given the hand cursor by launch_proc.  The launcher has no comctl32
+ * version 6 manifest, so there is no SysLink.  As wide as its text (at most
+ * maxw), so only the words take the click; *width says how wide. */
+static HWND make_link(HWND h, LaunchState *st, const char *text, int x, int y,
+                      int maxw, int id, int *width){
+    HFONT f = st->hLinkFont ? st->hLinkFont : st->hFont;
+    HDC dc = GetDC(h);
+    SIZE sz = { 0, 0 };
+    HGDIOBJ old = SelectObject(dc, f);
+    HWND c;
+    GetTextExtentPoint32A(dc, text, (int)strlen(text), &sz);
+    SelectObject(dc, old);
+    ReleaseDC(h, dc);
+    if(sz.cx + 2 > maxw) sz.cx = maxw - 2;
+    c = CreateWindowExA(0, "STATIC", text, WS_CHILD|WS_VISIBLE|SS_NOTIFY|SS_ENDELLIPSIS,
+                        x, y, sz.cx + 2, 16, h, (HMENU)(INT_PTR)id,
+                        GetModuleHandleA(NULL), 0);
+    SendMessageA(c, WM_SETFONT, (WPARAM)f, 0);
+    if(width) *width = sz.cx + 2;
+    return c;
+}
+
 static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     LaunchState *st = (LaunchState*)(INT_PTR)GetWindowLongPtrA(h, GWLP_USERDATA);
     switch(m){
     case WM_CREATE: {
         CREATESTRUCTA *cs = (CREATESTRUCTA*)l;
-        HWND c;
-        int i, y, gh, gy;
+        HWND c, lastL, lastR;
+        int i, y, gh, gy, ox, top, yl, lgy, rgy, bottom;
         SetWindowLongPtrA(h, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
         st = (LaunchState*)cs->lpCreateParams;
         st->hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        { LOGFONTA lf;
+          if(GetObjectA(st->hFont, sizeof(lf), &lf)){
+              lf.lfUnderline = TRUE;
+              st->hLinkFont = CreateFontIndirectA(&lf);
+          } }
         y = 10;
         c = CreateWindowExA(0,"STATIC","Pinball Fantasies",WS_CHILD|WS_VISIBLE,
                             14,y,400,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         y += 22;
-        /* Game group: install picker (when needed) + read-only detection
-         * line with Details for the full report. */
+        /* Game group, across both columns: install picker (when needed) +
+         * read-only detection line with Details for the full report.  The
+         * line gets the whole width, since a record target is long. */
         gy = y;
         gh = (st->ninst > 1) ? 70 : 46;
         c = CreateWindowExA(0,"BUTTON","Game",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
-                            12,gy,416,gh,h,0,cs->hInstance,0);
+                            12,gy,LC_FULL,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         if(st->ninst > 1){
             /* Picks a *directory*, not a version - what is in each one is
@@ -1932,7 +2264,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
             st->hInstall = CreateWindowExA(0,"COMBOBOX","",
                                 WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                                106,gy+18,292,240,h,(HMENU)ID_INSTALL,cs->hInstance,0);
+                                106,gy+18,LC_FULL-124,240,h,(HMENU)ID_INSTALL,cs->hInstance,0);
             SendMessageA(st->hInstall,WM_SETFONT,(WPARAM)st->hFont,0);
             for(k=0;k<st->ninst;k++){
                 char item[200];
@@ -1946,49 +2278,55 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         }
         /* The detection result, read-only: the files decide, Details explains. */
         st->hDetected = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
-                            24,gy+gh-22,296,16,h,0,cs->hInstance,0);
+                            24,gy+gh-22,LC_FULL-120,16,h,0,cs->hInstance,0);
         SendMessageA(st->hDetected,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hDetails = CreateWindowExA(0,"BUTTON","Details",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            328,gy+gh-26,70,22,h,(HMENU)ID_DETAILS,cs->hInstance,0);
+                            LC_FULL-88,gy+gh-26,70,22,h,(HMENU)ID_DETAILS,cs->hInstance,0);
         SendMessageA(st->hDetails,WM_SETFONT,(WPARAM)st->hFont,0);
         y += gh + 8;
+        /* Two columns below it.  Left: what the game sounds like and the
+         * intro's own options - settings that stay put between sessions.
+         * Right: how the next session starts, what it records, and where a
+         * recording goes afterwards. */
+        top = y;
+        ox = 0;
         /* Sound group: checkbox carries the hardware detail, the combo
          * carries the rates - no extra notes needed. */
         gy = y; gh = 104;
         c = CreateWindowExA(0,"BUTTON","Sound",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
-                            12,gy,416,gh,h,0,cs->hInstance,0);
+                            ox+12,gy,LC_W,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hSound = CreateWindowExA(0,"BUTTON","Sound on (SoundBlaster 220h / IRQ 7)",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,gy+18,374,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
+                            ox+24,gy+18,374,20,h,(HMENU)ID_SOUND,cs->hInstance,0);
         SendMessageA(st->hSound,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
         /* Quality: SETSOUND's five-notch setting, written straight to
          * SOUND.CFG byte 0x14 for the driver to read. */
         c = CreateWindowExA(0,"STATIC","Quality:",WS_CHILD|WS_VISIBLE,
-                            24,gy+44,70,16,h,0,cs->hInstance,0);
+                            ox+24,gy+44,70,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hQuality = CreateWindowExA(0,"COMBOBOX","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                            100,gy+42,230,200,h,(HMENU)ID_QUALITY,cs->hInstance,0);
+                            ox+100,gy+42,230,200,h,(HMENU)ID_QUALITY,cs->hInstance,0);
         SendMessageA(st->hQuality,WM_SETFONT,(WPARAM)st->hFont,0);
         for(i=0;i<5;i++)
             SendMessageA(st->hQuality,CB_ADDSTRING,0,(LPARAM)quality_labels[i]);
         SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);
         /* Volume: host-side only, applied where waveOut is fed. */
         c = CreateWindowExA(0,"STATIC","Volume:",WS_CHILD|WS_VISIBLE,
-                            24,gy+70,70,16,h,0,cs->hInstance,0);
+                            ox+24,gy+70,70,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hVolume = CreateWindowExA(0,TRACKBAR_CLASSA,"",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|TBS_HORZ|TBS_AUTOTICKS,
-                            96,gy+66,190,28,h,(HMENU)ID_VOLUME,cs->hInstance,0);
+                            ox+96,gy+66,190,28,h,(HMENU)ID_VOLUME,cs->hInstance,0);
         SendMessageA(st->hVolume,TBM_SETRANGE,TRUE,MAKELPARAM(0,100));
         SendMessageA(st->hVolume,TBM_SETTICFREQ,25,0);
         SendMessageA(st->hVolume,TBM_SETPAGESIZE,0,10);
         SendMessageA(st->hVolume,TBM_SETPOS,TRUE,st->volume);
         st->hVolLabel = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_RIGHT,
-                            290,gy+70,44,16,h,(HMENU)ID_VOLLABEL,cs->hInstance,0);
+                            ox+290,gy+70,44,16,h,(HMENU)ID_VOLLABEL,cs->hInstance,0);
         SendMessageA(st->hVolLabel,WM_SETFONT,(WPARAM)st->hFont,0);
         set_vol_label(st);
         y += gh + 8;
@@ -1996,41 +2334,41 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
          * Flat/Off is the old sound; like volume, never recorded. */
         gy = y; gh = 70;
         c = CreateWindowExA(0,"BUTTON","Audio enhancement",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
-                            12,gy,416,gh,h,0,cs->hInstance,0);
+                            ox+12,gy,LC_W,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         c = CreateWindowExA(0,"STATIC","Bass:",WS_CHILD|WS_VISIBLE,
-                            24,gy+23,52,16,h,0,cs->hInstance,0);
+                            ox+24,gy+23,52,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hBass = CreateWindowExA(0,"COMBOBOX","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                            76,gy+20,110,200,h,(HMENU)ID_BASS,cs->hInstance,0);
+                            ox+76,gy+20,110,200,h,(HMENU)ID_BASS,cs->hInstance,0);
         SendMessageA(st->hBass,WM_SETFONT,(WPARAM)st->hFont,0);
         for(i=0;i<9;i++)
             SendMessageA(st->hBass,CB_ADDSTRING,0,(LPARAM)eq_labels[i]);
         SendMessageA(st->hBass,CB_SETCURSEL,eq_db_to_idx(st->bass),0);
         c = CreateWindowExA(0,"STATIC","Treble:",WS_CHILD|WS_VISIBLE,
-                            218,gy+23,52,16,h,0,cs->hInstance,0);
+                            ox+218,gy+23,52,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hTreble = CreateWindowExA(0,"COMBOBOX","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                            272,gy+20,110,200,h,(HMENU)ID_TREBLE,cs->hInstance,0);
+                            ox+272,gy+20,110,200,h,(HMENU)ID_TREBLE,cs->hInstance,0);
         SendMessageA(st->hTreble,WM_SETFONT,(WPARAM)st->hFont,0);
         for(i=0;i<9;i++)
             SendMessageA(st->hTreble,CB_ADDSTRING,0,(LPARAM)eq_labels[i]);
         SendMessageA(st->hTreble,CB_SETCURSEL,eq_db_to_idx(st->treble),0);
         c = CreateWindowExA(0,"STATIC","Oomph:",WS_CHILD|WS_VISIBLE,
-                            24,gy+47,52,16,h,0,cs->hInstance,0);
+                            ox+24,gy+47,52,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hOomph = CreateWindowExA(0,"COMBOBOX","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                            76,gy+44,110,200,h,(HMENU)ID_OOMPH,cs->hInstance,0);
+                            ox+76,gy+44,110,200,h,(HMENU)ID_OOMPH,cs->hInstance,0);
         SendMessageA(st->hOomph,WM_SETFONT,(WPARAM)st->hFont,0);
         for(i=0;i<5;i++)
             SendMessageA(st->hOomph,CB_ADDSTRING,0,(LPARAM)oomph_labels[i]);
         SendMessageA(st->hOomph,CB_SETCURSEL,oomph_db_to_idx(st->oomph),0);
         st->hHeadphone = CreateWindowExA(0,"BUTTON","Headphone mode",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            218,gy+44,164,20,h,(HMENU)ID_HEADPHONE,cs->hInstance,0);
+                            ox+218,gy+44,164,20,h,(HMENU)ID_HEADPHONE,cs->hInstance,0);
         SendMessageA(st->hHeadphone,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_HEADPHONE,st->headphone?BST_CHECKED:BST_UNCHECKED);
         y += gh + 8;
@@ -2038,13 +2376,14 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
          * order preserves the PINBALL.CFG layout: Balls|Angle, Scrolling|
          * Music, Resolution|Color. */
         gy = y; gh = 94;
-        c = CreateWindowExA(0,"BUTTON","Game options",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
-                            12,gy,416,gh,h,0,cs->hInstance,0);
+        lastL = c = CreateWindowExA(0,"BUTTON","Game options",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            ox+12,gy,LC_W,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        lgy = gy;
         for(i=0;i<6;i++){
             int k, row = i / 2, col = i % 2;
-            int lx = (col == 0) ? 24 : 218;
-            int cx = (col == 0) ? 110 : 304;
+            int lx = ox + ((col == 0) ? 24 : 218);
+            int cx = ox + ((col == 0) ? 110 : 304);
             int ry = gy + 20 + row * 24;
             c = CreateWindowExA(0,"STATIC",opts[i].label,WS_CHILD|WS_VISIBLE,
                                 lx,ry+3,82,16,h,0,cs->hInstance,0);
@@ -2059,19 +2398,23 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
         }
         y += gh + 8;
+        yl = y;
+        /* ---- right column */
+        y = top;
+        ox = LC_W + LC_GAP;
         /* Extras: trainer and fullscreen side by side, one shared hint line. */
         gy = y; gh = 86;
         c = CreateWindowExA(0,"BUTTON","Extras",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
-                            12,gy,416,gh,h,0,cs->hInstance,0);
+                            ox+12,gy,LC_W,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hCheatEnable = CreateWindowExA(0,"BUTTON","Enable trainer",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            24,gy+18,180,20,h,(HMENU)ID_CHEAT_ENABLE,cs->hInstance,0);
+                            ox+24,gy+18,180,20,h,(HMENU)ID_CHEAT_ENABLE,cs->hInstance,0);
         SendMessageA(st->hCheatEnable,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_CHEAT_ENABLE,st->cheat_enable?BST_CHECKED:BST_UNCHECKED);
         st->hFullscreen = CreateWindowExA(0,"BUTTON","Start in fullscreen",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,
-                            218,gy+18,180,20,h,(HMENU)ID_FULLSCREEN,cs->hInstance,0);
+                            ox+218,gy+18,180,20,h,(HMENU)ID_FULLSCREEN,cs->hInstance,0);
         SendMessageA(st->hFullscreen,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_FULLSCREEN,st->fullscreen?BST_CHECKED:BST_UNCHECKED);
         /* Start at: skip the intro and the menu and boot straight into a
@@ -2080,18 +2423,18 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
          * docs/EMULATOR.md.  Greyed out in replay mode: the .pfr records how
          * its session began and that has to win. */
         c = CreateWindowExA(0,"STATIC","Start at:",WS_CHILD|WS_VISIBLE,
-                            24,gy+45,70,16,h,0,cs->hInstance,0);
+                            ox+24,gy+45,70,16,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hTable = CreateWindowExA(0,"COMBOBOX","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,
-                            100,gy+42,230,200,h,(HMENU)ID_TABLE,cs->hInstance,0);
+                            ox+100,gy+42,230,200,h,(HMENU)ID_TABLE,cs->hInstance,0);
         SendMessageA(st->hTable,WM_SETFONT,(WPARAM)st->hFont,0);
         for(i=0;i<5;i++)
             SendMessageA(st->hTable,CB_ADDSTRING,0,(LPARAM)table_labels[i]);
         SendMessageA(st->hTable,CB_SETCURSEL,st->start_table,0);
         c = CreateWindowExA(0,"STATIC",
                             "Trainer: '1'-'3' toggle, arrows / 'Z' move the ball. Alt+Enter toggles fullscreen.",
-                            WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,24,gy+66,374,14,h,0,cs->hInstance,0);
+                            WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,ox+24,gy+66,374,14,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         y += gh + 8;
         /* Session record / replay (docs/REPLAY.md section 4): the group title
@@ -2099,19 +2442,19 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
          * frontends to the same emu-time injector. */
         gy = y; gh = 76;
         c = CreateWindowExA(0,"BUTTON","Session",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
-                            12,gy,416,gh,h,0,cs->hInstance,0);
+                            ox+12,gy,LC_W,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hModePlay = CreateWindowExA(0,"BUTTON","Play",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_GROUP|BS_AUTORADIOBUTTON,
-                            24,gy+18,60,20,h,(HMENU)ID_MODE_PLAY,cs->hInstance,0);
+                            ox+24,gy+18,60,20,h,(HMENU)ID_MODE_PLAY,cs->hInstance,0);
         SendMessageA(st->hModePlay,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hModeRecord = CreateWindowExA(0,"BUTTON","Record",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
-                            94,gy+18,80,20,h,(HMENU)ID_MODE_RECORD,cs->hInstance,0);
+                            ox+94,gy+18,80,20,h,(HMENU)ID_MODE_RECORD,cs->hInstance,0);
         SendMessageA(st->hModeRecord,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hModeReplay = CreateWindowExA(0,"BUTTON","Replay",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTORADIOBUTTON,
-                            184,gy+18,80,20,h,(HMENU)ID_MODE_REPLAY,cs->hInstance,0);
+                            ox+184,gy+18,80,20,h,(HMENU)ID_MODE_REPLAY,cs->hInstance,0);
         SendMessageA(st->hModeReplay,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_MODE_PLAY,st->mode==LAUNCH_PLAY?BST_CHECKED:BST_UNCHECKED);
         CheckDlgButton(h,ID_MODE_RECORD,st->mode==LAUNCH_RECORD?BST_CHECKED:BST_UNCHECKED);
@@ -2121,58 +2464,78 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
          * shows the install's own high-score table instead. */
         st->hRanked = CreateWindowExA(0,"BUTTON","Ranked",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_GROUP|BS_AUTOCHECKBOX,
-                            290,gy+18,108,20,h,(HMENU)ID_RANKED,cs->hInstance,0);
+                            ox+290,gy+18,108,20,h,(HMENU)ID_RANKED,cs->hInstance,0);
         SendMessageA(st->hRanked,WM_SETFONT,(WPARAM)st->hFont,0);
         CheckDlgButton(h,ID_RANKED,st->online.ranked?BST_CHECKED:BST_UNCHECKED);
         st->hPathLabel = CreateWindowExA(0,"STATIC","File:",WS_CHILD|WS_VISIBLE,
-                            24,gy+46,32,16,h,0,cs->hInstance,0);
+                            ox+24,gy+46,32,16,h,0,cs->hInstance,0);
         SendMessageA(st->hPathLabel,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hPath = CreateWindowExA(0,"EDIT","",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_BORDER|ES_AUTOHSCROLL,
-                            60,gy+44,268,22,h,(HMENU)ID_REPLAY_PATH,cs->hInstance,0);
+                            ox+60,gy+44,268,22,h,(HMENU)ID_REPLAY_PATH,cs->hInstance,0);
         SendMessageA(st->hPath,WM_SETFONT,(WPARAM)st->hFont,0);
         if(st->replay_path[0]) SetWindowTextA(st->hPath, st->replay_path);
         st->hBrowse = CreateWindowExA(0,"BUTTON","Browse...",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            334,gy+44,64,22,h,(HMENU)ID_BROWSE,cs->hInstance,0);
+                            ox+334,gy+44,64,22,h,(HMENU)ID_BROWSE,cs->hInstance,0);
         SendMessageA(st->hBrowse,WM_SETFONT,(WPARAM)st->hFont,0);
         y += gh + 8;
         /* Leaderboard (pfemu-web/docs/API.md): the account, the recording
-         * Submit would send, and the last submission's status. */
-        gy = y; gh = 96;
-        c = CreateWindowExA(0,"BUTTON","Leaderboard",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
-                            12,gy,416,gh,h,0,cs->hInstance,0);
+         * Submit would send, the last submission's status, and the website
+         * for what the launcher does not do - the boards themselves, the
+         * password and email, the whole history. */
+        gy = y; gh = 118;
+        lastR = c = CreateWindowExA(0,"BUTTON","Leaderboard",WS_CHILD|WS_VISIBLE|BS_GROUPBOX,
+                            ox+12,gy,LC_W,gh,h,0,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        rgy = gy;
         st->hAccount = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
-                            24,gy+22,206,16,h,0,cs->hInstance,0);
+                            ox+24,gy+22,206,16,h,0,cs->hInstance,0);
         SendMessageA(st->hAccount,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hLogin = CreateWindowExA(0,"BUTTON","Log in...",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            236,gy+18,76,22,h,(HMENU)ID_LOGIN,cs->hInstance,0);
+                            ox+236,gy+18,76,22,h,(HMENU)ID_LOGIN,cs->hInstance,0);
         SendMessageA(st->hLogin,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hSubList = CreateWindowExA(0,"BUTTON","Submissions",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            318,gy+18,80,22,h,(HMENU)ID_SUBLIST,cs->hInstance,0);
+                            ox+318,gy+18,80,22,h,(HMENU)ID_SUBLIST,cs->hInstance,0);
         SendMessageA(st->hSubList,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hSubFile = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
-                            24,gy+48,288,16,h,0,cs->hInstance,0);
+                            ox+24,gy+48,288,16,h,0,cs->hInstance,0);
         SendMessageA(st->hSubFile,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hSubmit = CreateWindowExA(0,"BUTTON","Submit",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            318,gy+44,80,22,h,(HMENU)ID_SUBMIT,cs->hInstance,0);
+                            ox+318,gy+44,80,22,h,(HMENU)ID_SUBMIT,cs->hInstance,0);
         SendMessageA(st->hSubmit,WM_SETFONT,(WPARAM)st->hFont,0);
         st->hSubState = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
-                            24,gy+72,374,16,h,0,cs->hInstance,0);
+                            ox+24,gy+72,374,16,h,0,cs->hInstance,0);
         SendMessageA(st->hSubState,WM_SETFONT,(WPARAM)st->hFont,0);
-        y += gh + 12;
+        /* The server's own name is the website link; "My account" appears
+         * once there is one (update_online_ui). */
+        { const char *host = st->online.server;
+          int lw = 0;
+          if(!_strnicmp(host, "https://", 8)) host += 8;
+          else if(!_strnicmp(host, "http://", 7)) host += 7;
+          st->hWebLink = make_link(h, st, host, ox+24, gy+95, 250, ID_WEBLINK, &lw);
+          st->hMeLink = make_link(h, st, "My account", ox+24+lw+18, gy+95, 120,
+                                  ID_MELINK, NULL); }
+        y += gh + 8;
+        /* Both columns end on one line: the shorter one's last group grows. */
+        bottom = y > yl ? y : yl;
+        if(yl < bottom) MoveWindow(lastL, 12, lgy, LC_W, bottom - 8 - lgy, TRUE);
+        if(y < bottom)  MoveWindow(lastR, LC_W + LC_GAP + 12, rgy, LC_W, bottom - 8 - rgy, TRUE);
+        y = bottom + 4;
         st->hLaunch = c = CreateWindowExA(0,"BUTTON","Launch",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,
-                            260,y,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
+                            LC_CW-12-76-8-76,y,76,24,h,(HMENU)ID_LAUNCH,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
         c = CreateWindowExA(0,"BUTTON","Quit",
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
-                            344,y,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
+                            LC_CW-12-76,y,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        /* run_launcher() sizes the window to this once it exists. */
+        st->cw = LC_CW;
+        st->ch = y + 24 + 12;
         apply_mode_ui(h, st);   /* needs the Launch button to exist */
         return 0; }
     /* The trackbar reports through WM_HSCROLL, not WM_COMMAND. */
@@ -2289,6 +2652,10 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             start_submit_check(h, st);
         } else if(id==ID_SUBLIST){
             start_list(h, st, 1);
+        } else if(id==ID_WEBLINK && HIWORD(w)==STN_CLICKED){
+            open_web(h, st->online.server, "/");
+        } else if(id==ID_MELINK && HIWORD(w)==STN_CLICKED){
+            open_web(h, st->online.server, "/me");
         } else if(id==ID_LAUNCH){
             int i;
             const RelResult *r = cur_inst(st);
@@ -2383,6 +2750,20 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     case WM_APP_CHILD:
         if(st) on_child_done(h, st);
         return 0;
+    /* The two website links: link blue, and the hand over them. */
+    case WM_CTLCOLORSTATIC:
+        if(st && ((HWND)l == st->hWebLink || (HWND)l == st->hMeLink)){
+            SetTextColor((HDC)w, RGB(0, 102, 204));
+            SetBkMode((HDC)w, TRANSPARENT);
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+        break;
+    case WM_SETCURSOR:
+        if(st && ((HWND)w == st->hWebLink || (HWND)w == st->hMeLink)){
+            SetCursor(LoadCursor(NULL, IDC_HAND));
+            return TRUE;
+        }
+        break;
     /* A finished submission is not polled, but the server can still change
      * its result: it verifies every kept recording again when its pfemu
      * build changes.  So look again whenever the player comes back to the
@@ -2414,6 +2795,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     case WM_DESTROY:
         KillTimer(h, TIMER_POLL);
         launch_save_pos(h);
+        if(st && st->hLinkFont){ DeleteObject(st->hLinkFont); st->hLinkFont = NULL; }
         return 0;
     case WM_EXITSIZEMOVE:
         launch_save_pos(h);
@@ -2658,9 +3040,10 @@ int run_launcher(void){
     /* static: it now carries a RelResult per installation, which is a lot of
      * report text to put on the stack for a dialog that runs once. */
     static LaunchState st;
-    int winw = 458, winh = 744;   /* Extras grew a row for "Start at",
-                                   Enhancement added its own group, and
-                                   Leaderboard another */
+    /* A first guess for the monitor check below: WM_CREATE works out the
+     * size the layout needs (st.cw, st.ch), and the window gets it as soon
+     * as it exists. */
+    int winw = LC_CW + 18, winh = 520;
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -2669,7 +3052,7 @@ int run_launcher(void){
     /* The volume slider is a common control; without this its window class
      * is not registered and CreateWindowEx for it just returns NULL. */
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_BAR_CLASSES;
+    icc.dwICC = ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES;   /* + the submissions table */
     InitCommonControlsEx(&icc);
     wc.lpfnWndProc = launch_proc;
     wc.hInstance = GetModuleHandleA(NULL);
@@ -2695,7 +3078,6 @@ int run_launcher(void){
      * PFEMU-STATE/pfemu.cfg is then what the dialog below loads, so the
      * settings come back with it. */
     last_restore(&st);
-    if(st.ninst > 1) winh += 24;
     { const char *dir = cur_game_dir(&st);
       PfCfg c;
       cfg_read(dir, &c);
@@ -2740,6 +3122,16 @@ int run_launcher(void){
                                WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU,
                                cx, cy, winw, winh,
                                NULL,NULL,wc.hInstance,&st);
+      }
+      if(hwnd && st.cw > 0 && st.ch > 0){
+          /* The size WM_CREATE's layout asked for, before anything below
+           * reads the window rect to place it. */
+          RECT rc = { 0, 0, 0, 0 };
+          rc.right = st.cw;
+          rc.bottom = st.ch;
+          AdjustWindowRect(&rc, WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU, FALSE);
+          SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
+                       SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
       }
       if(hwnd){
           /* Restore the saved dialog position when there is one, else center
@@ -2799,6 +3191,7 @@ int run_launcher(void){
     UnregisterClassA("pfemu-launcher",wc.hInstance);
     if(det_registered){ UnregisterClassA("pfemu-details",wc.hInstance); det_registered = 0; }
     if(login_registered){ UnregisterClassA("pfemu-login",wc.hInstance); login_registered = 0; }
+    if(sublist_registered){ UnregisterClassA("pfemu-submissions",wc.hInstance); sublist_registered = 0; }
     if(st.child) CloseHandle(st.child);
     return 0;
 }
