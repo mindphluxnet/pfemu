@@ -1,6 +1,6 @@
 # Handoff
 
-State as of 2026-09-22, `main` at `3f9b265` plus this file.
+State as of 2026-09-23, `main` at `693415b` plus the ranked-state commit.
 
 Read this with `VERIFY.md`, which is the document this work serves. This file
 is the short version plus what to do next.
@@ -44,7 +44,7 @@ The work done before it is finished:
   `src/build.h`), so each stored verdict names the binary that produced it.
 - **The input side is hardened.** The `.pfr` parser bounds every field,
   refuses events stamped past the footer (that used to be an endless run),
-  and `-strict` refuses what a verifier should not accept. 22 regression cases
+  and `-strict` refuses what a verifier should not accept. 27 regression cases
   pass, and 1M mutation cases produced no finding.
 - **Replays run 3.3-3.7x real time** with `-unthrottle`, and pacing is
   proven guest-invisible on two hosts.
@@ -63,38 +63,50 @@ compile.
 | MSVC and gcc 14.2 agree byte-for-byte | **Verified**, on both vectors |
 | Two platforms agree on a **score** | **Verified**, on one vector. `deluxe-table1-partyon-295s`: recorded on Windows/MSVC, replayed on Debian/gcc 14.2, same capture hash, all 15 frames, same 1,773,389,028 cycles, same 20,652,570. This is the claim the whole service rests on |
 | The suite catches a wrong score **and a wrong eligibility verdict** | **Verified**, on one vector. The attempt line pins `20652570 ... attract yes`. `run.sh` fails the vector if a replay disagrees, or if the ball-counter watchdog fires |
-| The verdict object is stable | **Verified** for its own logic. `tests/verify/` has 17 cases against stubs under ASan+UBSan. Every emitted object was also parsed with a real JSON parser, and two deliberate mutations of `verify.c` were caught |
+| The verdict object is stable | **Verified** for its own logic. `tests/verify/` has 18 cases against stubs under ASan+UBSan. Every emitted object was also parsed with a real JSON parser, and two deliberate mutations of `verify.c` were caught |
 | The verdict matches the report | **Verified** on both hosts. `run.sh` cross-checks the JSON `best` against the `[RANKABLE]` lines the same replay printed: 20,652,570 on both |
 | Determinism across optimisation levels | **Verified**, incidentally. Both vectors reproduce their capture hash under `-O1` + ubsan |
 | Host pacing is guest-invisible | **Verified**, on one vector, on two hosts (`tests/golden/speed-ab.sh`) |
 | A replay can run faster than real time | **Verified**: 3.7x on the server, 3.3x under WSL |
-| The `.pfr` parser refuses hostile input | **Verified** for the 22 cases in `tests/fuzz`, 14 of which the previous parser accepted |
+| The `.pfr` parser refuses hostile input | **Verified** for the 27 cases in `tests/fuzz`. 14 of the first 22 were accepted by the previous parser; the other 5 cover the `state:` line |
 | The `.pfr` parser is memory-safe | **No finding**, which is weaker than verified. 1,000,004 mutation cases under ASan+UBSan, no crash. A hand-rolled gcc mutator is not a coverage-guided campaign |
 | Shift counts >= width in `cpu.c` | **Looked for properly, not found**, in the code the two vectors execute. `TABLE2`, `TABLE4`, the intro and three other releases are unexercised |
 | `-strict -unthrottle -verify` together | **Verified** through the service, on the Mac Mini under bwrap: the Party Land vector came back `verified` and `rankable` at 20,652,570, build `3f9b265d674c` from a clean clone, 78.2 s wall for 295.6 s emulated (3.8x). The install was mounted read-only, so the replay needs no write access to it |
 | `-ffp-contract=off` is *necessary* | **Not demonstrated.** A justified precaution: `-ffp-contract=fast` emitted 50 FMAs and changed nothing |
 | Big-endian correctness | **Untested.** The memory helpers are host-endian, like the puns they replaced |
 | A replay is independent of the verifier's `PFEMU-STATE/` | **False, measured 2026-09-23.** Party Land vector, Deluxe: with `table1.hi` as recorded it verifies at 20,652,570. With every entry at 99,999,999 it mismatches, and the attempt ends at 175.3 s with 17,128,800. With the file missing it mismatches at 7,125,000. Same inputs, a different game. `replay.c` only warns when the overlay hash differs. **Not the name entry at game end:** with the high table the `-scoredbg` trace is identical up to t=67 s, and the first difference is a score event 1 ms early at t=72.58 s, on ball 1 at 4.55M, far from any table entry. With the file missing it diverges at t=6.6 s. The table reaches the game *during* play. A guess, not checked in the game code: a compare against the table whose cycle cost depends on its contents |
+| A **ranked** replay is independent of the verifier's `PFEMU-STATE/` | **Verified headless, without gameplay, 2026-09-23.** Two 40 s recordings on a copy of `FANTASYDX`, booting through the intro with no input, one with `-ranked` and one without, each replayed against five verifier states. These were the recorded state, every `table1.hi` entry at 99,999,999, `table1.hi` missing, a high `TABLE1.HI` in the install directory itself, and `SOUND.CFG` set to no sound. The unranked control mismatched on all three table changes and was refused on the sound change, so the test does detect them. The ranked file was `verified` in all five, also under `-strict`. Still missing: a *played* ranked game. The measured divergence starts 72 s into play, and no key-driven test could reach it (next row) |
+| `-keys` combined with `-record` replays | **No, found 2026-09-23.** A headless recording driven by `-keys` mismatches on replay (capture hash), ranked or not, with every event injected and the footer matching. The same recording without `-keys` verifies. Human recordings are unaffected: both golden vectors verify. Not investigated. Suspect that the keyscript and the logger see different cycles, or that something the keyscript does is not logged |
 
 ## What to do next, in order
 
-0. **Make a ranked recording independent of the player's local state.
-   This blocks the service from going live.** The replay sees the
-   operator's `PFEMU-STATE/`, the recording saw the player's, and the high
-   scores alone change the game (table above). Two ways out, and the
-   choice is a design decision, not yet taken:
-   - **A canonical state for ranked play.** Record with an isolated,
-     factory-fresh overlay: default high scores, a fixed `SOUND.CFG`, the
-     recorded options patched in, as replay already does. The validator
-     replays against the same state and refuses any `.pfr` whose
-     `overlay:` hash is not the canonical one, which a header check can
-     do. It is simple and cannot be manipulated, but the player's own
-     high-score table does not show during a ranked game.
-   - **Carry the state in the `.pfr`.** Embed the small files the guest
-     reads (`*.hi`, `*.CFG`), and have the replay rebuild the overlay from
-     them. The player keeps their own table, at the price of a format
-     change, a larger parser surface, and a hi-score table the player
-     chooses.
+0. **Record one ranked session and check that it replays. This still
+   blocks the service from going live.** The design decision is made
+   (2026-09-23): it is the **canonical state**, not the state embedded in
+   the `.pfr`. Embedding would have let the player pick a high-score
+   table, and the table changes the game during play. It is built, see
+   [Ranked recordings](REPLAY.md#ranked-recordings):
+   `-record FILE -ranked` plays against a fixed overlay holding only a
+   `SOUND.CFG` derived from the header, writes `state: canonical-1`, and
+   the replay rebuilds the same overlay without looking at the operator's
+   `PFEMU-STATE/`. Under the canonical state, the DOS layer also hides
+   the install's `SOUND.CFG`, `PINBALL.CFG` and `*.HI`. `-strict` refuses
+   anything else with `state_not_canonical`. The parser tests (27 cases)
+   and the verdict tests (18) cover the header and the object. A headless
+   test replayed against five different verifier states and verified in
+   all five, while an unranked control failed (table above). What is
+   missing is a real, played session:
+   - **Record a ranked vector on Windows** (`pfemu.exe -record
+     sessions\ranked.pfr -ranked`, a complete game that ends in attract
+     mode), replay it on Windows and on Debian, and commit it as a golden
+     vector with `mkexpected.sh`.
+   - **Replace the service's smoke vector.** The Party Land vector has no
+     `state:` line, so the Mac Mini's `-strict` run now refuses it by
+     design. The ranked vector takes its place there.
+   - **`pfemu-web/docs/API.md`** needs the new refusal `state_not_canonical`
+     and what to tell the player ("record it as a ranked run").
+   - **The launcher has no Ranked switch yet**, only the CLI flag. The
+     launcher upload (item 1) needs one, or should always record ranked.
 
 1. **The service** lives in `pfemu-service` and `pfemu-web`; their HANDOFFs
    have the order. From this repository they need two things:
@@ -212,6 +224,11 @@ follow-up `make clean` is needed.
   and `src/build.h` gets `<hash>-dirty` even on a clean tree. The service
   withholds ranking from a dirty build, correctly. A clean Linux clone,
   which is what the Mac Mini builds from, does not have this problem.
+- **`sed -i` under Git Bash turns a CRLF file into LF**, the whole file.
+  `grep -c $'\r$'` under Git Bash still counts every line as CRLF
+  afterwards, so it cannot catch this. `file` and git's "LF will be
+  replaced by CRLF" warning do. `unix2dos` puts it back. Use the editor
+  tool or WSL for C sources instead.
 - **Write patch scripts to files, not heredocs**, when an agent edits this
   repo through a shell tool. A `\n` inside a heredoc came out as a literal
   newline or a bare `n` more than once. That produced a broken C string

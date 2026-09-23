@@ -219,6 +219,7 @@ int emu_main(int argc, char **argv){
     double max_secs = 0, until_emu = -1.0;
     const char *shotfile = NULL;
     int keep_overlay = 0;     /* -keepoverlay: keep the replay overlay */
+    int ranked = 0;           /* -ranked: record against the canonical state */
     const char *keyscript = NULL;
     /* -shotevery: both are EMULATED seconds now, not wall seconds.  See
      * the capture site in the batch loop below. */
@@ -333,6 +334,10 @@ int emu_main(int argc, char **argv){
         else if(!strcmp(argv[i],"-speed") && i+1<argc){ speed = atof(argv[++i]); speed_given = 1; }
         else if(!strcmp(argv[i],"-unthrottle")) unthrottle = 1;
         else if(!strcmp(argv[i],"-strict")) replay_set_strict(1);
+        /* -ranked: record against the canonical state instead of this
+         * install's PFEMU-STATE/ (REPLAY.md, Ranked recordings).  Only a
+         * ranked recording passes -strict. */
+        else if(!strcmp(argv[i],"-ranked")) ranked = 1;
         /* -verify FILE: the machine-readable verdict (src/verify.c).  It is
          * the one output a service is meant to read, it goes to a file of
          * its own because stdout and stderr are both full of diagnostics by
@@ -406,11 +411,28 @@ int emu_main(int argc, char **argv){
         fail_msg("cannot combine -snapsave with -record/-replay");
         return 1;
     }
+    if(ranked && !record_path){
+        fail_msg("-ranked goes with -record; a replay takes its state"
+                 " from the file");
+        return 1;
+    }
+    replay_set_ranked(ranked);
     if(replay_path && replay_begin_replay(replay_path) != 0){
         const char *e = replay_parse_error();
         verify_code("bad_replay_file");
         if(e) fail_msg("%s", e);
         else fail_msg("cannot replay '%s'", replay_path);
+        return 1;
+    }
+    /* A file recorded against the player's own PFEMU-STATE/ replays against
+     * the verifier's, and the high-score tables alone change the game.  It
+     * is fine to watch, and no evidence of a score (REPLAY.md, Ranked
+     * recordings). */
+    if(replay_path && replay_is_strict() && !replay_is_ranked()){
+        verify_code("state_not_canonical");
+        fail_msg("[replay] refused: -strict needs a ranked recording, and"
+                 " '%s' was recorded against the player's own PFEMU-STATE/"
+                 " (no state: line). Record with -ranked.", replay_path);
         return 1;
     }
     if(replay_path){
@@ -490,6 +512,7 @@ relaunch:
         /* Undo everything the refused attempt merged in or armed. */
         replay_abort();
         record_path = replay_path = NULL;
+        replay_set_ranked(0);
         dir = cli_dir; prog = cli_prog; keyscript = cli_keys;
         start_fullscreen = cli_fullscreen; start_table = cli_table;
         dos_no_patch = cli_nopatch; dos_no_lzexe = cli_nolzexe;
@@ -778,11 +801,26 @@ relaunch:
     /* After dos_init (which points the overlay at the install) and before
      * dos_exec (which first touches it): replay works on a temp copy, so
      * the user's real PFEMU-STATE/ is never written (REPLAY.md 3.3). */
-    if(replay_path){
+    if(replay_path && !replay_is_ranked()){
         replay_isolate_overlay(dir);
         /* ...and the recorded sound notch into the temp copy, so the
          * driver mixes as recorded even when the install moved on. */
         replay_apply_config_to_overlay();
+    }
+    /* A ranked session, recorded or replayed, runs against the canonical
+     * state and never sees this install's PFEMU-STATE/ (REPLAY.md, Ranked
+     * recordings).  The record side built it in replay_begin_record(). */
+    if(replay_path && replay_is_ranked() &&
+       replay_make_canonical_overlay(replay_recorded_sound(),
+                                     replay_recorded_quality(NULL)) != 0){
+        fail_msg("[replay] cannot build the canonical state");
+        if(from_launcher) goto relaunch;
+        replay_cleanup_overlay();
+        return 1;
+    }
+    if(replay_is_ranked() && (record_path || replay_path) && replay_overlay_path()){
+        dos_remap_writedir(replay_overlay_path());
+        dos_set_state_shadow(1);
     }
 
     /* Hand-built boot: park the CPU on a HLT in ROM, then EXEC the program.

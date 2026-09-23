@@ -476,6 +476,7 @@ typedef struct {
     int  trainer_off;
     int  start_table;            /* 1-4 when the session began at a table */
     char overlay[32];
+    char state[16];              /* "canonical-1", or "" for the player's own */
     char dir_hint[512];
     int  nevents;
     char wav_hash[17];           /* footer capture hash: 16 hex or "none" */
@@ -517,6 +518,7 @@ void replay_apply_recorded_env(void);   /* ips/nopatch/nolzexe/time-freeze */
  * Quality/options change guest execution, so replay runs these, not the
  * install's current values; fullscreen is host-only but travels too. */
 int  replay_recorded_fullscreen(void);
+int  replay_recorded_sound(void);
 int  replay_recorded_quality(int *have);
 int  replay_recorded_options(uint8_t out[6]);
 /* After overlay isolation: patch the recorded quality notch into the temp
@@ -537,6 +539,14 @@ void replay_read_options(const char *dir, uint8_t out[6]);
 void replay_overlay_hash(const char *dir, char out[32]);
 void replay_isolate_overlay(const char *dir);
 void replay_cleanup_overlay(void);
+/* Ranked play (REPLAY.md, Ranked recordings): a fixed overlay built from the
+ * session's sound settings alone, the same bytes on every host.  The name
+ * is versioned because a recording made against one definition replays
+ * only against the same one. */
+#define REPLAY_STATE_CANONICAL "canonical-1"
+int  replay_make_canonical_overlay(int sound, int quality);
+void replay_set_ranked(int on);         /* -ranked: record canonical */
+int  replay_is_ranked(void);            /* 1 on a canonical record or replay */
 void replay_frozen_datetime(int *year, int *mon, int *day, int *wday,
                             int *hour, int *min, int *sec);
 void replay_frozen_dos_dt(uint16_t *dosdate, uint16_t *dostime);
@@ -546,6 +556,10 @@ int  fantasies_trainer_enabled(void);
  * timestamps to the recorded epoch on replay. */
 void dos_set_time_frozen(int on);
 void dos_remap_writedir(const char *dir);
+/* Canonical state (REPLAY.md, Ranked recordings): the game's own state files
+ * exist only in the overlay, never by falling through to the install.
+ * dos_init() clears it; run.c sets it after the remap. */
+void dos_set_state_shadow(int on);
 void dos_close_all_handles(void);
 
 /* ---------------------------------------------- machine-readable verdict --- */
@@ -566,6 +580,7 @@ int  verify_exit_code(void);            /* 0 verified, 2 mismatch, 1 refused */
 typedef struct {
     int   valid;                  /* a .pfr was loaded and replayed */
     const char *release;          /* release id carried in the file */
+    const char *state;            /* "canonical-1", or "install" */
     int   events_total, events_injected;
     double rec_emu, act_emu;
     unsigned long long rec_cycles, act_cycles;

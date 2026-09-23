@@ -70,6 +70,7 @@ static void good(void){
     reset();
     g_rv.valid           = 1;
     g_rv.release         = "deluxe";
+    g_rv.state           = "canonical-1";
     g_rv.events_total    = 630;
     g_rv.events_injected = 630;
     g_rv.rec_emu         = 295.564838;
@@ -145,6 +146,7 @@ int main(int argc, char **argv){
             "\"pfemu_verify\": 1", "\"build\": \"",
             "\"status\": \"verified\"",
             "\"strict\": false", "\"release\": \"deluxe\"",
+            "\"state\": \"canonical-1\"",
             "\"events_total\": 630", "\"events_injected\": 630",
             "\"footer_match\": true", "\"events_match\": true",
             "\"wav_match\": true",
@@ -288,6 +290,19 @@ int main(int argc, char **argv){
         g_rewound = 1;
         verify_report();
         check("ball counter rewound", 0, w, NULL);
+    }
+
+    /* 10b. A recording made against the player's own PFEMU-STATE/, verified
+     *      without -strict (which refuses it before any verdict).  It says
+     *      so, rather than looking like a ranked one. */
+    {
+        static const char *w[] = { "\"status\": \"verified\"",
+                                   "\"state\": \"install\"", NULL };
+        static const char *n[] = { "canonical", NULL };
+        good();
+        g_rv.state = NULL;
+        verify_report();
+        check("state of an unranked recording", 0, w, n);
     }
 
     /* 11. -verify on something that is not a replay. */

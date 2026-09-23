@@ -155,14 +155,17 @@ void replay_read_options(const char *dir, uint8_t out[6]){
 }
 
 /* ------------------------------------------------------- overlay hashing */
-void replay_overlay_hash(const char *dir, char out[32]){
-    char pat[600];
+/* One directory, every plain file in it: count, then name, bytes and size
+ * of each in name order.  canonical_hash() below repeats this sequence over
+ * bytes in memory, so the two must change together. */
+static void hash_dir(const char *ovdir, char out[32]){
+    char pat[700];
     WIN32_FIND_DATAA fd;
     HANDLE h;
     char names[256][64];
     int n = 0, i, j;
     uint64_t hh = 1469598103934665603ULL;
-    snprintf(pat, sizeof(pat), "%s/PFEMU-STATE/*", dir);
+    snprintf(pat, sizeof(pat), "%s/*", ovdir);
     h = FindFirstFileA(pat, &fd);
     if(h != INVALID_HANDLE_VALUE){
         do {
@@ -187,7 +190,7 @@ void replay_overlay_hash(const char *dir, char out[32]){
         size_t got;
         uint32_t sz = 0;
         hh = fnv1a(names[i], strlen(names[i])+1, hh);
-        snprintf(path, sizeof(path), "%s/PFEMU-STATE/%s", dir, names[i]);
+        snprintf(path, sizeof(path), "%s/%s", ovdir, names[i]);
         f = fopen(path, "rb");
         if(!f){ hh = fnv1a("missing", 7, hh); continue; }
         while((got = fread(buf, 1, sizeof(buf), f)) > 0){
@@ -200,21 +203,32 @@ void replay_overlay_hash(const char *dir, char out[32]){
     snprintf(out, 32, "%016llx", (unsigned long long)hh);
 }
 
+void replay_overlay_hash(const char *dir, char out[32]){
+    char ovdir[600];
+    snprintf(ovdir, sizeof(ovdir), "%s/PFEMU-STATE", dir);
+    hash_dir(ovdir, out);
+}
+
 /* --------------------------------------------- overlay isolation (replay) */
 static char iso_tmp[600] = "";
 
-void replay_isolate_overlay(const char *dir){
-    char base[600], pat[700];
-    WIN32_FIND_DATAA fd;
-    HANDLE h;
-    /* A sibling of the real overlay would still write into the user's game
-     * directory, so this goes to the system temp area instead.  The real
-     * overlay is only ever read after this point; every DOS write lands in
-     * the copy (src/dos.c writedir remap below). */
+/* A sibling of the real overlay would still write into the user's game
+ * directory, so the copy goes to the system temp area instead. */
+static void make_iso_dir(void){
+    char base[600];
     if(!GetTempPathA((DWORD)sizeof(base), base)) snprintf(base, sizeof(base), ".\\");
     snprintf(iso_tmp, sizeof(iso_tmp), "%spfemu_replay_%lu_%lu",
              base, (unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount());
     CreateDirectoryA(iso_tmp, NULL);
+}
+
+void replay_isolate_overlay(const char *dir){
+    char pat[700];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    /* The real overlay is only ever read after this point; every DOS write
+     * lands in the copy (src/dos.c writedir remap below). */
+    make_iso_dir();
     snprintf(pat, sizeof(pat), "%s/PFEMU-STATE/*", dir);
     h = FindFirstFileA(pat, &fd);
     if(h != INVALID_HANDLE_VALUE){
@@ -240,6 +254,88 @@ void replay_isolate_overlay(const char *dir){
     dos_remap_writedir(iso_tmp);
     fprintf(stderr, "[replay] overlay isolated: '%s' is read-only, writes go to '%s'\n",
             dir, iso_tmp);
+}
+
+/* ------------------------------------------ canonical state (ranked play)
+ *
+ * A recording ran against the player's PFEMU-STATE/, and a verifier replays
+ * against its own.  That is an input nobody checks, and it matters: the
+ * high-score tables alone change the game, starting during play rather than
+ * at the name entry (docs/HANDOFF.md, measured 2026-09-23).  So a ranked
+ * session runs against a state neither side chooses: an overlay holding one
+ * SOUND.CFG, derived from the header's own sound and quality fields, and
+ * nothing else.  No *.HI, so every table starts from the game's built-in
+ * high scores, as on a fresh install.  src/dos.c hides the install's own
+ * copies of those files for the same reason (dos_set_state_shadow()).
+ *
+ * The bytes are spelled out here instead of borrowed from launch.c's
+ * write_sound_cfg().  That one writes a preference and may change; this is
+ * a definition that stored recordings depend on.  Changing it means a new
+ * REPLAY_STATE_CANONICAL name, never an edit to this one. */
+static int ranked_req = 0;
+void replay_set_ranked(int on){ ranked_req = on ? 1 : 0; }
+
+static const uint8_t canon_nosound[16] = {
+    'N','O','S','O','U','N','D','.','S','D','R',0, 0,0,0x64,0
+};
+/* SBLASTER.SDR at 220h, IRQ 7 - the card src/sound.c models - and the
+ * quality notch at 0x14.  The header's quality is range-checked before any
+ * of this runs, so the cast cannot wrap. */
+static size_t canon_sound_cfg(int sound, int quality, uint8_t out[25]){
+    if(!sound){ memcpy(out, canon_nosound, sizeof(canon_nosound)); return sizeof(canon_nosound); }
+    memset(out, 0, 25);
+    memcpy(out, "SBLASTER.SDR", 12);
+    out[0x0E] = 1; out[0x11] = 3;
+    out[0x14] = (uint8_t)quality;
+    return 25;
+}
+
+/* hash_dir() over the canonical overlay, without building it.  The header
+ * check in validate_header() uses this, so a file whose overlay: line does
+ * not match its own sound and quality is refused before anything runs. */
+static void canonical_hash(int sound, int quality, char out[32]){
+    static const char name[] = "SOUND.CFG";
+    uint8_t cfg[25];
+    uint32_t sz = (uint32_t)canon_sound_cfg(sound, quality, cfg);
+    int n = 1;
+    uint64_t hh = 1469598103934665603ULL;
+    hh = fnv1a(&n, sizeof(n), hh);
+    hh = fnv1a(name, sizeof(name), hh);
+    hh = fnv1a(cfg, sz, hh);
+    hh = fnv1a(&sz, sizeof(sz), hh);
+    snprintf(out, 32, "%016llx", (unsigned long long)hh);
+}
+
+/* Build the canonical overlay in the temp area.  The caller remaps the DOS
+ * writedir onto it after dos_init(), exactly as for an isolated copy, and
+ * replay_cleanup_overlay() removes it the same way. */
+int replay_make_canonical_overlay(int sound, int quality){
+    char path[700], got[32], want[32];
+    uint8_t cfg[25];
+    size_t n = canon_sound_cfg(sound, quality, cfg);
+    FILE *f;
+    make_iso_dir();
+    snprintf(path, sizeof(path), "%s/SOUND.CFG", iso_tmp);
+    f = fopen(path, "wb");
+    if(!f || fwrite(cfg, 1, n, f) != n){
+        if(f) fclose(f);
+        fprintf(stderr, "[replay] cannot write the canonical overlay in '%s'\n", iso_tmp);
+        return -1;
+    }
+    fclose(f);
+    /* The directory is what the guest will see, so it is checked against
+     * the definition rather than trusted: a temp dir that already held
+     * something would otherwise hand the guest a state nobody recorded. */
+    hash_dir(iso_tmp, got);
+    canonical_hash(sound, quality, want);
+    if(strcmp(got, want)){
+        fprintf(stderr, "[replay] canonical overlay in '%s' is not canonical"
+                        " (%s, want %s)\n", iso_tmp, got, want);
+        return -1;
+    }
+    fprintf(stderr, "[replay] canonical state %s: sound %s, quality %d, in '%s'\n",
+            REPLAY_STATE_CANONICAL, sound ? "on" : "off", quality, iso_tmp);
+    return 0;
 }
 
 /* Where the isolated copy lives, or NULL when there is none.  -keepoverlay
@@ -297,10 +393,24 @@ int replay_begin_record(const char *path, const RelResult *rel, const char *prog
                 rel ? rel->dir : "?");
         return -1;
     }
+    /* Ranked: the session plays against the canonical state, not the
+     * player's PFEMU-STATE/, and the header says which one it was.  Built
+     * before the file is opened, so a failure leaves no stub behind. */
+    if(ranked_req){
+        if(replay_make_canonical_overlay(sound, quality) != 0){
+            replay_cleanup_overlay();
+            return -1;
+        }
+        canonical_hash(sound, quality, ov);
+    }
     mkdir_parents(path);
     rec_fp = fopen(path, "w");
-    if(!rec_fp){ fprintf(stderr, "[record] cannot write '%s'\n", path); return -1; }
-    replay_overlay_hash(rel->dir, ov);
+    if(!rec_fp){
+        fprintf(stderr, "[record] cannot write '%s'\n", path);
+        replay_cleanup_overlay();
+        return -1;
+    }
+    if(!ranked_req) replay_overlay_hash(rel->dir, ov);
     snprintf(rec_path, sizeof(rec_path), "%s", path);
     rec_events = 0;
     fprintf(rec_fp, "PFEMU-REPLAY 1\n");
@@ -342,6 +452,9 @@ int replay_begin_record(const char *path, const RelResult *rel, const char *prog
     fprintf(rec_fp, "date: %04d-%02d-%02d\n", FROZEN_YEAR, FROZEN_MON, FROZEN_DAY);
     fprintf(rec_fp, "time: %02d:%02d:%02d\n", FROZEN_HOUR, FROZEN_MIN, FROZEN_SEC);
     fprintf(rec_fp, "overlay: %s\n", ov);
+    /* Absent means the player's own PFEMU-STATE/, which is what every file
+     * before this line was recorded against. */
+    if(ranked_req) fprintf(rec_fp, "state: %s\n", REPLAY_STATE_CANONICAL);
     fprintf(rec_fp, "dir_hint: %s\n", rel->dir);
     fprintf(rec_fp, "events:\n");
     fflush(rec_fp);
@@ -537,6 +650,20 @@ static int validate_header(const char *path, const ReplayHeader *h){
     if(h->start_table < 0 || h->start_table > 4)
         VFAIL("[replay] '%s': start_table %d out of range 0-4",
               path, h->start_table);
+    /* A state this build does not know cannot be rebuilt, so the session
+     * cannot be either.  A known one is fully determined by sound and
+     * quality, so its overlay: line is checked, not trusted. */
+    if(h->state[0]){
+        char want[32];
+        if(strcmp(h->state, REPLAY_STATE_CANONICAL))
+            VFAIL("[replay] '%s': unknown state '%s'; this build knows '%s'",
+                  path, h->state, REPLAY_STATE_CANONICAL);
+        canonical_hash(h->sound, h->quality, want);
+        if(strcmp(h->overlay, want))
+            VFAIL("[replay] '%s': overlay %s is not the canonical state"
+                  " for sound %s, quality %d (%s)", path, h->overlay,
+                  h->sound ? "on" : "off", h->quality, want);
+    }
     if(h->have_end){
         if(!in_range(h->end_emu, 0.0, LIM_END_EMU))
             VFAIL("[replay] '%s': end_emu %g out of range 0 to %g seconds",
@@ -671,6 +798,7 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
             else if(!strncmp(s, "fullscreen:", 11)) h->fullscreen = atoi(lstrip(s+11)) != 0;
             else if(!strncmp(s, "trainer_off:", 12)) h->trainer_off = atoi(lstrip(s+12)) != 0;
             else if(!strncmp(s, "overlay:", 8)) snprintf(h->overlay, sizeof(h->overlay), "%s", lstrip(s+8));
+            else if(!strncmp(s, "state:", 6)) snprintf(h->state, sizeof(h->state), "%s", lstrip(s+6));
             else if(!strncmp(s, "dir_hint:", 9)) snprintf(h->dir_hint, sizeof(h->dir_hint), "%s", lstrip(s+9));
             /* date:/time: are informational (the epoch is fixed); nevents is
              * advisory.  Unknown lines are ignored for forward compatibility. */
@@ -901,8 +1029,9 @@ int replay_verify_install(const RelResult *rel, const char *prog,
     /* Sound on/off decides whether the .SDR driver loads at all, so it is
      * as load-bearing as the quality notch.  The install must match the
      * file; replay writes nothing, so the message says which side to flip
-     * (the launcher's Sound checkbox, in Play mode). */
-    if(rh.sound != read_sound_is_sb(rel->dir)){
+     * (the launcher's Sound checkbox, in Play mode).  A canonical file
+     * brings its own SOUND.CFG, so the install's does not enter into it. */
+    if(!rh.state[0] && rh.sound != read_sound_is_sb(rel->dir)){
         REFUSE("[replay] refused: file was recorded with sound %s, but '%s'"
                " has it %s. Match the Sound checkbox to the recording first.",
                rh.sound ? "on" : "off", rel->dir,
@@ -915,14 +1044,24 @@ int replay_verify_install(const RelResult *rel, const char *prog,
         REFUSE("[replay] refused: the trainer is enabled for '%s'."
                " Replay needs it (and the file) off.", rel->dir);
     }
-    replay_overlay_hash(rel->dir, cur);
-    if(strcmp(cur, rh.overlay)){
-        fprintf(stderr, "[replay] warning: PFEMU-STATE/ differs from the recording"
-                        " (now %s, file %s). Same inputs + different overlay can diverge.\n",
-                cur, rh.overlay);
+    /* The install's PFEMU-STATE/ is an input only to a file recorded
+     * against one; a canonical file never sees it. */
+    if(!rh.state[0]){
+        replay_overlay_hash(rel->dir, cur);
+        if(strcmp(cur, rh.overlay)){
+            fprintf(stderr, "[replay] warning: PFEMU-STATE/ differs from the recording"
+                            " (now %s, file %s). Same inputs + different overlay can diverge.\n",
+                    cur, rh.overlay);
+        }
     }
     return 0;
 #undef REFUSE
+}
+
+/* A canonical recording being replayed, or a ranked one being recorded. */
+int replay_is_ranked(void){
+    if(mode_replay) return rh_valid && rh.state[0];
+    return ranked_req;
 }
 
 void replay_apply_recorded_env(void){
@@ -948,6 +1087,9 @@ void replay_apply_recorded_env(void){
  * install's files are inputs, but the file is the session. */
 int replay_recorded_fullscreen(void){
     return (rh_valid && rh.fullscreen) ? 1 : 0;
+}
+int replay_recorded_sound(void){
+    return (rh_valid && rh.sound) ? 1 : 0;
 }
 int replay_recorded_quality(int *have){
     if(have) *have = rh_valid;
@@ -1118,6 +1260,7 @@ void replay_verify_state(ReplayVerify *out){
     if(!mode_replay || !rh_valid) return;
     out->valid           = 1;
     out->release         = rh.release_id;
+    out->state           = rh.state[0] ? rh.state : "install";
     out->events_total    = nev;
     out->events_injected = ev_idx;
     out->rec_emu         = end_emu;

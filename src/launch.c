@@ -858,6 +858,8 @@ static void details_build(LaunchState *st, char *dst, size_t n){
             if(!h->trainer_off)
                 det_kv(dst, n, "Trainer", "on when recorded - unplayable");
             if(h->overlay[0]) det_kv(dst, n, "Overlay", "%s", h->overlay);
+            det_kv(dst, n, "State", "%s", h->state[0]
+                   ? "canonical (ranked)" : "the player's own PFEMU-STATE");
             if(h->have_wav && strcmp(h->wav_hash, "none"))
                 det_kv(dst, n, "Capture", "%s, %lu samples",
                        h->wav_hash, h->wav_samples);

@@ -321,6 +321,23 @@ static int file_exists(const char *p){
     if(f){ fclose(f); return 1; }
     return 0;
 }
+
+/* Canonical state (REPLAY.md, Ranked recordings).  The overlay normally falls
+ * through to the install, so a TABLE1.HI left in the game directory by real
+ * DOS - or put there on purpose - would reach a ranked session although the
+ * canonical overlay has none.  With the shadow on, the files the game keeps
+ * its own state in exist only if the overlay has them, on every host alike.
+ * The list is the one src/release.c already excludes from identity. */
+static int state_shadow = 0;
+void dos_set_state_shadow(int on){ state_shadow = on ? 1 : 0; }
+static int is_state_file(const char *name){
+    const char *base = name, *p;
+    size_t n;
+    for(p = name; *p; p++) if(*p=='/' || *p=='\\' || *p==':') base = p+1;
+    n = strlen(base);
+    if(!_stricmp(base, "SOUND.CFG") || !_stricmp(base, "PINBALL.CFG")) return 1;
+    return n > 3 && !_stricmp(base + n - 3, ".HI");
+}
 static void overlay_path(const char *in, char *out, size_t n){
     const char *base = in, *p;
     for(p = in; *p; p++) if(*p=='/' || *p=='\\' || *p==':') base = p+1;
@@ -938,6 +955,16 @@ void dos_int21(void){
             int writing = (AH==0x3C) || ((AL & 3) != 0);
             overlay_path(name, ov, sizeof(ov));
             if(file_exists(ov)) snprintf(host, sizeof(host), "%s", ov);
+            else if(state_shadow && is_state_file(name)){
+                /* Not in the canonical overlay, so not there at all: a
+                 * create makes it in the overlay, an open finds nothing. */
+                if(AH != 0x3C){
+                    trc("[dos] open '%s' -> not found (canonical state)\n", name);
+                    AX = 2; bios_set_cf(1); break;
+                }
+                _mkdir(writedir);
+                snprintf(host, sizeof(host), "%s", ov);
+            }
             else if(writing){
                 _mkdir(writedir);
                 if(AH != 0x3C) copy_to_overlay(host, ov);   /* 3Ch truncates anyway */
@@ -1050,7 +1077,11 @@ void dos_int21(void){
         dos_path(name, host, sizeof(host));
         find_state_reset();
         find_h = FindFirstFileA(host, &fd);
-        while(find_h != INVALID_HANDLE_VALUE && (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)){
+        /* The search lists the install, never the overlay; under canonical
+         * state the install's copies of the state files are not there. */
+        while(find_h != INVALID_HANDLE_VALUE &&
+              ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+               (state_shadow && is_state_file(fd.cFileName)))){
             if(!FindNextFileA(find_h,&fd)){ FindClose(find_h); find_h = INVALID_HANDLE_VALUE; }
         }
         if(find_h == INVALID_HANDLE_VALUE){ AX = 18; bios_set_cf(1); }
@@ -1062,6 +1093,7 @@ void dos_int21(void){
         int ok = 0;
         while(find_h != INVALID_HANDLE_VALUE && FindNextFileA(find_h,&fd)){
             if(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if(state_shadow && is_state_file(fd.cFileName)) continue;
             ok = 1; break;
         }
         if(ok){ fill_dta(&fd); AX = 0; bios_set_cf(0); trc("[dos] findnext -> %s\n", fd.cFileName); }
@@ -1098,6 +1130,7 @@ void dos_init(const char *hostdir){
     int i;
     snprintf(gamedir, sizeof(gamedir), "%s", hostdir);
     snprintf(writedir, sizeof(writedir), "%s/PFEMU-STATE", gamedir);
+    state_shadow = 0;
     for(i=0;i<512;i++) if(gamedir[i]=='\\') gamedir[i]='/';
     { size_t l = strlen(gamedir); if(l && gamedir[l-1]=='/') gamedir[l-1]=0; }
     memset(fh,0,sizeof(fh));

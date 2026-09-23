@@ -223,6 +223,12 @@ void verify_report(void){
     fputs(replay_is_strict() ? "true" : "false", f);
     fputs(",\n  \"release\": ", f);
     jstr(f, rv.release ? rv.release : "");
+    /* Which PFEMU-STATE/ the session ran against: "canonical-1" for a ranked
+     * recording, "install" for one made against the player's own.  Only the
+     * first is evidence of a score, and -strict refuses the second before it
+     * gets here; the field is for a verdict made without -strict. */
+    fputs(",\n  \"state\": ", f);
+    jstr(f, rv.state ? rv.state : "install");
     fputs(",\n  \"replay\": {\n", f);
     fprintf(f, "    \"events_total\": %d,\n    \"events_injected\": %d,\n",
             rv.events_total, rv.events_injected);

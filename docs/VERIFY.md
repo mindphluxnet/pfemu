@@ -92,6 +92,7 @@ free triage tier:
 | Balls | 3 | Classic machines are 3-ball. A 5-ball game is a different game and is not comparable. |
 | Players | 1 | See [Player count](#player-count). Multi-player interleaves scores across alternating balls and is dropped entirely. |
 | Trainer | off | Already asserted by the format. |
+| State | `canonical-1` | Recorded with `-ranked`. The high-score tables in `PFEMU-STATE/` change the game during play, so a recording made against the player's own state does not replay against the verifier's. `-strict` refuses any other file with `state_not_canonical`. See [Ranked recordings](REPLAY.md#ranked-recordings). |
 
 Player count is the one line here that cannot be decided from the header; it
 comes out of the run (see below) and rejects the submission after the fact.
@@ -702,13 +703,20 @@ production, and that comparison needs to know which build gave the old
 answer. A `-dirty` build should not be verifying anything. The field is
 additive, so `pfemu_verify` stays 1.
 
+`state` says which `PFEMU-STATE/` the session ran against: `canonical-1`
+for a ranked recording, `install` for one made against the player's own.
+Only the first is evidence of a score. Under `-strict` the second never gets
+this far: it is refused with `error: state_not_canonical`, and the player
+should be told to record the run as a ranked one. The field is additive,
+like `build`.
+
 `warnings` is advisory and does not change the status. `ball_counter_rewound`
 means a ball came back by a route the segmenter does not model, so every
 attempt boundary after that point is suspect; `no_recorded_wav_hash` means
 the file predates the footer hash, which `-strict` turns into a `mismatch`.
 
 Two tests hold it. `tests/verify/` links `src/verify.c` against stubs and
-drives 17 cases - the field names, the three statuses, the exit codes, the
+drives 18 cases - the field names, the three statuses, the exit codes, the
 eligibility rule, JSON escaping, and that the object is written exactly
 once. It needs no installation, so unlike `tests/golden` it runs on a stock
 CI runner. That leaves one thing it cannot see: whether the accessors feed

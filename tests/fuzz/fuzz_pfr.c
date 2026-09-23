@@ -179,6 +179,22 @@ typedef struct { const char *name; int want; int strict; const char *body; } Cas
     "start_table: 3\n" \
     "trainer_off: 1\n" \
     "events:\n"
+/* BASE_HEAD as a ranked recording.  The overlay values are the canonical
+ * state's hash for sound off (any quality) and for sound on at quality 2,
+ * computed outside src/replay.c from the bytes docs/REPLAY.md lists. */
+#define CANON_HEAD(extra) \
+    "PFEMU-REPLAY 1\n" \
+    "release: deluxe\n" \
+    "program: PINBALL.EXE\n" \
+    "ips: 6000000.000000\n" \
+    "speed: 1\n" \
+    "quality: 2\n" \
+    "start_table: 3\n" \
+    "trainer_off: 1\n" \
+    extra \
+    "events:\n"
+#define CANON_OFF "61da2dea96515ac2"
+#define CANON_ON2 "90a24b3867a30a13"
 #define BASE_FOOT \
     "end_emu: 1.000000\n" \
     "end_cycles: 6000000\n" \
@@ -239,6 +255,23 @@ static const Case cases[] = {
    BASE_HEAD "1000 0.000167 1e 1\n" "end_emu: 1.0\nend_cycles: 6000000\n" },
  { "no integrity line, -strict", 0, 1,
    BASE_HEAD "1000 0.000167 1e 1\n" "end_emu: 1.0\nend_cycles: 6000000\n" },
+
+ /* Canonical state.  A known state is rebuilt from sound and quality, so
+  * the overlay: line has to be the one those two produce. */
+ { "canonical, sound off", 1, 1,
+   CANON_HEAD("state: canonical-1\noverlay: " CANON_OFF "\n")
+   "1000 0.000167 1e 1\n" BASE_FOOT },
+ { "canonical, sound on", 1, 1,
+   CANON_HEAD("sound: 1\nstate: canonical-1\noverlay: " CANON_ON2 "\n")
+   "1000 0.000167 1e 1\n" BASE_FOOT },
+ { "canonical, overlay of the other sound", 0, 0,
+   CANON_HEAD("sound: 1\nstate: canonical-1\noverlay: " CANON_OFF "\n")
+   "1000 0.000167 1e 1\n" BASE_FOOT },
+ { "canonical, no overlay line", 0, 0,
+   CANON_HEAD("state: canonical-1\n") "1000 0.000167 1e 1\n" BASE_FOOT },
+ { "state this build does not know", 0, 0,
+   CANON_HEAD("state: canonical-2\noverlay: " CANON_OFF "\n")
+   "1000 0.000167 1e 1\n" BASE_FOOT },
 };
 #define NCASES ((int)(sizeof(cases)/sizeof(cases[0])))
 

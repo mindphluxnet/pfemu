@@ -71,6 +71,62 @@ While recording, a small red `REC` badge sits in the window corner (green
 `PLAY` while replaying). Both are composed host-side into a back buffer -
 they never reach the game, the `.pfr`, screenshots, or `-shotevery` captures.
 
+## Ranked recordings
+
+A replay copies the replaying machine's `PFEMU-STATE/`, and the recording
+saw the player's. Those two are not the same input, and the difference
+reaches the game. The high-score tables alone change it, and they do so
+during play, not at the name entry. The Party Land vector, replayed with
+every `table1.hi` entry at 99,999,999, is identical up to t=67 s. At
+t=72.58 s one score event comes 1 ms early, on ball 1 at 4.55M, far from
+any table entry. With the file missing, the replay diverges at t=6.6 s.
+The same inputs give a different game.
+
+So a recording that is meant to rank is made against a state that neither
+side chooses:
+
+    pfemu -record run.pfr -ranked
+
+`-ranked` records against the **canonical state** `canonical-1` instead of
+the install's `PFEMU-STATE/`. That state is a temporary overlay holding one
+file, `SOUND.CFG`, built from the session's own sound setting:
+
+- **sound off:** the 16 bytes SETSOUND writes for `NOSOUND.SDR`.
+- **sound on:** 25 bytes, `SBLASTER.SDR` at 220h, IRQ 7, with the quality
+  notch at 0x14.
+
+There are no `*.HI` files, so every table starts from the game's built-in
+high scores, the same way a fresh install does. There is no `PINBALL.CFG`
+either, and the boot never reads one anyway. The DOS layer also hides the
+install's own copies of those files (`SOUND.CFG`, `PINBALL.CFG`, `*.HI`),
+the same set `release.c` excludes from identity. A `TABLE1.HI` left in the
+game directory by real DOS therefore cannot reach a ranked session, on
+either side. Whatever the game writes goes into the temporary overlay and
+is deleted at exit (`-keepoverlay` keeps it). As a result, the player's own
+high-score table is neither shown during a ranked game nor updated by it.
+
+The header records it as `state: canonical-1`, and `overlay:` then holds
+the hash of that overlay. The state is fully determined by `sound:` and
+`quality:`, so the parser recomputes the hash and refuses a file whose
+`overlay:` does not match. It also refuses a `state:` it does not know. A
+definition that changes gets a new name. `canonical-1` is never edited,
+because stored recordings replay only against the same bytes. The bytes
+are spelled out in `src/replay.c` and deliberately not shared with the
+launcher's `write_sound_cfg()`, which writes a preference that is free to
+change.
+
+On replay, a canonical file builds the same overlay itself. It never looks
+at the replaying install's `PFEMU-STATE/`, and it skips the check that the
+install's Sound setting matches the file's. **`-strict` refuses any file
+without the line** (`error: state_not_canonical` under `-verify`). Such a
+file still replays for watching, but it is no evidence of a score.
+
+What the canonical state does not cover: the game's data files come from
+the install. `release.c` pins the programs and most of `INTRO.MOD`, but
+not the other `.MOD` files. The game opens those for writing, so copies of
+them also end up in the overlay. An install that differs there produces a
+mismatch, not a false verification.
+
 ## File format (`.pfr`)
 
 Text, one file per session:
@@ -79,7 +135,8 @@ Text, one file per session:
 header:  magic + version, release_id, code hash vector, summary (display only),
          boot + start program, ips, speed, nopatch/nolzexe, sound on/off +
          quality notch, 6-byte options blob, trainer_assert_off,
-         overlay hash/snapshot ref, source dir (hint only)
+         overlay hash/snapshot ref, state (canonical-1 when ranked, absent
+         for the player's own PFEMU-STATE/), source dir (hint only)
 events:  cycles, emu_time, scancode, down/up - sorted (cycles are the clock;
          integer-exact so a fast-counter RNG reads what it read on record)
 footer:  final emu_time + cpu.cycles, capture hash (FNV-1a over the sample
