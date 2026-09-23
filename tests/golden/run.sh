@@ -88,8 +88,14 @@ for pfr in "$here"/*.pfr; do
     # Vectors with no attempt lines - mid-game excerpts - skip this and pay
     # nothing.
     if grep -q '^attempt ' "$exp"; then
+        # A ranked vector (a state: line in its header) runs this replay
+        # under -strict, the way the service runs it.  The older vectors
+        # were recorded against the player's own PFEMU-STATE/, and -strict
+        # refuses those by design, so they keep running without it.
+        strict=
+        grep -aq '^state:' "$pfr" && strict=-strict
         ( cd "$d" && "$BIN" -d "$INSTALL" -freezetime -replay "$pfr" \
-             -scoredbg -verify verdict.json >score.log 2>&1 )
+             $strict -scoredbg -verify verdict.json >score.log 2>&1 )
         got=$(awk '/^\[score\] attempt /{t="";s="";b="";l="";e="";for(i=1;i<=NF;i++){if($i ~ /^table=/)t=substr($i,7);else if($i ~ /^score=/)s=substr($i,7);else if($i ~ /^ball_reached=/)b=substr($i,14);else if($i ~ /^launches=/)l=substr($i,10);else if($i ~ /^ended=/)e=substr($i,7)}r=(index($0,"[RANKABLE]")>0)?"yes":"no";printf "attempt %s %s %s %s %s %s %s\n",$3,t,s,b,l,e,r}' "$d/score.log")
         want=$(grep '^attempt ' "$exp")
         # .expected files written before rankable was pinned carry one value
@@ -131,7 +137,7 @@ for pfr in "$here"/*.pfr; do
             vbest=$(awk '/"best":/{getline;if(match($0,/"score": [0-9]+/))print substr($0,RSTART+9,RLENGTH-9);exit}' "$d/verdict.json")
             sbest=$(awk '/^\[score\] attempt /&&index($0,"[RANKABLE]")>0{for(i=1;i<=NF;i++)if($i ~ /^score=/){v=substr($i,7)+0;if(v>m)m=v}}END{if(m)print m}' "$d/score.log")
             if [ "$vstat" = verified ] && [ "$vbest" = "$sbest" ]; then
-                echo "   verdict  ok    ${vbest:-verified, nothing rankable}"
+                echo "   verdict  ok    ${vbest:-verified, nothing rankable}${strict:+ (-strict)}"
             else
                 echo "   verdict  FAIL  status=$vstat best=${vbest:-null}" \
                      "but score.log's best rankable is ${sbest:-none}"
