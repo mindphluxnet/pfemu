@@ -229,6 +229,16 @@ follow-up `make clean` is needed.
   not been pushed. If a vector with a score shows no `verdict` line, the
   checkout is out of date, and the run is a pass for an older commit, not
   this one. Push, pull, `make`, then run.
+- **Updating the validator is `PFEMU_REF`, a rebuild and a reverify.**
+  The container builds pfemu itself from `PFEMU_REF` in
+  `pfemu-service/docker/.env`. A `git pull` and `make` in a checkout on
+  the Mac Mini, and a container restart, change nothing it runs. So: set
+  `PFEMU_REF` to a pushed commit, `docker compose up -d --build`, add the
+  new build to `builds = [...]` in `pfweb.toml` if that list is set, then
+  `docker compose run --rm dispatch reverify` on the web server. Nothing
+  triggers the reverify by itself (decided 2026-09-23: the validator is
+  rarely rebuilt). Until then a kept recording keeps the old build's
+  result, and resubmitting the same file does not change that.
 - **An `.expected` is generated, never typed.** `mkexpected.sh` refuses to
   overwrite a differing file and leaves `.expected.new` beside it, because
   an expected value that changed on its own is a finding. Read the diff
