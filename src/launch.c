@@ -2510,13 +2510,12 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         st->hSubState = CreateWindowExA(0,"STATIC","",WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
                             ox+24,gy+72,374,16,h,0,cs->hInstance,0);
         SendMessageA(st->hSubState,WM_SETFONT,(WPARAM)st->hFont,0);
-        /* The server's own name is the website link; "My account" appears
-         * once there is one (update_online_ui). */
-        { const char *host = st->online.server;
-          int lw = 0;
-          if(!_strnicmp(host, "https://", 8)) host += 8;
-          else if(!_strnicmp(host, "http://", 7)) host += 7;
-          st->hWebLink = make_link(h, st, host, ox+24, gy+95, 250, ID_WEBLINK, &lw);
+        /* The website's front page is the boards.  Named for what it shows,
+         * not the server's name, which is not meant to stay.  "My account"
+         * appears once there is one (update_online_ui). */
+        { int lw = 0;
+          st->hWebLink = make_link(h, st, "Leaderboards", ox+24, gy+95, 250,
+                                   ID_WEBLINK, &lw);
           st->hMeLink = make_link(h, st, "My account", ox+24+lw+18, gy+95, 120,
                                   ID_MELINK, NULL); }
         y += gh + 8;
