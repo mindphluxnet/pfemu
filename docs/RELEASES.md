@@ -245,6 +245,59 @@ code), `REP MOVS` overlap (regression-tested both directions in
 `tools/reptest.c`), interrupt scheduling (the guest holds IF off; pfemu
 delivers on time), retrace-pulse fraction, and CPU starvation / quality notch.
 
+## GOG.com edition (2013): the Deluxe CD, not a new release
+
+GOG sells "Pinball Fantasies Deluxe" (game id 1207664103) as DOSBox 0.74
+plus an image of the Deluxe CD. Examined 2026-09-23 from an installation in
+`C:\GOG Games\Pinball Fantasies Deluxe\`. **Every Fantasies file on it is
+byte-identical to `deluxe`**, so pfemu recognises it as `deluxe` with no
+change to the database.
+
+What GOG ships:
+
+- `game.gog` (8,805,888 bytes) is track 1 of the disc as a raw image:
+  3,744 sectors of 2,352 bytes, Mode 2 Form 1, so the 2,048 data bytes of
+  each sector start at offset 24. Tools that expect a plain ISO refuse it.
+  `game.inst` is the cue sheet: track 1 is `game.gog`, tracks 2-5 are CD
+  audio as `MUSIC\Track02-05.ogg`. (GOG's cue sheet points track 5 at
+  `Track02.ogg`, so `Track05.ogg` is never played. Pinball Fantasies itself
+  plays `.MOD` music and does not use these tracks.)
+- `python tools/gogextract.py game.gog <dir>` extracts it. Without `<dir>` it
+  only lists the files.
+- The image was rebuilt from files, not ripped from a pressed disc. The
+  primary volume descriptor says `IMGBURN V2.5.7.0`, created 2013-02-14. Its
+  volume is `PFD_MASTER`, 3,732 sectors (the last 12 of the 3,744 are
+  padding). It also has an ISO 9660/UDF bridge (`BEA01`, `NSR02`). Every
+  file keeps its 1995-03-17 02:41 timestamp.
+- Disc contents: `PFD\FANTASY\` (12 files), `SOUNDSYS\` (12), `PFD\MANIA\`
+  (Pinball Mania, 46 files), and the menu files `PFD.EXE`, `PFDMENU.PIC`,
+  `INSTALL.COM`, `CD_DRIVE.EXE`, `21STCENT.NFO`.
+- The installed `21STCENT\` directory on C: is what the Deluxe `INSTALL.COM`
+  would leave behind. `PFD.EXE`, `PFD\PINBALL.EXE` and all of `SOUNDSYS\` are
+  the disc files byte for byte. What is not on the disc is state written
+  during installation: `CD.NFO` (1 byte, `03` = drive D:), `PFD\PINBALL.CFG`
+  (`00 00 01 00 01 00`), `PFD\MANIA.CFG` (13 bytes), and
+  `SOUNDSYS\SOUND.CFG` (SB16, 20 bytes). DOSBox mounts the image as D: and
+  starts `C:\21STCENT\PFD.EXE`.
+
+Compared with `FANTASYDX` (SHA-256, full files):
+
+| Files | Result |
+|---|---|
+| `INTRO.PRG`, `TABLE1-4.PRG`, `PINBALL.EXE` (the code vector and boot file) | Identical to `deluxe`; see the hashes above |
+| `INTRO.MOD` | Identical over the full file, including the `2D F9` tail |
+| `MOD2.MOD`, `TABLE1-4.MOD` | Identical |
+| The 11 `.SDR` drivers and `SETSOUND.EXE` | Identical |
+| Files in `FANTASYDX` that are not on the disc | None. The 24 files are exactly `PFD\FANTASY\` plus `SOUNDSYS\` |
+
+For pfemu, copy `PFD\FANTASY\*` and `SOUNDSYS\*` from the extracted disc
+into one directory. Detection only looks at these hashes, so `-releases`
+reports that directory as `deluxe`.
+
+The disc also holds the menu (`PFD.EXE`) and Pinball Mania. Our `deluxe`
+collection has neither, so this is the first copy of them we have. pfemu does
+not run either one.
+
 ## Adding a new release
 
 Keep the unmodified files and record: archive name and source, full
