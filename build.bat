@@ -24,6 +24,6 @@ for /f "usebackq delims=" %%i in (`git describe --always --dirty --abbrev^=12 2^
 >src\build.h echo #define PFEMU_BUILD "%PFEMU_BUILD%"
 rc /nologo /fo pfemu.res res\pfemu.rc
 if errorlevel 1 exit /b 1
-cl /nologo /O2 /GL /W3 /wd4996 /Fe:pfemu.exe src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c src/main.c src/run.c src/launch.c src/online.c src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c src/replay.c src/snapshot.c src/verify.c src/vgafont.c pfemu.res user32.lib gdi32.lib winmm.lib comctl32.lib comdlg32.lib shell32.lib winhttp.lib crypt32.lib /link /LTCG /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
+cl /nologo /O2 /GL /W3 /wd4996 /Fe:pfemu.exe src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c src/main.c src/run.c src/launch.c src/online.c src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/cdimage.c src/png.c src/replay.c src/snapshot.c src/verify.c src/vgafont.c pfemu.res user32.lib gdi32.lib winmm.lib comctl32.lib comdlg32.lib shell32.lib winhttp.lib crypt32.lib advapi32.lib /link /LTCG /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup
 del *.obj
 del pfemu.res

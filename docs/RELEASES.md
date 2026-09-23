@@ -290,9 +290,17 @@ Compared with `FANTASYDX` (SHA-256, full files):
 | The 11 `.SDR` drivers and `SETSOUND.EXE` | Identical |
 | Files in `FANTASYDX` that are not on the disc | None. The 24 files are exactly `PFD\FANTASY\` plus `SOUNDSYS\` |
 
-For pfemu, copy `PFD\FANTASY\*` and `SOUNDSYS\*` from the extracted disc
-into one directory. Detection only looks at these hashes, so `-releases`
-reports that directory as `deluxe`.
+pfemu needs `PFD\FANTASY\*` and `SOUNDSYS\*` in one flat directory. The
+launcher does that itself (`src/cdimage.c`): when GOG's registry key
+(`HKLM\SOFTWARE\WOW6432Node\GOG.com\Games\1207664103`, value `path`) points
+at a `game.gog` and no recognised `deluxe` is present, it offers once to copy
+the 24 files into `GOG\`, then scans again. The copy is made in a hidden
+`.pfemu-import` directory and renamed at the end, so a failed import leaves
+nothing half-filled behind. The import only copies. `release_detect()` decides
+what the result is, as for any other folder. A No is kept in `pfemu-gog.cfg`
+next to the exe. The same code reads a plain 2048-byte ISO or a Mode 1 raw
+image, so an image of the retail disc would work too, but nothing offers that
+yet.
 
 The disc also holds the menu (`PFD.EXE`) and Pinball Mania. Our `deluxe`
 collection has neither, so this is the first copy of them we have. pfemu does

@@ -88,8 +88,13 @@ only a place to look. The release is always decided by the files inside it.
 `pfemu.exe -releases` prints the detection report for each installation it
 finds.
 
-- **Deluxe CD-ROM:** there is no extractor, so copy the files yourself. The
-  1995 release installed in two halves. `PINBALL.EXE`, `SETSOUND.EXE`, and the
+- **Deluxe from GOG.com:** nothing to do. When the GOG version is installed
+  and no Deluxe is present yet, the launcher offers once to copy the game out
+  of GOG's `game.gog` CD image into `GOG\`. The GOG installation is not
+  changed. If you said No, delete `pfemu-gog.cfg` next to `pfemu.exe` to be
+  asked again.
+- **Deluxe CD-ROM:** copy the files yourself. The 1995 release installed in
+  two halves. `PINBALL.EXE`, `SETSOUND.EXE`, and the
   `.SDR` drivers went onto the hard drive, while `INTRO.PRG`, `TABLE1-4.PRG`,
   and the `.MOD` music stayed on the CD. pfemu does not emulate a CD drive, so
   combine both halves into one flat folder.

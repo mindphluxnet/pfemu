@@ -36,3 +36,4 @@ GAME
 /probe.pfr
 /*.pfr
 !tests/golden/*.pfr
+GOG

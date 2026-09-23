@@ -657,6 +657,10 @@ const char *snapshot_error(void);
 void snapshot_slot_path(const char *dir, char *dst, size_t n);
 /* ------------------------------------------------------------- imaging --- */
 int save_png(const char *path, const uint32_t *pix, int w, int h); /* src/png.c */
+/* src/cdimage.c: copy the Deluxe CD's game files out of an image (GOG's
+ * game.gog, or any ISO/raw image of that disc) into one new flat folder.
+ * 0 on success; err gets the reason on failure, the file count on success. */
+int cdimage_import(const char *image, const char *dest, char *err, size_t n);
 
 /* ------------------------------------------------------------ tracing ---- */
 extern int trace_level;

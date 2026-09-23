@@ -17,6 +17,7 @@ binary, no runtime dependencies beyond Windows and the game data.
 | `src/release.c` | Release detection by SHA-256 (`src/reltable.h` generated) |
 | `src/lzexe.c` | LZEXE 0.91 unpacking at load |
 | `src/launch.c` | Native launcher and saved options |
+| `src/cdimage.c` | Deluxe CD image import (GOG's `game.gog`) for the launcher |
 | `src/replay.c` | Session record/replay |
 | `src/main.c` | Window, input, main loop |
 

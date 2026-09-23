@@ -3832,6 +3832,79 @@ static int last_restore(LaunchState *st){
     return 0;
 }
 
+/* GOG.com sells the Deluxe CD as DOSBox plus game.gog, a raw image of the
+ * disc (docs/RELEASES.md, GOG section).  When that is installed and no
+ * Deluxe is here yet, the launcher offers once to copy the game out of the
+ * image into GOG\, beside the other installations, so nobody has to unpack
+ * it by hand.  The GOG installation itself is only read.  What the copy is
+ * gets decided by release_detect() like any other folder - the offer never
+ * makes it a release by itself.  A "No" is remembered in pfemu-gog.cfg next
+ * to the exe (its own file, for the same reason as LAST_WINPOS). */
+#define GOG_GAME_ID  "1207664103"
+#define GOG_DIR      "GOG"
+#define GOG_FILE     "pfemu-gog.cfg"
+
+/* <install path>\game.gog, from the key GOG's installer writes. */
+static int gog_find_image(char *out, size_t n){
+    static const char *const keys[] = {
+        "SOFTWARE\\WOW6432Node\\GOG.com\\Games\\" GOG_GAME_ID,
+        "SOFTWARE\\GOG.com\\Games\\" GOG_GAME_ID,
+    };
+    char dir[MAX_PATH];
+    int i;
+    for(i = 0; i < 2; i++){
+        DWORD len = sizeof(dir);
+        if(RegGetValueA(HKEY_LOCAL_MACHINE, keys[i], "path", RRF_RT_REG_SZ,
+                        NULL, dir, &len) != ERROR_SUCCESS) continue;
+        snprintf(out, n, "%s\\game.gog", dir);
+        if(GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return 1;
+    }
+    return 0;
+}
+
+/* 1 when GOG\ was just filled from the image. */
+static int gog_offer(const RelResult *inst, int ninst){
+    char image[MAX_PATH + 16], cfg[1080], msg[1400], err[800];
+    FILE *f;
+    int i, r;
+    HCURSOR prev;
+    for(i = 0; i < ninst; i++)
+        if(release_runnable(&inst[i]) && !_stricmp(inst[i].rel->id, "deluxe"))
+            return 0;
+    if(GetFileAttributesA(GOG_DIR) != INVALID_FILE_ATTRIBUTES) return 0;
+    last_path(cfg, sizeof(cfg), GOG_FILE);
+    if(GetFileAttributesA(cfg) != INVALID_FILE_ATTRIBUTES) return 0;
+    if(!gog_find_image(image, sizeof(image))) return 0;
+    snprintf(msg, sizeof(msg),
+             "Pinball Fantasies Deluxe from GOG.com is installed here:\n\n"
+             "    %s\n\n"
+             "pfemu can copy the game out of its CD image into a folder named "
+             GOG_DIR " beside your other installations (24 files, 3.7 MB). "
+             "The GOG installation is not changed.\n\n"
+             "Import it now? If you choose No, pfemu will not ask again.",
+             image);
+    if(MessageBoxA(NULL, msg, "pfemu - GOG version found",
+                   MB_YESNO | MB_ICONQUESTION) != IDYES){
+        f = fopen(cfg, "w");
+        if(f){
+            fprintf(f, "# The launcher offered to import the GOG version and"
+                       " was told No.\n# Delete this file to be asked again.\n");
+            fprintf(f, "declined=%s\n", image);
+            fclose(f);
+        }
+        return 0;
+    }
+    prev = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    r = cdimage_import(image, GOG_DIR, err, sizeof(err));
+    SetCursor(prev);
+    if(r != 0){
+        snprintf(msg, sizeof(msg), "The GOG version could not be imported:\n\n%s", err);
+        MessageBoxA(NULL, msg, "pfemu - GOG import", MB_OK | MB_ICONWARNING);
+        return 0;
+    }
+    return 1;
+}
+
 /* The launcher, for as long as it is open.  Launch starts the game as a
  * child process (spawn_game()) and the window stays; the process exits
  * when the launcher is closed.  Returns the exit code. */
@@ -3846,6 +3919,7 @@ int run_launcher(void){
      * size the layout needs (st.cw, st.ch), and the window gets it as soon
      * as it exists. */
     int winw = LC_CW + 18, winh = 520;
+    int imported;
     INITCOMMONCONTROLSEX icc;
     memset(&wc,0,sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -3870,6 +3944,9 @@ int run_launcher(void){
      * comes first when it exists, then the rest alphabetically, so the
      * default selection is stable rather than filesystem-order. */
     st.ninst = release_scan(st.inst, MAX_INSTALLS);
+    /* Before the window exists: its layout depends on how many there are. */
+    imported = gog_offer(st.inst, st.ninst);
+    if(imported) st.ninst = release_scan(st.inst, MAX_INSTALLS);
     st.sel = 0;
     /* Prefer landing on one that can actually be launched. */
     { int i;
@@ -3878,8 +3955,14 @@ int run_launcher(void){
     /* ...but the installation launched last time wins when it is still
      * there (same directory, else the same release elsewhere) - its
      * PFEMU-STATE/pfemu.cfg is then what the dialog below loads, so the
-     * settings come back with it. */
+     * settings come back with it.  A copy just imported wins over both:
+     * it is what the user said Yes to a moment ago. */
     last_restore(&st);
+    if(imported){
+        int i;
+        for(i=0;i<st.ninst;i++)
+            if(!_stricmp(st.inst[i].dir, GOG_DIR)){ st.sel = i; break; }
+    }
     { const char *dir = cur_game_dir(&st);
       PfCfg c;
       cfg_read(dir, &c);
