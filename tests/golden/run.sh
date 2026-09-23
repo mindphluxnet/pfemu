@@ -147,6 +147,26 @@ for pfr in "$here"/*.pfr; do
             echo "   verdict  FAIL  -verify wrote no file"
             bad=1
         fi
+        # Points per ball.  Each attempt is one line of the verdict; its
+        # ball_scores must add up to its score, and where .expected pins
+        # them (a "balls" line per attempt) they must be those.  Read up to
+        # "best", which repeats one of the attempts on a line of the same
+        # shape.
+        if [ -f "$d/verdict.json" ]; then
+            vballs=$(awk '/"best":/{exit}/^    \{ "index": /{i=$0;sub(/.*"index": /,"",i);sub(/,.*/,"",i);s=$0;sub(/.*"score": /,"",s);sub(/,.*/,"",s);b=$0;sub(/.*"ball_scores": \[/,"",b);sub(/\].*/,"",b);gsub(/,/,"",b);n=split(b,p," ");t=0;for(k=1;k<=n;k++)t+=p[k];printf "balls %s%s%s\n",i,(n?" ":""),b;if(t!=s)printf "SUM %s %s %s\n",i,t,s}' "$d/verdict.json")
+            wballs=$(grep '^balls ' "$exp" | tr -d '\r')
+            if printf '%s\n' "$vballs" | grep -q '^SUM '; then
+                echo "   balls    FAIL  $(printf '%s\n' "$vballs" | grep '^SUM ' | head -1) (attempt, sum, score)"
+                bad=1
+            elif [ -n "$wballs" ] && [ "$wballs" != "$vballs" ]; then
+                echo "   balls    FAIL"
+                echo "$wballs" | sed 's/^/     want /'
+                echo "$vballs" | sed 's/^/     got  /'
+                bad=1
+            else
+                echo "   balls    ok    $(printf '%s\n' "$vballs" | head -1 | cut -d' ' -f3-)${wballs:+ (pinned)}"
+            fi
+        fi
         # The watchdog added with the ball-return invariant: if it fires,
         # something returned a ball by a route the segmenter does not model,
         # and the score above should not be believed even if it matched.

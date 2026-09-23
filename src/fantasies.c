@@ -2014,6 +2014,12 @@ typedef struct {
     double start_emu, end_emu;
     uint64_t score;
     const char *how;                      /* attract | abandoned | ... */
+    /* ball_end[n]: the score when the counter first moved past ball n, for
+     * n = 1..nball_ends.  sc_close() turns these into ball_scores. */
+    uint64_t ball_end[SCORE_BALLS];
+    int nball_ends;
+    uint64_t ball_scores[SCORE_BALLS];
+    int nball_scores;
 } ScAttempt;
 static ScAttempt sc_log[SC_LOG];
 static int sc_nlog = 0;
@@ -2023,6 +2029,7 @@ static ScAttempt sc_cur;
 static int sc_next_index = 1;
 static int sc_spring_prev = -1;           /* SPRING_VALID at the last poll */
 static int sc_ball_prev = -1;
+static int sc_ball_edge = 0;               /* counter moved up to this; its score not read yet */
 static int sc_have_ball = 0;               /* BALLS[11] has read 1 this attempt */
 static int sc_flag_warned = 0;             /* DEMOMODE audit, reported once */
 static int sc_rewind_warned = 0;           /* ball counter went backwards */
@@ -2404,6 +2411,47 @@ static void sc_print(const ScAttempt *a){
         a->how, why);
 }
 
+/* Points per ball.  A ball ends where the counter moves on, and the score at
+ * that moment is its boundary.  Measured on the ranked Party Land vector: the
+ * end-of-ball bonus is counted up while the counter still shows the old ball
+ * (ball 1's bonus finishes at t=365.85, the counter moves at t=366.54), so
+ * the bonus belongs to the ball that earned it, as it does on the machine.
+ * The new-ball score transaction ran once in that whole game, at the start.
+ *
+ * The counter is read at the top of fantasies_score_tick() and the score at
+ * the bottom of the same call, with no guest code in between, so the boundary
+ * is the score at the first poll that sees the new ball.  When that poll has
+ * no stable score (mid-transaction, bad digits) the edge waits for the next
+ * one that does.  Every ball the counter skipped ends at the same score. */
+static void sc_mark_balls(uint64_t v){
+    int n;
+    if(!sc_ball_edge) return;
+    for(n = sc_cur.nball_ends + 1; n < sc_ball_edge && n < SCORE_BALLS; n++)
+        sc_cur.ball_end[sc_cur.nball_ends++] = v;
+    sc_ball_edge = 0;
+}
+
+static void sc_split_balls(void){
+    uint64_t prev = 0, end;
+    int i;
+    sc_cur.nball_scores = 0;
+    for(i = 0; i <= sc_cur.nball_ends; i++){
+        end = i < sc_cur.nball_ends ? sc_cur.ball_end[i] : sc_cur.score;
+        /* A score that went down is already unrankable (sc_cur.decreased);
+         * a negative ball is not worth a signed type in the verdict. */
+        sc_cur.ball_scores[sc_cur.nball_scores++] = end > prev ? end - prev : 0;
+        if(end > prev) prev = end;
+    }
+}
+
+static void sc_print_balls(const ScAttempt *a){
+    int i;
+    fprintf(stderr, "[score] ball scores of attempt %d:", a->index);
+    for(i = 0; i < a->nball_scores; i++)
+        fprintf(stderr, " %llu", (unsigned long long)a->ball_scores[i]);
+    fputc('\n', stderr);
+}
+
 static void sc_close(const char *how){
     if(!sc_state) return;
     sc_cur.how = how;
@@ -2424,8 +2472,12 @@ static void sc_close(const char *how){
     sc_cur.rankable = (!strcmp(how, "attract") && sc_cur.locked &&
                        !sc_cur.trainer && sc_cur.players == 1 &&
                        !sc_cur.bad_digits && !sc_cur.decreased);
+    /* A ball that ended with no stable poll after it ends at the final score. */
+    sc_mark_balls(sc_cur.score);
+    sc_split_balls();
     if(sc_nlog < SC_LOG) sc_log[sc_nlog++] = sc_cur;
     sc_print(&sc_cur);
+    sc_print_balls(&sc_cur);
     sc_state = 0;
 }
 
@@ -2527,6 +2579,7 @@ void fantasies_score_exec(uint32_t lin){
         sc_seen_begin = 1;
         sc_spring_prev = -1;
         sc_ball_prev = -1;
+        sc_ball_edge = 0;
         sc_have_ball = 0;
         sc_flag_warned = 0;
         sc_rewind_warned = 0;
@@ -2595,6 +2648,8 @@ void fantasies_score_tick(void){
         if(sc_ball_prev > 0 && ball != sc_ball_prev)
             fprintf(stderr, "[score] t=%.3f ball %d -> %d (of %d)\n",
                     emu_time, sc_ball_prev, ball, sc_cur.nballs);
+        if(sc_ball_prev > 0 && ball > sc_ball_prev && ball > sc_ball_edge)
+            sc_ball_edge = ball;
         /* The invariant every ball-return mechanism has held to so far:
          * the counter only ever counts UP.  Nothing gives a ball back by
          * rewinding it - the match sets XXBALLE and an extra ball
@@ -2691,6 +2746,7 @@ void fantasies_score_tick(void){
                 (unsigned long long)v);
         sc_line_t = emu_time;
     }
+    sc_mark_balls(v);
     sc_last_score = v;
 }
 
@@ -2702,6 +2758,7 @@ int fantasies_score_count(void){ return sc_nlog; }
 
 int fantasies_score_get(int i, ScoreAttempt *out){
     const ScAttempt *a;
+    int k;
     if(!out || i < 0 || i >= sc_nlog) return 0;
     a = &sc_log[i];
     out->index        = a->index;
@@ -2719,6 +2776,10 @@ int fantasies_score_get(int i, ScoreAttempt *out){
     out->end_emu      = a->end_emu;
     out->start_cycles = a->start_cycles;
     out->end_cycles   = a->end_cycles;
+    out->nball_scores = a->nball_scores;
+    for(k = 0; k < SCORE_BALLS; k++)
+        out->ball_scores[k] = k < a->nball_scores ?
+                              (unsigned long long)a->ball_scores[k] : 0;
     return 1;
 }
 

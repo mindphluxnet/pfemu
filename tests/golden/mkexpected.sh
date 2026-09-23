@@ -196,6 +196,13 @@ events=$(sed -n 's/.*: [a-z]*, \([0-9]*\) events,.*/\1/p' "$work/run.log" | head
         echo "# -scoredbg: index table score ball_reached launches ended rankable"
         awk '/^\[score\] attempt /{t="";s="";b="";l="";e="";for(i=1;i<=NF;i++){if($i ~ /^table=/)t=substr($i,7);else if($i ~ /^score=/)s=substr($i,7);else if($i ~ /^ball_reached=/)b=substr($i,14);else if($i ~ /^launches=/)l=substr($i,10);else if($i ~ /^ended=/)e=substr($i,7)}r=(index($0,"[RANKABLE]")>0)?"yes":"no";printf "attempt %s %s %s %s %s %s %s\n",$3,t,s,b,l,e,r}' "$work/score.log"
     fi
+    # Points per ball, as the verdict's ball_scores carries them: one entry
+    # per value of the ball counter, the last one after the last ball.
+    if grep -q '^\[score\] ball scores of attempt ' "$work/score.log"; then
+        echo "# -scoredbg: index, then the points of each ball"
+        sed -n 's/^\[score\] ball scores of attempt \([0-9]*\): *\(.*\)$/balls \1 \2/p' "$work/score.log" \
+            | sed 's/ *$//'
+    fi
 } > "$exp.new"
 
 if [ -f "$exp" ]; then

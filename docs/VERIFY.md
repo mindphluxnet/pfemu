@@ -710,6 +710,19 @@ this far: it is refused with `error: state_not_canonical`, and the player
 should be told to record the run as a ranked one. The field is additive,
 like `build`.
 
+`ball_scores`, on every attempt, is its score split by ball: one entry per
+value the ball counter held, from 1 on, so a finished 3-ball game has four,
+the last being what the match or a late extra ball added (usually 0). The
+entries sum to `score` unless the score went down, which is unrankable
+anyway. A ball ends at the first poll that sees the counter move on, and
+the end-of-ball bonus belongs to it: measured on the ranked Party Land
+vector, ball 1's bonus finishes counting at t=365.85 s and the counter moves
+at t=366.54 s. A shoot-again ball has the same number as the one it
+replaces, so it counts toward it, as the game's own display does. Past 16
+entries the rest goes in the last one. `tests/golden/run.sh` checks the sum
+on every vector and the values where `.expected` has a `balls` line. The
+field is additive, like `build`.
+
 `warnings` is advisory and does not change the status. `ball_counter_rewound`
 means a ball came back by a route the segmenter does not model, so every
 attempt boundary after that point is suspect; `no_recorded_wav_hash` means

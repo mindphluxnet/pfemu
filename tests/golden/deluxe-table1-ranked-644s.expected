@@ -50,3 +50,5 @@ frame 031 5b9fd1f760d0149b03f55c55362ed79e
 frame 032 b8b5fcc48d8e583f3772e702c1f32173
 # -scoredbg: index table score ball_reached launches ended rankable
 attempt 1 1 33415380 4 4 attract yes
+# -scoredbg: index, then the points of each ball
+balls 1 13889330 14913880 4612170 0

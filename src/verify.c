@@ -134,6 +134,7 @@ void verify_fail(const char *msg){
 }
 
 static void jattempt(FILE *f, const ScoreAttempt *a, const char *ind){
+    int i;
     fprintf(f, "%s{ \"index\": %d, \"table\": %d, \"players\": %d,"
                " \"balls\": %d, \"ball_reached\": %d, \"launches\": %d,"
                " \"springflips\": %d, \"score\": %llu, \"ended\": ",
@@ -145,10 +146,15 @@ static void jattempt(FILE *f, const ScoreAttempt *a, const char *ind){
     fputs(", \"reason\": ", f);
     jstr(f, a->reason);
     fprintf(f, ", \"start_emu\": %.6f, \"end_emu\": %.6f,"
-               " \"start_cycles\": %llu, \"end_cycles\": %llu }",
+               " \"start_cycles\": %llu, \"end_cycles\": %llu",
             a->start_emu, a->end_emu,
             (unsigned long long)a->start_cycles,
             (unsigned long long)a->end_cycles);
+    /* Additive, like "build": pfemu_verify stays 1. */
+    fputs(", \"ball_scores\": [", f);
+    for(i = 0; i < a->nball_scores && i < SCORE_BALLS; i++)
+        fprintf(f, "%s%llu", i ? ", " : "", a->ball_scores[i]);
+    fputs("] }", f);
 }
 
 /* The exit verdict.  Called from run.c after replay_report() and

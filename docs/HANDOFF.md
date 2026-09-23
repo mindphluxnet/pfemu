@@ -46,6 +46,10 @@ The work done before it is finished:
   See the verdict section of VERIFY.md. Since `c24cf6a` it also carries
   `build` (`git describe --dirty` at compile time, via a generated
   `src/build.h`), so each stored verdict names the binary that produced it.
+  Since 2026-09-23 every attempt also carries `ball_scores`, its points per
+  ball (VERIFY.md, "The verdict"), for the entry pages on pfemu-web. The
+  live verdicts only get it after the validator builds this commit and
+  `pfweb reverify` runs.
 - **The input side is hardened.** The `.pfr` parser bounds every field,
   refuses events stamped past the footer (that used to be an endless run),
   and `-strict` refuses what a verifier should not accept. 27 regression cases

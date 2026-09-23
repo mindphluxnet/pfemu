@@ -93,6 +93,12 @@ static void attempt(int index, int table, unsigned long long score,
     a->rankable = rankable;
     a->start_emu = 1.0; a->end_emu = 2.0;
     a->start_cycles = 10; a->end_cycles = 20;
+    /* Three balls and nothing after the last, as fantasies.c splits it. */
+    a->nball_scores = 4;
+    a->ball_scores[0] = score / 4;
+    a->ball_scores[1] = score / 2;
+    a->ball_scores[2] = score - score / 4 - score / 2;
+    a->ball_scores[3] = 0;
 }
 
 static void slurp(void){
@@ -155,6 +161,7 @@ int main(int argc, char **argv){
             "\"score\": 20652570", "\"rankable\": true",
             "\"reason\": \"rankable\"", "\"ended\": \"attract\"",
             "\"table\": 1", "\"ball_reached\": 4", "\"launches\": 5",
+            "\"ball_scores\": [5163142, 10326285, 5163143, 0]",
             "\"warnings\": []", NULL };
         static const char *n[] = { "\"best\": null", NULL };
         good();
@@ -303,6 +310,22 @@ int main(int argc, char **argv){
         g_rv.state = NULL;
         verify_report();
         check("state of an unranked recording", 0, w, n);
+    }
+
+    /* 10c. Points per ball.  An attempt that stopped on its first ball has
+     *      one entry; one that never had a ball counted has an empty list,
+     *      not a missing field. */
+    {
+        static const char *w[] = { "\"ball_scores\": [8800000]",
+                                   "\"ball_scores\": []", NULL };
+        good();
+        attempt(1, 1, 8800000ULL, "unfinished", "no_clean_end", 0);
+        g_at[0].nball_scores = 1;
+        g_at[0].ball_scores[0] = 8800000ULL;
+        attempt(2, 1, 0ULL, "abandoned", "no_clean_end", 0);
+        g_at[1].nball_scores = 0;
+        verify_report();
+        check("ball scores", 0, w, NULL);
     }
 
     /* 11. -verify on something that is not a replay. */
