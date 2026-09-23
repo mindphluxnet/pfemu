@@ -3462,7 +3462,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
         } else if(id==ID_SUBLIST){
             start_list(h, st, 1);
         } else if(id==ID_WEBLINK && HIWORD(w)==STN_CLICKED){
-            open_web(h, st->online.server, "/");
+            open_web(h, st->online.server, "/boards");
         } else if(id==ID_MELINK && HIWORD(w)==STN_CLICKED){
             open_web(h, st->online.server, "/me");
         } else if(id==ID_LAUNCH){
