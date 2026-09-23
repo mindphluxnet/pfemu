@@ -17,6 +17,7 @@ GAME
 *.txt
 /pfemu-last.cfg
 /pfemu-winpos.cfg
+/pfemu-online.cfg
 
 # Headless build (Makefile)
 *.o
