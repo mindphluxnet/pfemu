@@ -184,8 +184,13 @@ compared program by program against the selected install, and that
 install's own detection report.
 
 **The Replays window** lists every `sessions/*.pfr`, newest first: its
-best rankable three-ball game per table (from the `.games` file), its
-length, and where it stands on the leaderboard. That status is matched on
+best rankable three-ball game per table, its length, and where it stands on
+the leaderboard. The scores are the server's once a verified result ranks
+them, and until then pfemu's own count from the `.games` file, in grey. A
+recording from before `.games` existed gets one from its first replay in
+the launcher that runs to the end: a replay started with `-launched` counts
+the games too and writes the file when there is none. `-verify` and a
+command-line `-replay` never write it. That status is matched on
 the SHA-256 of the file against `GET /api/v1/submissions`, which is how the
 server keys an upload. Each row has a **Submit** cell (a complete ranked
 recording the server does not have yet) and a **Delete** cell; Del deletes

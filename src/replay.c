@@ -1199,6 +1199,14 @@ int replay_should_stop(void){
     return out;
 }
 
+/* The replay ran to the recording's own end, rather than being closed
+ * early: every event is in and the footer's stop was reached. */
+int replay_completed(void){
+    if(!mode_replay || !rh_valid || ev_idx < nev) return 0;
+    if(end_cycles > 0) return cpu.cycles >= end_cycles;
+    return end_emu >= 0.0 && emu_now() >= end_emu;
+}
+
 void replay_report(void){
     if(mode_record || rec_fp){
         /* Ended without going through replay_end_record (should not happen;

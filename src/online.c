@@ -436,7 +436,7 @@ void json_esc(const char *in, char *out, size_t n){
  * use. */
 const char *online_reason_text(const char *reason){
     static const struct { const char *code, *text; } t[] = {
-        { "rankable", "It counts." },
+        { "rankable", "Verified and ranked." },
         { "no_rankable_attempt", "No finished one-player game. The recording has to run"
                                  " until the game is back in attract mode." },
         { "balls_not_3", "Only 3-ball games rank." },

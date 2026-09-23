@@ -1224,11 +1224,11 @@ static void sub_describe(const char *s, const char *e, char *out, size_t n,
         }
     }
     if(rankable && games[0]){
-        snprintf(out, n, "Submission #%lld: %s. It counts! (build %s)", id, games,
+        snprintf(out, n, "Submission #%lld verified and ranked: %s (build %s)", id, games,
                  build[0] ? build : "?");
     } else if(rankable && json_num(rs, re, "score", &score)){
         fmt_score(score, sc, sizeof(sc));
-        snprintf(out, n, "Submission #%lld: %s points. It counts! (build %s)", id, sc,
+        snprintf(out, n, "Submission #%lld verified and ranked: %s points (build %s)", id, sc,
                  build[0] ? build : "?");
     } else {
         snprintf(out, n, "Submission #%lld: %s (build %s)", id,
@@ -2107,6 +2107,7 @@ typedef struct {
     int have_sha;
     long sub_s, sub_e;       /* its object in RlState.subs, -1 when none */
     int kind;                /* SL_*: how its Leaderboard cell is coloured */
+    int verified;            /* its scores cell is the server's, not ours */
     int uploading;           /* its Submit was clicked, no answer yet */
 } RlItem;
 
@@ -2239,6 +2240,8 @@ static void rl_cells(RlState *d, RlItem *x, char c[RC_COLS][SL_CELL]){
                                   k ? ", " : "", sc, table_name(t));
         }
         if(!k) snprintf(c[RC_SCORES], SL_CELL, "none finished");
+    } else if(x->hd_ok && x->hd.have_end && !rl_busy(d, x)){
+        snprintf(c[RC_SCORES], SL_CELL, "not counted yet - replay it once");
     }
     if(x->hd_ok && x->hd.have_end){
         int s = (int)(x->hd.end_emu + 0.5);
@@ -2261,6 +2264,13 @@ static void rl_cells(RlState *d, RlItem *x, char c[RC_COLS][SL_CELL]){
     else if(!st->online.token[0]) snprintf(c[RC_BOARD], SL_CELL, "log in to submit");
     else if(!d->subs) snprintf(c[RC_BOARD], SL_CELL, "asking the server...");
     else snprintf(c[RC_BOARD], SL_CELL, "not submitted");
+    /* A verified result's games are the ones that count, so they replace
+     * what pfemu counted here; ours stay, in grey, until there is one. */
+    x->verified = 0;
+    if(x->kind == SL_COUNTS && sub[3][0]){
+        snprintf(c[RC_SCORES], SL_CELL, "%s", sub[3]);
+        x->verified = 1;
+    }
     if(rl_can_submit(d, x) && !(x->uploading && st->submitting))
         snprintf(c[RC_SUBMIT], SL_CELL, "Submit");
     if(!rl_busy(d, x)) snprintf(c[RC_DELETE], SL_CELL, "Delete");
@@ -2362,7 +2372,8 @@ static void rl_detail(RlState *d){
                ? "yes, recorded against the canonical state"
                : "no, recorded with the player's own high-score tables");
     }
-    /* Every game the recording claims, not just the best per table. */
+    /* Every game the recording claims, not just the best per table.  This
+     * is pfemu's own count on this machine; the server's is Leaderboard. */
     { char path[600], line[128];
       FILE *f;
       int any = 0;
@@ -2375,15 +2386,18 @@ static void rl_detail(RlState *d){
           if(line[0] == '#' || sscanf(line, "%d %d %d %llu", &t, &balls, &rankable, &g) != 4)
               continue;
           fmt_score((long long)g, sc, sizeof(sc));
-          det_kv(raw, sizeof(raw), any ? "" : "Games", "%-18s %d balls %14s%s",
+          det_kv(raw, sizeof(raw), any ? "" : "Counted here", "%-18s %d balls %14s%s",
                  table_name(t), balls, sc,
                  !rankable ? "  not a finished one-player game" :
                  balls != RANKED_BALLS ? "  only 3-ball games rank" : "");
           any = 1;
       }
       if(f) fclose(f);
-      if(!any) det_kv(raw, sizeof(raw), "Games", "%s", x->have_games
-                      ? "none finished" : "not counted (no .games file beside it)"); }
+      /* A recording from before the .games file gets one from its first
+       * complete replay in the launcher (run.c). */
+      if(!any) det_kv(raw, sizeof(raw), "Counted here", "%s", x->have_games
+                      ? "no finished game"
+                      : "not yet - replay it once to the end to count its games"); }
     if(x->sub_s >= 0){
         int pending = 0;
         sub_describe(d->subs + x->sub_s, d->subs + x->sub_e, buf, sizeof(buf), &pending);
@@ -2672,6 +2686,9 @@ static LRESULT CALLBACK replays_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                     if(d->it[row].kind == SL_COUNTS) cd->clrText = RGB(0, 120, 40);
                     else if(d->it[row].kind == SL_PENDING)
                         cd->clrText = GetSysColor(COLOR_GRAYTEXT);
+                } else if(cd->iSubItem == RC_SCORES && row >= 0 && row < d->n &&
+                          !d->it[row].verified){
+                    cd->clrText = GetSysColor(COLOR_GRAYTEXT);
                 }
                 SelectObject(cd->nmcd.hdc, f);
                 return CDRF_NEWFONT;

@@ -706,6 +706,11 @@ int emu_main(int argc, char **argv){
          * change for being watched. */
         scoredbg_on = 1;
     }
+    /* A replay the launcher started counts them as well, so a recording
+     * made before the .games file existed gets one: it plays the same games
+     * again.  Not for -verify or a command line, which must leave nothing
+     * beside a file they were handed. */
+    if(replay_path && from_launcher) scoredbg_on = 1;
 
     /* One session per process: the launcher starts a fresh one for every
      * game, so nothing from an earlier session can reach this one.  This is
@@ -1223,6 +1228,16 @@ int emu_main(int argc, char **argv){
         snprintf(games, sizeof(games), "%s.games", record_path);
         if(fantasies_score_write(games) != 0)
             fprintf(stderr, "[record] cannot write '%s'\n", games);
+    }
+    /* Only a replay that ran to the recording's end has counted every game,
+     * and a file already there is the recording's own and stays. */
+    if(replay_path && from_launcher && replay_completed()){
+        char games[600];
+        FILE *g;
+        snprintf(games, sizeof(games), "%s.games", replay_path);
+        if((g = fopen(games, "r")) != NULL) fclose(g);
+        else if(fantasies_score_write(games) != 0)
+            fprintf(stderr, "[replay] cannot write '%s'\n", games);
     }
     /* Last of the reports, and deliberately so: it reformats what the three
      * above just printed rather than recomputing any of it, so a verdict can

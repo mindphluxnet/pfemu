@@ -147,7 +147,10 @@ compile.
      (`release_hash_file()`), and deletes to the Recycle Bin. Submitting
      now takes a path (`start_submit_check(h, st, path)`), and message
      boxes about requests go to `ui_owner()` so they never re-enable the
-     launcher under a modal window.
+     launcher under a modal window. The scores column prefers the
+     verified result's games; a launcher replay that completes writes a
+     missing `.games` (`run.c`, `replay_completed()`), so old recordings
+     fill in after one replay.
    - **The launcher no longer closes.** Launch starts the game as a
      child process (`-nolauncher -launched ...`), the launcher waits and
      comes back to the front when the game ends, with the fresh

@@ -530,6 +530,7 @@ void replay_inject_due(void);           /* kbd_key() everything <= emu_now() */
 uint64_t replay_next_deadline(void);    /* cpu.cycles of next event, or ~0 */
 int  replay_events_pending(void);
 int  replay_should_stop(void);          /* footer emu_time reached, events out */
+int  replay_completed(void);            /* ...and it was, not closed early */
 void replay_report(void);               /* exit mismatch stats */
 /* PFEMU-STATE handling (section 3.2/3.3): hash the effective overlay for the
  * header; on replay, copy it aside and remap the DOS writedir so the user's
@@ -591,6 +592,7 @@ void replay_verify_state(ReplayVerify *out);
 /* One scored attempt, flattened out of fantasies.c's private ScAttempt.
  * This is the shape that leaves the process, so these field names are part
  * of the JSON contract - renaming one breaks every caller. */
+#define SCORE_BALLS 16
 typedef struct {
     int index, table, players, balls, ball_reached, launches, springflips;
     unsigned long long score;
@@ -599,6 +601,13 @@ typedef struct {
     int rankable;
     double start_emu, end_emu;
     unsigned long long start_cycles, end_cycles;
+    /* Points per ball: one entry per value the ball counter held, from 1 on,
+     * summing to `score` unless the score went down (which is unrankable).
+     * The entry after the last ball is what the match or a late extra ball
+     * added, usually 0.  An attempt that ran past SCORE_BALLS entries has
+     * the rest in the last one. */
+    int nball_scores;
+    unsigned long long ball_scores[SCORE_BALLS];
 } ScoreAttempt;
 int  fantasies_score_count(void);
 int  fantasies_score_get(int i, ScoreAttempt *out);  /* 1 when i is in range */
