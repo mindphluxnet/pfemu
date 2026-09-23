@@ -226,7 +226,10 @@ Replay mode it uploads the picked ranked file. The server replays the game
 itself and the launcher shows the result when it has one, usually a minute
 or two for a five-minute game. **Submissions** lists everything you sent.
 Only a finished one-player 3-ball game that ran until the table was back in
-attract mode counts.
+attract mode counts. Each result names the pfemu build that produced it.
+Sending the same recording again does not verify it again: the server
+verifies every kept recording again by itself when it moves to a new build,
+and the launcher picks up the new result when you come back to it.
 
 The login is kept in `pfemu-online.cfg` next to `pfemu.exe`, encrypted for
 your Windows account. The file also holds the server address (`server=`,

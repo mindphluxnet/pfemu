@@ -334,6 +334,7 @@ typedef struct {
     int  polling;            /* a poll is in flight */
     long long sub_id;        /* the submission being followed, 0 if none */
     int  sub_pending;        /* ...and it is not done yet */
+    DWORD last_list;         /* GetTickCount() of the last status refresh */
     char sub_line[256];      /* what the status line says about it */
 } LaunchState;
 
@@ -1163,18 +1164,25 @@ static const char *base_name(const char *p){
     return b;
 }
 
-/* One submission object, as a line for the status row. */
+/* One submission object, as a line for the status row.  A result names the
+ * pfemu build that produced it: the server verifies a kept recording again
+ * when its build changes, so which build said "mismatch" is the part that
+ * tells an old answer from a current one. */
 static void sub_describe(const char *s, const char *e, char *out, size_t n,
                          int *pending){
     long long id = 0, score = 0;
-    char state[24] = "", reason[96] = "", sc[32];
+    char state[24] = "", reason[96] = "", sc[32], build[40] = "";
     const char *rs, *re;
-    int rankable = 0;
+    int rankable = 0, have_result;
     json_num(s, e, "id", &id);
     json_str(s, e, "state", state, sizeof(state));
-    if(strcmp(state, "done") || !json_obj(s, e, "result", &rs, &re)){
+    have_result = json_obj(s, e, "result", &rs, &re);
+    if(strcmp(state, "done") || !have_result){
         *pending = 1;
+        /* A result while not done is the previous round's: this one is a
+         * re-verification (a new pfemu build on the server). */
         snprintf(out, n, "Submission #%lld: %s", id,
+                 have_result ? "being verified again with the server's new build..." :
                  !strcmp(state, "queued") ? "queued for verification..."
                                           : "being verified...");
         return;
@@ -1182,11 +1190,14 @@ static void sub_describe(const char *s, const char *e, char *out, size_t n,
     *pending = 0;
     json_bool(rs, re, "rankable", &rankable);
     json_str(rs, re, "reason", reason, sizeof(reason));
+    json_str(rs, re, "build", build, sizeof(build));
     if(rankable && json_num(rs, re, "score", &score)){
         fmt_score(score, sc, sizeof(sc));
-        snprintf(out, n, "Submission #%lld: %s points. It counts!", id, sc);
+        snprintf(out, n, "Submission #%lld: %s points. It counts! (build %s)", id, sc,
+                 build[0] ? build : "?");
     } else {
-        snprintf(out, n, "Submission #%lld: %s", id, online_reason_text(reason));
+        snprintf(out, n, "Submission #%lld: %s (build %s)", id,
+                 online_reason_text(reason), build[0] ? build : "?");
     }
 }
 
@@ -1256,6 +1267,7 @@ static void follow(HWND h, LaunchState *st, long long id, int pending){
 static void start_list(HWND h, LaunchState *st, int show){
     NetJob *j;
     if(!st->online.token[0]) return;
+    st->last_list = GetTickCount();
     j = net_new(show ? NJ_LIST_SHOW : NJ_LIST, h, &st->online, "GET", "/api/v1/submissions");
     if(j) net_start(j);
 }
@@ -1301,8 +1313,9 @@ static void show_submission_list(HWND h, const HttpResp *r){
     size_t k = 0;
     int count = 0;
     k += (size_t)snprintf(raw + k, sizeof(raw) - k,
-                          "%6s  %-16s  %-8s  %12s  %s\n%s\n",
-                          "#", "Received (UTC)", "State", "Score", "Result", DET_RULE);
+                          "%5s  %-16s  %-8s  %12s  %-12s  %-16s  %s\n%s%s\n",
+                          "#", "Received (UTC)", "State", "Score", "Build",
+                          "Verified (UTC)", "Result", DET_RULE, DET_RULE);
     p = NULL;
     { const char *s = r->body, *v;
       /* The array after "submissions": walk its objects in order. */
@@ -1310,21 +1323,31 @@ static void show_submission_list(HWND h, const HttpResp *r){
     while(p && (p = json_next_obj(p, e, &oe)) != NULL && k + 200 < sizeof(raw)){
         long long id = 0, score = 0;
         char recv[40] = "", state[24] = "", reason[96] = "", sc[32] = "";
+        char build[40] = "", fin[40] = "";
         const char *rs, *re;
-        int rankable = 0;
+        int rankable = 0, have_result;
         json_num(p, oe, "id", &id);
         json_str(p, oe, "received_at", recv, sizeof(recv));
         json_str(p, oe, "state", state, sizeof(state));
         if(recv[10] == 'T') recv[10] = ' ';
         recv[16] = 0;
-        if(json_obj(p, oe, "result", &rs, &re)){
+        have_result = json_obj(p, oe, "result", &rs, &re);
+        if(have_result){
             json_bool(rs, re, "rankable", &rankable);
             json_str(rs, re, "reason", reason, sizeof(reason));
+            json_str(rs, re, "build", build, sizeof(build));
+            json_str(rs, re, "finished_at", fin, sizeof(fin));
+            if(fin[10] == 'T') fin[10] = ' ';
+            fin[16] = 0;
             if(json_num(rs, re, "score", &score)) fmt_score(score, sc, sizeof(sc));
         }
-        k += (size_t)snprintf(raw + k, sizeof(raw) - k, "%6lld  %-16s  %-8s  %12s  %s\n",
-                              id, recv, state, sc,
-                              !strcmp(state, "done") ? online_reason_text(reason) : "");
+        /* Not done but with a result: the previous round's answer, shown
+         * as such while the server verifies it again. */
+        k += (size_t)snprintf(raw + k, sizeof(raw) - k,
+                              "%5lld  %-16s  %-8s  %12s  %-12.12s  %-16s  %s%s\n",
+                              id, recv, state, sc, build, fin,
+                              (have_result && strcmp(state, "done")) ? "previous: " : "",
+                              have_result ? online_reason_text(reason) : "");
         count++;
         p = oe;
     }
@@ -1358,6 +1381,19 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
             sub_describe(s, e, st->sub_line, sizeof(st->sub_line), &pending);
             follow(h, st, id, pending);
             if(!strcmp(j->file, st->last_rec)) st->last_rec[0] = 0;
+            /* 200 is API.md's "this account already sent this exact file":
+             * nothing new happened, and the line alone would not say so. */
+            if(j->r.status == 200){
+                char box[700];
+                snprintf(box, sizeof(box),
+                         "You already submitted this recording: it is submission #%lld."
+                         "\n\nSending it again does not verify it again. The server"
+                         " verifies every kept recording again by itself when it moves"
+                         " to a new pfemu build, and the result below updates then."
+                         "\n\n%s", id, st->sub_line);
+                update_online_ui(h, st);
+                MessageBoxA(h, box, "pfemu - submit", MB_OK|MB_ICONINFORMATION);
+            }
         } else {
             resp_message(&j->r, msg, sizeof(msg));
             MessageBoxA(h, msg, "pfemu - submit", MB_OK|MB_ICONEXCLAMATION);
@@ -2221,6 +2257,15 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     case WM_APP_CHILD:
         if(st) on_child_done(h, st);
         return 0;
+    /* A finished submission is not polled, but the server can still change
+     * its result: it verifies every kept recording again when its pfemu
+     * build changes.  So look again whenever the player comes back to the
+     * launcher, at most every 30 s. */
+    case WM_ACTIVATE:
+        if(st && LOWORD(w) != WA_INACTIVE && st->online.token[0] &&
+           !st->sub_pending && GetTickCount() - st->last_list > 30000)
+            start_list(h, st, 0);
+        break;
     case WM_APP_NET:
         if(st) on_net_done(h, st, (NetJob*)l);
         else net_free((NetJob*)l);
