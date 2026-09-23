@@ -43,6 +43,7 @@
 #include <stdarg.h>
 #include "pfemu.h"
 #include "online.h"
+#include "build.h"
 #include "../res/resource.h"
 
 /* Which release is in front of us is not something this dialog decides any
@@ -341,6 +342,7 @@ typedef struct {
     DWORD last_list;         /* GetTickCount() of the last status refresh */
     char sub_line[256];      /* what the status line says about it */
     HWND hWebLink, hMeLink;  /* the website, and the account page on it */
+    HWND hBuild;             /* the build id, greyed, bottom left */
     HWND hReplays;           /* the Replays window while it is open */
     HFONT hLinkFont;         /* hFont, underlined */
     int cw, ch;              /* the client size the layout needs */
@@ -3338,6 +3340,11 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                             WS_CHILD|WS_VISIBLE|WS_TABSTOP,
                             LC_CW-12-76,y,76,24,h,(HMENU)ID_QUIT,cs->hInstance,0);
         SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
+        /* Which pfemu this is, the same id -verify and the upload carry. */
+        st->hBuild = CreateWindowExA(0,"STATIC","Build " PFEMU_BUILD,
+                            WS_CHILD|WS_VISIBLE|SS_ENDELLIPSIS,
+                            12,y+5,LC_CW-12-76-8-76-12-12,16,h,0,cs->hInstance,0);
+        SendMessageA(st->hBuild,WM_SETFONT,(WPARAM)st->hFont,0);
         /* run_launcher() sizes the window to this once it exists. */
         st->cw = LC_CW;
         st->ch = y + 24 + 12;
@@ -3552,10 +3559,16 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
     case WM_APP_CHILD:
         if(st) on_child_done(h, st);
         return 0;
-    /* The two website links: link blue, and the hand over them. */
+    /* The two website links: link blue, and the hand over them.  The build
+     * id is muted. */
     case WM_CTLCOLORSTATIC:
         if(st && ((HWND)l == st->hWebLink || (HWND)l == st->hMeLink)){
             SetTextColor((HDC)w, RGB(0, 102, 204));
+            SetBkMode((HDC)w, TRANSPARENT);
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+        if(st && (HWND)l == st->hBuild){
+            SetTextColor((HDC)w, GetSysColor(COLOR_GRAYTEXT));
             SetBkMode((HDC)w, TRANSPARENT);
             return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
         }
