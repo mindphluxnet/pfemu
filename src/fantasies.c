@@ -2758,6 +2758,29 @@ void fantasies_score_report(void){
                 sc_stuck);
 }
 
+/* The games a recording claims, in a file beside the .pfr, for the launcher
+ * alone: it asks before uploading a session that would change no board.
+ * This is not evidence.  The service replays the .pfr and never sees this
+ * file, so nothing is trusted to it and a missing or edited one costs only
+ * the question.  After fantasies_score_report(), which closes the attempt
+ * still in flight. */
+int fantasies_score_write(const char *path){
+    FILE *f;
+    int i;
+    if(!scoredbg_on || !path) return -1;
+    f = fopen(path, "w");
+    if(!f) return -1;
+    fprintf(f, "# pfemu: the games this recording claims.  The server replays"
+               " the .pfr and ignores this file.\n");
+    fprintf(f, "# table balls rankable score\n");
+    for(i = 0; i < sc_nlog; i++){
+        const ScAttempt *a = &sc_log[i];
+        fprintf(f, "%d %d %d %llu\n", a->table, a->nballs, a->rankable ? 1 : 0,
+                (unsigned long long)a->score);
+    }
+    return fclose(f) == 0 ? 0 : -1;
+}
+
 /* ------------------------------------------------------ direct-to-table --- */
 /* Starting at a table instead of the intro, without breaking the way out of
  * one.  The naive version - EXEC TABLEn.PRG as the boot program - is what

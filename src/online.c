@@ -387,6 +387,17 @@ int json_obj(const char *s, const char *e, const char *key,
     return 1;
 }
 
+int json_arr(const char *s, const char *e, const char *key,
+             const char **as, const char **ae){
+    const char *v = find_key(s, e, key), *c;
+    if(!v || v >= e || *v != '[') return 0;
+    c = match_close(v, e);
+    if(!c) return 0;
+    *as = v + 1;
+    *ae = c;
+    return 1;
+}
+
 const char *json_next_obj(const char *p, const char *e, const char **oe){
     while(p && p < e){
         if(*p == ']') return NULL;

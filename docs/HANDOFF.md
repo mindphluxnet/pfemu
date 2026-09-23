@@ -126,6 +126,14 @@ compile.
      `https://pf.dark-secrets.eu`: GET, 401 on a bad token, a POST with a
      body, and an unreachable host. The windows themselves, and a real
      upload, are still to be tried by hand.
+   - **Submit asks when an upload would change nothing** (2026-09-23,
+     not tried by hand yet). A recording session turns the score hooks on
+     and writes `<file>.pfr.games` at exit; Submit holds it against
+     `standings` from `/api/v1/me` and asks when no three-ball game beats
+     the player's best on its table (REPLAY.md, Launcher). The status line
+     lists every table a submission ranked on (pfemu-web ranks each table
+     of a session since `179c5b2`) and the queue position while it waits.
+     Record mode now logs the `[score]` lines too.
    - **The launcher no longer closes.** Launch starts the game as a
      child process (`-nolauncher -launched ...`), the launcher waits and
      comes back to the front when the game ends, with the fresh

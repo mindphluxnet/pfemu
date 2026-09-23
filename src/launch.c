@@ -1085,7 +1085,8 @@ static void show_details(HWND owner, const char *title, const char *text){
  * never freezes on a slow or absent server.  The window frees the job; if
  * it is gone by then, the thread does. */
 typedef enum {
-    NJ_LOGIN, NJ_REGISTER, NJ_LOGOUT, NJ_SUBMIT, NJ_POLL, NJ_LIST, NJ_LIST_SHOW
+    NJ_LOGIN, NJ_REGISTER, NJ_LOGOUT, NJ_SUBMIT, NJ_POLL, NJ_LIST, NJ_LIST_SHOW,
+    NJ_ME
 } NetKind;
 typedef struct {
     NetKind kind;
@@ -1094,7 +1095,7 @@ typedef struct {
     char method[8], path[96], ctype[40];
     char *data;
     size_t n;
-    char file[512];          /* NJ_SUBMIT: the recording sent */
+    char file[512];          /* NJ_SUBMIT: the recording sent; NJ_ME: checked */
     HttpResp r;
 } NetJob;
 
@@ -1164,34 +1165,58 @@ static const char *base_name(const char *p){
     return b;
 }
 
+/* "Speed Devils" out of "Table 2 - Speed Devils". */
+static const char *table_name(long long t){
+    return t >= 1 && t <= 4 ? table_labels[t] + 10 : "?";
+}
+
 /* One submission object, as a line for the status row.  A result names the
  * pfemu build that produced it: the server verifies a kept recording again
  * when its build changes, so which build said "mismatch" is the part that
  * tells an old answer from a current one. */
 static void sub_describe(const char *s, const char *e, char *out, size_t n,
                          int *pending){
-    long long id = 0, score = 0;
-    char state[24] = "", reason[96] = "", sc[32], build[40] = "";
-    const char *rs, *re;
+    long long id = 0, score = 0, qp = 0;
+    char state[24] = "", reason[96] = "", sc[32], build[40] = "", where[48] = "";
+    char games[160] = "";
+    const char *rs, *re, *as, *ae, *o, *oe;
     int rankable = 0, have_result;
     json_num(s, e, "id", &id);
     json_str(s, e, "state", state, sizeof(state));
     have_result = json_obj(s, e, "result", &rs, &re);
     if(strcmp(state, "done") || !have_result){
         *pending = 1;
+        /* Everybody's uploads wait in one line, first come first served
+         * (pfemu-web API.md), and 1 is the one being verified or next. */
+        if(json_num(s, e, "queue_position", &qp) && qp > 1)
+            snprintf(where, sizeof(where), ", position %lld in the queue", qp);
         /* A result while not done is the previous round's: this one is a
          * re-verification (a new pfemu build on the server). */
-        snprintf(out, n, "Submission #%lld: %s", id,
-                 have_result ? "being verified again with the server's new build..." :
-                 !strcmp(state, "queued") ? "queued for verification..."
-                                          : "being verified...");
+        snprintf(out, n, "Submission #%lld: %s%s...", id,
+                 have_result ? "being verified again with the server's new build" :
+                 !strcmp(state, "queued") || qp > 1 ? "queued for verification"
+                                                    : "being verified", where);
         return;
     }
     *pending = 0;
     json_bool(rs, re, "rankable", &rankable);
     json_str(rs, re, "reason", reason, sizeof(reason));
     json_str(rs, re, "build", build, sizeof(build));
-    if(rankable && json_num(rs, re, "score", &score)){
+    /* A session on several tables ranks on each of them. */
+    if(rankable && json_arr(rs, re, "games", &as, &ae)){
+        size_t k = 0;
+        for(o = as; (o = json_next_obj(o, ae, &oe)) != NULL && k < sizeof(games); o = oe){
+            long long t = 0, g = 0;
+            if(!json_num(o, oe, "table", &t) || !json_num(o, oe, "score", &g)) continue;
+            fmt_score(g, sc, sizeof(sc));
+            k += (size_t)snprintf(games + k, sizeof(games) - k, "%s%s on %s",
+                                  k ? ", " : "", sc, table_name(t));
+        }
+    }
+    if(rankable && games[0]){
+        snprintf(out, n, "Submission #%lld: %s. It counts! (build %s)", id, games,
+                 build[0] ? build : "?");
+    } else if(rankable && json_num(rs, re, "score", &score)){
         fmt_score(score, sc, sizeof(sc));
         snprintf(out, n, "Submission #%lld: %s points. It counts! (build %s)", id, sc,
                  build[0] ? build : "?");
@@ -1306,6 +1331,104 @@ static void start_submit(HWND h, LaunchState *st){
     if(!net_start(j)){ st->submitting = 0; update_online_ui(h, st); }
 }
 
+/* Before an upload: would it change any board?  The session's .games file
+ * (src/fantasies.c) says what the recording claims, /api/v1/me where the
+ * player stands.  This only ever asks.  The claim is not evidence and the
+ * server decides; without the file or an answer the upload simply goes. */
+#define RANKED_BALLS 3   /* pfemu-web's policy: a 5-ball game is another game */
+
+/* The best claimed three-ball rankable score per table 1-4, -1 where there
+ * is none.  0 when the recording has no .games file. */
+static int read_claims(const char *pfr, long long best[5]){
+    char path[600], line[128];
+    FILE *f;
+    int i;
+    for(i = 0; i < 5; i++) best[i] = -1;
+    snprintf(path, sizeof(path), "%s.games", pfr);
+    f = fopen(path, "r");
+    if(!f) return 0;
+    while(fgets(line, sizeof(line), f)){
+        int t, balls, rankable;
+        unsigned long long sc;
+        if(line[0] == '#') continue;
+        if(sscanf(line, "%d %d %d %llu", &t, &balls, &rankable, &sc) != 4) continue;
+        if(t < 1 || t > 4 || !rankable || balls != RANKED_BALLS) continue;
+        if((long long)sc > best[t]) best[t] = (long long)sc;
+    }
+    fclose(f);
+    return 1;
+}
+
+static void start_submit_check(HWND h, LaunchState *st){
+    const char *why, *cand = submit_candidate(st, &why);
+    long long claim[5];
+    NetJob *j;
+    if(!cand || st->submitting || !st->online.token[0]) return;
+    if(!read_claims(cand, claim)){ start_submit(h, st); return; }
+    j = net_new(NJ_ME, h, &st->online, "GET", "/api/v1/me");
+    if(!j){ start_submit(h, st); return; }
+    snprintf(j->file, sizeof(j->file), "%s", cand);
+    st->submitting = 1;
+    update_online_ui(h, st);
+    if(!net_start(j)){ st->submitting = 0; start_submit(h, st); }
+}
+
+/* The answer to start_submit_check(): upload, or ask first.  A tie does not
+ * beat a best, because on a board the earlier of two equal scores stays. */
+static void submit_after_check(HWND h, LaunchState *st, const NetJob *j){
+    const char *s = j->r.body, *e = j->r.body + j->r.len, *as, *ae, *o, *oe;
+    const char *why, *cand = submit_candidate(st, &why);
+    long long claim[5], mine[5];
+    char box[900], a[32], b[32];
+    size_t k = 0;
+    int t, any = 0, beats = 0;
+    st->submitting = 0;
+    /* No answer, or no longer the recording that was checked: upload, and
+     * let the server say what it thinks. */
+    if(j->r.status != 200 || !cand || strcmp(cand, j->file) || !read_claims(cand, claim)){
+        start_submit(h, st);
+        return;
+    }
+    for(t = 0; t < 5; t++) mine[t] = -1;
+    if(json_arr(s, e, "standings", &as, &ae))
+        for(o = as; (o = json_next_obj(o, ae, &oe)) != NULL; o = oe){
+            long long tb = 0, sc = 0;
+            if(json_num(o, oe, "table", &tb) && json_num(o, oe, "score", &sc)
+               && tb >= 1 && tb <= 4)
+                mine[tb] = sc;
+        }
+    for(t = 1; t <= 4; t++){
+        if(claim[t] < 0) continue;
+        any = 1;
+        if(claim[t] > mine[t]) beats = 1;
+    }
+    if(beats){ start_submit(h, st); return; }
+    if(!any)
+        k += (size_t)snprintf(box + k, sizeof(box) - k,
+                              "pfemu counted no finished three-ball game in this"
+                              " recording, so it will not reach a board.\n");
+    else {
+        k += (size_t)snprintf(box + k, sizeof(box) - k,
+                              "This recording does not beat your best on any table"
+                              " it was played on:\n\n");
+        for(t = 1; t <= 4 && k < sizeof(box); t++){
+            if(claim[t] < 0) continue;
+            fmt_score(claim[t], a, sizeof(a));
+            fmt_score(mine[t], b, sizeof(b));
+            k += (size_t)snprintf(box + k, sizeof(box) - k, "%s: %s (your best: %s)\n",
+                                  table_name(t), a, b);
+        }
+    }
+    if(k < sizeof(box))
+        snprintf(box + k, sizeof(box) - k,
+                 "\nEvery upload is verified in turn, so one that changes nothing"
+                 " only makes the queue longer for everybody.\n\nSubmit anyway?");
+    update_online_ui(h, st);
+    if(MessageBoxA(h, box, "pfemu - submit",
+                   MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2) == IDYES)
+        start_submit(h, st);
+}
+
 /* The Submissions window: the same fixed-pitch report window as Details. */
 static void show_submission_list(HWND h, const HttpResp *r){
     static char raw[DET_MAX], text[DET_MAX*2];
@@ -1364,7 +1487,7 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
     int pending = 0;
     if(j->kind == NJ_LOGOUT){ net_free(j); return; }
     if(j->r.status == 401){
-        if(j->kind == NJ_SUBMIT) st->submitting = 0;
+        if(j->kind == NJ_SUBMIT || j->kind == NJ_ME) st->submitting = 0;
         if(j->kind == NJ_POLL) st->polling = 0;
         /* A stale answer to a token this launcher already dropped says
          * nothing about the current one. */
@@ -1429,6 +1552,9 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
                 follow(h, st, id, pending);
             }
         }
+        break;
+    case NJ_ME:
+        submit_after_check(h, st, j);
         break;
     case NJ_LIST_SHOW:
         if(j->r.status == 200) show_submission_list(h, &j->r);
@@ -2160,7 +2286,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             }
             update_online_ui(h, st);
         } else if(id==ID_SUBMIT){
-            start_submit(h, st);
+            start_submit_check(h, st);
         } else if(id==ID_SUBLIST){
             start_list(h, st, 1);
         } else if(id==ID_LAUNCH){

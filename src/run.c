@@ -700,6 +700,11 @@ int emu_main(int argc, char **argv){
             fail_msg("[record] cannot write '%s'", record_path);
                 return 1;
         }
+        /* Count the games as they are played, for the .games file beside
+         * the recording.  The hooks only read: every replay runs them, and
+         * recordings made without them verify, so the session does not
+         * change for being watched. */
+        scoredbg_on = 1;
     }
 
     /* One session per process: the launcher starts a fresh one for every
@@ -1213,6 +1218,12 @@ int emu_main(int argc, char **argv){
     fantasies_ballgap_report();
     fantasies_matrix_report();
     fantasies_score_report();
+    if(record_path){
+        char games[600];
+        snprintf(games, sizeof(games), "%s.games", record_path);
+        if(fantasies_score_write(games) != 0)
+            fprintf(stderr, "[record] cannot write '%s'\n", games);
+    }
     /* Last of the reports, and deliberately so: it reformats what the three
      * above just printed rather than recomputing any of it, so a verdict can
      * never say something the stderr log does not. */

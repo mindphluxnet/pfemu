@@ -46,6 +46,10 @@ int  json_num(const char *s, const char *e, const char *key, long long *out);
 int  json_bool(const char *s, const char *e, const char *key, int *out);
 int  json_obj(const char *s, const char *e, const char *key,
               const char **os, const char **oe);
+/* The inside of the array under key, from just past its '[' to its end, for
+ * json_next_obj() to walk. */
+int  json_arr(const char *s, const char *e, const char *key,
+              const char **as, const char **ae);
 /* The next {...} in an array at or after p, or NULL at the end. */
 const char *json_next_obj(const char *p, const char *e, const char **oe);
 /* in as a JSON string body, without the quotes. */

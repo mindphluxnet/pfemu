@@ -144,6 +144,14 @@ footer:  final emu_time + cpu.cycles, capture hash (FNV-1a over the sample
          FNV-1a file hash (mismatch refused loudly)
 ```
 
+**Beside it, `<file>.pfr.games`.** A recording session counts its games with
+the same hooks a replay uses (`-scoredbg`; they only read, so the session
+is not changed by being watched) and writes one line per game at exit:
+`table balls rankable score`. It is for the launcher alone, which asks
+before uploading a recording that beats none of the player's bests
+(Launcher, below). It is not evidence: the service replays the `.pfr` and
+never sees this file, so a missing or edited one costs only that question.
+
 ## Launcher
 
 `run_launcher()` owns every replay-relevant setting per install. A mode row
@@ -173,6 +181,15 @@ window: whether the file can play and why not, the recorded session
 (events, duration, options, sound, capture hash), the recorded code vector
 compared program by program against the selected install, and that
 install's own detection report.
+
+**Submit asks first when an upload would change nothing.** Before it
+uploads, the launcher reads the recording's `.games` file and the player's
+standings (`GET /api/v1/me`). If no three-ball game in it beats the
+player's best on its table, it lists them and asks whether to submit
+anyway; a tie does not beat, because on a board the earlier of two equal
+scores stays. Without the file or an answer from the server, the upload
+simply goes. The status line names every table a submission ranked on,
+and its place in the server's queue while it waits.
 
 **A `-replay` with no `-d` picks the install the file needs.** The launcher
 never runs for a replay, so without `-d` the install would otherwise be

@@ -600,6 +600,7 @@ typedef struct {
 int  fantasies_score_count(void);
 int  fantasies_score_get(int i, ScoreAttempt *out);  /* 1 when i is in range */
 int  fantasies_score_rewound(void);   /* the ball-counter watchdog fired */
+int  fantasies_score_write(const char *path);  /* a recording's .games file */
 
 /* ------------------------------------------------- mid-table savestates --- */
 /* Single-slot deterministic snapshots (src/snapshot.c, per-subsystem
