@@ -16,12 +16,6 @@
  *     selected rows, not a link in every row, and it moves the files to the
  *     desktop's Trash.  A file on a filesystem without a trash stays where
  *     it is, with a message: a recording cannot be made again.
- *   - Leaving Replay mode puts the installation's own settings back into
- *     the window.  Replay shows the file's settings, display only; on
- *     Windows they stay in the window afterwards and a Play launch writes
- *     them to the installation.  Switching installations also reloads the
- *     six game options and "Start at", which the Win32 launcher leaves as
- *     they were.
  *
  * The game still runs as a child process, this program again with
  * -nolauncher -launched, for the reason src/launch.c gives: nothing from one

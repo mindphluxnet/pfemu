@@ -181,6 +181,7 @@ typedef struct {
      * header used by auto-restore; replay_err explains why a file was
      * rejected, shown in the detection line. */
     LaunchMode mode;
+    LaunchMode shown_mode;  /* the mode the controls last showed */
     char replay_path[512];
     int path_custom;        /* the user typed/picked a path; keep it */
     int updating_path;      /* SetWindowText in progress; ignore EN_CHANGE */
@@ -351,6 +352,11 @@ static void apply_mode_ui(HWND h, LaunchState *st){
      * window, which lists the recordings and switches to Replay for one. */
     if(st->hBrowse) SetWindowTextA(st->hBrowse,
                                    st->mode == LAUNCH_RECORD ? "Browse..." : "Replays...");
+    /* Replay showed the file's settings.  Leaving it puts the install's
+     * back, or a Play or Record launch would write the replay's to it. */
+    if(st->shown_mode == LAUNCH_REPLAY && st->mode != LAUNCH_REPLAY)
+        reload_for_dir(h, st);
+    st->shown_mode = st->mode;
     if(rec){
         st->cheat_enable = 0;
         CheckDlgButton(h, ID_CHEAT_ENABLE, BST_UNCHECKED);
@@ -444,6 +450,11 @@ static void reload_for_dir(HWND h, LaunchState *st){
     st->headphone = c.headphone;
     st->cheat_enable = c.trainer;
     st->fullscreen = c.fullscreen;
+    /* The six options and Start at too: without them an install switch
+     * kept the previous install's, and Launch wrote them to this one. */
+    memcpy(st->cfg, c.options, 6);
+    st->start_table = c.start_table;
+    if(st->hTable) SendMessageA(st->hTable,CB_SETCURSEL,st->start_table,0);
     if(st->hSound){
         CheckDlgButton(h,ID_SOUND,st->sound?BST_CHECKED:BST_UNCHECKED);
         SendMessageA(st->hQuality,CB_SETCURSEL,st->quality,0);

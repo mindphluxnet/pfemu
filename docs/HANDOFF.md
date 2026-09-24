@@ -68,19 +68,20 @@ compile, and since 2026-09-24 the SDL2 build.
 one real Ubuntu desktop** (see next steps, item 7). `make gui` builds `pfemu` from the headless build's objects plus
 `src/host_sdl.c`: an SDL2 window, the keyboard mapped back to PC scan codes,
 and waveOut implemented on an SDL audio callback so `sound.c` is unchanged.
-**The launcher is GTK 3 (2026-09-24, tried by hand under WSLg, works):**
+**The launcher is GTK 3 (2026-09-24, tried by hand on the Ubuntu desktop,
+everything works; the user found the game running even better there than
+on Windows):**
 `src/launch_gtk.c`, the Win32 window minus the Leaderboard group, on rules
 moved out of `launch.c` into `src/launchcore.c` so both launchers share
 them (replay refusal, Details report, record path, labels, `.games`
-report). The Windows build was relinked after the move (clean, to a
-scratch name, because `pfemu.exe` was running) but its window was not
-opened. Differences on purpose, listed at the top of `launch_gtk.c`: no
-saved position (Wayland), Delete is a button and uses the Trash, and
-leaving Replay mode or switching installations reloads the install's own
-settings. The last two are **bugs in the Win32 launcher**, not fixed there
-yet: it keeps a replay's options in the window after leaving Replay (a
-Play launch then writes them to the install), and an install switch keeps
-the previous install's six options and Start at. Ranked is kept in
+report). Differences on purpose, listed at the top of `launch_gtk.c`: no
+saved position (Wayland), and Delete is a button and uses the Trash.
+Two **Win32 launcher bugs** found on the way are fixed in both (Windows
+built, its window not tried by hand yet): leaving Replay mode kept the
+replay's settings in the window, so a Play launch wrote them to the
+install (now `shown_mode` reloads the install's on the way out), and an
+install switch kept the previous install's six options and Start at
+(`reload_for_dir()` now reads them). Ranked is kept in
 `pfemu-online.cfg`, touching only its `ranked=` line. `make gui NOGTK=1`
 keeps the old starter in `host_sdl.c` (no launcher; GOG offer, last
 install, exec). What moved to make the starter possible:
@@ -250,10 +251,9 @@ Not done: uploads.
    both `pfemu-headless` and `pfemu.exe`, with the same cycles and wav hash.
    **The launcher is GTK 3** (the user's choice, 2026-09-24), in two
    steps. Step 1, done: everything but the Leaderboard group (see the
-   status paragraph above), tried by hand under WSLg on 2026-09-24 and
-   everything worked (user). Not yet tried on the real Ubuntu desktop,
-   where it has not been built. The user recorded a session with it to use
-   for step 2. Step 2: `online.c` on libcurl, the token
+   status paragraph above), tried by hand on the Ubuntu desktop on
+   2026-09-24 and everything worked (user). The user recorded a session
+   with it there, to use for step 2; it is on that machine. Step 2: `online.c` on libcurl, the token
    stored without DPAPI (libsecret, or a 0600 file), then login, Submit,
    the submit check against `/api/v1/me`, polling, Submissions and the
    Replays window's Leaderboard column.
