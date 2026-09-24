@@ -774,6 +774,16 @@ will actually run it. Note the ten-year-old Mac Mini beat the laptop: 22.39
 MIPS against 19.51, which is WSL overhead rather than anything about the
 silicon.
 
+**Update, 2026-09-24: most of the gap was a sleep.** The main loop ended
+every outer round with `plat_sleep_ms(1)`, `-unthrottle` included, and the
+present-phase break ends the batch loop once per guest frame - so an
+unthrottled replay slept about 1 ms sixty times per emulated second. With
+the sleep skipped under `-unthrottle`, the same vector on the WSL laptop:
+33.4 s, **6.0x**, `host_mips=36.01` (`speed-ab.sh` PASS: footer, wav hash
+and all 11 frames identical to the paced run). The 422 s Linux vector went
+from 126.0 s to 75.6 s with an identical `-verify` object. The Mac Mini
+has not been re-measured.
+
 If that ever stops being true, attempts can be verified in parallel: have the
 client upload periodic snapshots, verify chunk *N* by re-simulating from
 snapshot *N* and checking the result equals the declared snapshot *N+1*. A

@@ -55,7 +55,8 @@ The work done before it is finished:
   and `-strict` refuses what a verifier should not accept. 27 regression cases
   pass, and 1M mutation cases produced no finding.
 - **Replays run 3.3-3.7x real time** with `-unthrottle`, and pacing is
-  proven guest-invisible on two hosts.
+  proven guest-invisible on two hosts. 6.0x under WSL since the loop
+  stopped sleeping there (2026-09-24); the server is not re-measured.
 - **ubsan is clean** on both vectors. It found 32 unaligned guest-RAM
   accesses in `dos.c`/`bios.c` on the first pass, all fixed since. It found
   nothing in `cpu.c`, where the shift-count UB was predicted.
@@ -109,7 +110,7 @@ built (next steps, item 7).
 | The verdict matches the report | **Verified** on both hosts. `run.sh` cross-checks the JSON `best` against the `[RANKABLE]` lines the same replay printed: 20,652,570 on both. The ranked vector agrees at 33,415,380 under WSL, under `-strict` |
 | Determinism across optimisation levels | **Verified**, incidentally. Both vectors reproduce their capture hash under `-O1` + ubsan |
 | Host pacing is guest-invisible | **Verified**, on one vector, on two hosts (`tests/golden/speed-ab.sh`) |
-| A replay can run faster than real time | **Verified**: 3.7x on the server, 3.3x under WSL |
+| A replay can run faster than real time | **Verified**: 3.7x on the server, 3.3x under WSL; 6.0x under WSL once the loop stopped sleeping under `-unthrottle` (server not re-measured) |
 | A different **CPU architecture** agrees | **Verified, 2026-09-24, one vector.** `deluxe-table1-ranked-644s` (recorded on Windows/MSVC, x86-64) replayed on a **Raspberry Pi 4** (aarch64, Raspberry Pi OS, gcc, build `c77828d1b4c0`) with the service's invocation, `-strict -unthrottle -verify`: `verified`, same 3,866,538,359 cycles, same wav hash `acbce80e9929def1`, 33,415,380 `rankable`, same ball scores. The Makefile needed nothing for ARM |
 | A Raspberry Pi 4 is fast enough to verify | **Yes, measured once.** The same run: 644.4 s emulated in 289 s wall (`time`), 2.2x, against 3.8x on the Mac Mini. `user` was 249 s, so about 40 s went to something else on the Pi; an idle Pi may reach about 2.6x (not measured). One core per replay, so four in parallel is possible in principle; thermal throttling under that load is not measured |
 | The `.pfr` parser refuses hostile input | **Verified** for the 27 cases in `tests/fuzz`. 14 of the first 22 were accepted by the previous parser; the other 5 cover the `state:` line |
@@ -313,13 +314,15 @@ built (next steps, item 7).
    Untried ways to cut the cost: the sleep below, `PRESET=ultrafast`,
    rgb24 instead of bgr0 in the pipe. The Pi 4 is 2.2x on emulation alone
    and x264 is slow there; not a video machine without measuring.
-   **Separate finding, not acted on:** `wsplit` puts 47 s of the 126 s
-   baseline in `other`. The outer loop ends every round with
+   **Found on the way, and fixed:** `wsplit` put 47 s of the 126 s
+   baseline in `other`. The outer loop ended every round with
    `plat_sleep_ms(1)`, `-unthrottle` included, and the present-phase
-   break makes that one round per guest frame: 25,000 sleeps. Skipping
-   the sleep under `-unthrottle` should make every verification
-   noticeably faster; it is host pacing, so guest-invisible by the same
-   argument as `-unthrottle` itself, but it needs the speed A/B to show it.
+   break makes that one round per guest frame: 25,000 sleeps. It is now
+   skipped under `-unthrottle` (VERIFY.md, Capacity, the update): 75.6 s
+   instead of 126.0 s, same `-verify` object and wav, `speed-ab.sh` PASS
+   at 6.0x. **The validator gets it only with a new `PFEMU_REF`**, and
+   the Mac Mini has not been re-measured (`git pull && make` in the
+   video clone, then the `NOVIDEO=1` line).
 
 ## Running the gate
 

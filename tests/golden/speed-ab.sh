@@ -124,8 +124,7 @@ echo "$pace" | awk '{
         if ($i ~ /^wall=/) { w = substr($i, 6); sub(/s$/, "", w) }
         if ($i ~ /^emu=/)  { e = substr($i, 5); sub(/s$/, "", e) }
     }
-    if (w > 0) printf "real-time factor: %.2fx  (one gameplay-hour = %.0f min of one core)
-", e/w, 60*w/e
+    if (w > 0) printf "real-time factor: %.2fx  (one gameplay-hour = %.0f min of one core)\n", e/w, 60*w/e
 }'
 
 echo

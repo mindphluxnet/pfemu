@@ -275,7 +275,9 @@ without video, for comparison.
   (measured: same sha256 for both, same vector).
 - **What it costs**, on the Windows PC under WSL: the emulation itself 5%
   more wall time at 640x480, and x264 `veryfast` runs 5x real time on one
-  thread, ahead of the 3.3x emulator. About 7 MB per minute at CRF 20.
+  thread, ahead of the emulator as it was then (3.3x; 6.0x since it stopped
+  sleeping under `-unthrottle`, so x264 needs more than one thread now).
+  About 7 MB per minute at CRF 20.
 - **One frame per guest frame, in the quiet window.** A frame sampled while
   PUTTHEBALL has the ball erased shows no ball, so -video samples in the same
   window the present gate aims for (`present_phase_in()`), never at the

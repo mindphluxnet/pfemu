@@ -1216,7 +1216,13 @@ int emu_main(int argc, char **argv){
             plat_present(fb, fbw, fbh);
             t_pres_w += plat_time() - t0p;
           } }
-        plat_sleep_ms(1);
+        /* The sleep yields the host between frames when pacing to the wall.
+         * Unthrottled there is nothing to wait for, and the present-phase
+         * break above ends the batch loop once per guest frame, so this was
+         * one sleep per frame: measured, `other` held 47 of 126 s of wall
+         * time on a 422 s replay.  Host pacing only, like -unthrottle
+         * itself - where batches begin and end does not depend on it. */
+        if(!unthrottle) plat_sleep_ms(1);
     }
     }
 
