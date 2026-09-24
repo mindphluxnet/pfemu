@@ -64,8 +64,8 @@ All of it has a test, and CI runs on every push the tests that do not need
 game files: build, parser suite, 50k fuzz cases, verdict suite, ubsan
 compile, and since 2026-09-24 the SDL2 build.
 
-**A playable Linux build exists (2026-09-24), played so far only under
-WSLg** (see next steps, item 7). `make gui` builds `pfemu` from the headless build's objects plus
+**A playable Linux build exists (2026-09-24), played under WSLg and on
+one real Ubuntu desktop** (see next steps, item 7). `make gui` builds `pfemu` from the headless build's objects plus
 `src/host_sdl.c`: an SDL2 window, the keyboard mapped back to PC scan codes,
 and waveOut implemented on an SDL audio callback so `sound.c` is unchanged.
 There is no launcher. `run_launcher()` in `host_sdl.c` offers the GOG import,
