@@ -68,7 +68,7 @@ compile, and since 2026-09-24 the SDL2 build.
 one real Ubuntu desktop** (see next steps, item 7). `make gui` builds `pfemu` from the headless build's objects plus
 `src/host_sdl.c`: an SDL2 window, the keyboard mapped back to PC scan codes,
 and waveOut implemented on an SDL audio callback so `sound.c` is unchanged.
-**The launcher is GTK 3 (2026-09-24, built, not tried by hand yet):**
+**The launcher is GTK 3 (2026-09-24, tried by hand under WSLg, works):**
 `src/launch_gtk.c`, the Win32 window minus the Leaderboard group, on rules
 moved out of `launch.c` into `src/launchcore.c` so both launchers share
 them (replay refusal, Details report, record path, labels, `.games`
@@ -249,12 +249,11 @@ Not done: uploads.
    17,386,520) came back `verified` and `rankable` under `-strict` from
    both `pfemu-headless` and `pfemu.exe`, with the same cycles and wav hash.
    **The launcher is GTK 3** (the user's choice, 2026-09-24), in two
-   steps. Step 1, built: everything but the Leaderboard group (see the
-   status paragraph above). To try by hand: the window on Wayland and under
-   WSLg, Play / Record / Replay each launching and coming back, the Replays
-   window (list, details, Replay, Delete to the Trash), Details with Copy,
-   a second installation in the combo, the GOG offer, and the close
-   question while a game runs. Step 2: `online.c` on libcurl, the token
+   steps. Step 1, done: everything but the Leaderboard group (see the
+   status paragraph above), tried by hand under WSLg on 2026-09-24 and
+   everything worked (user). Not yet tried on the real Ubuntu desktop,
+   where it has not been built. The user recorded a session with it to use
+   for step 2. Step 2: `online.c` on libcurl, the token
    stored without DPAPI (libsecret, or a 0600 file), then login, Submit,
    the submit check against `/api/v1/me`, polling, Submissions and the
    Replays window's Leaderboard column.
