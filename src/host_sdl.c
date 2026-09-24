@@ -35,7 +35,8 @@
  *     order and sets WHDR_DONE on each buffer it has finished.  That is all
  *     sound.c looks at, so it runs unchanged too.
  *
- * run_launcher() is here as well, and it is not a launcher (see there).
+ * The launcher is src/launch_gtk.c.  Built without GTK (make gui NOGTK=1),
+ * run_launcher() is here instead, and it is not a launcher (see there).
  */
 #ifndef _WIN32
 
@@ -331,10 +332,14 @@ void plat_kbd_reconcile(void){
  * before SDL can report anything.  Native Wayland needs no GLX and played
  * cleanly on the same machine.  Only a default: SDL_VIDEODRIVER set by the
  * user still wins, and plat_init() falls back to X11 if Wayland fails.
- * Set through the environment rather than a hint so the exec'd game
- * inherits it, and so SDL versions older than SDL_HINT_VIDEODRIVER
- * (2.0.22) read it too. */
+ * Set through the environment rather than a hint so SDL versions older
+ * than SDL_HINT_VIDEODRIVER (2.0.22) read it too.  The GTK launcher takes
+ * it out again before it starts a game (plat_sdl_env_ours()), so that each
+ * game makes this choice itself: one that inherited it would take it for
+ * the user's and lose the X11 fallback. */
 static int chose_wayland = 0;
+
+int plat_sdl_env_ours(void){ return chose_wayland; }
 
 void plat_early_init(void){
     const char *st = getenv("XDG_SESSION_TYPE");
@@ -785,8 +790,10 @@ UINT waveOutClose(HWAVEOUT h){
     return 0;
 }
 
+#ifndef PFEMU_GTK
 /* ------------------------------------------------------------- starter --
- * There is no launcher on Linux yet.  What the Windows launcher does before
+ * Only in a build without GTK (make gui NOGTK=1); the launcher is
+ * src/launch_gtk.c.  Without it, what the launcher does before
  * a game besides showing a dialog is done here, without one, and then this
  * process becomes the game, the way the launcher's child does:
  *
@@ -905,6 +912,7 @@ int run_launcher(void){
     fprintf(stderr, "[pfemu] cannot start %s: %s\n", exe, strerror(errno));
     return 1;
 }
+#endif /* !PFEMU_GTK */
 
 int main(int argc, char **argv){
     plat_early_init();

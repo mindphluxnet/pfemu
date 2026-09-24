@@ -68,10 +68,22 @@ compile, and since 2026-09-24 the SDL2 build.
 one real Ubuntu desktop** (see next steps, item 7). `make gui` builds `pfemu` from the headless build's objects plus
 `src/host_sdl.c`: an SDL2 window, the keyboard mapped back to PC scan codes,
 and waveOut implemented on an SDL audio callback so `sound.c` is unchanged.
-There is no launcher. `run_launcher()` in `host_sdl.c` offers the GOG import,
-picks an installation (last launched, else the first runnable), writes a
-SoundBlaster `SOUND.CFG` when there is none, and execs itself with the
-command line `spawn_game()` would build. What moved to make it possible:
+**The launcher is GTK 3 (2026-09-24, built, not tried by hand yet):**
+`src/launch_gtk.c`, the Win32 window minus the Leaderboard group, on rules
+moved out of `launch.c` into `src/launchcore.c` so both launchers share
+them (replay refusal, Details report, record path, labels, `.games`
+report). The Windows build was relinked after the move (clean, to a
+scratch name, because `pfemu.exe` was running) but its window was not
+opened. Differences on purpose, listed at the top of `launch_gtk.c`: no
+saved position (Wayland), Delete is a button and uses the Trash, and
+leaving Replay mode or switching installations reloads the install's own
+settings. The last two are **bugs in the Win32 launcher**, not fixed there
+yet: it keeps a replay's options in the window after leaving Replay (a
+Play launch then writes them to the install), and an install switch keeps
+the previous install's six options and Start at. Ranked is kept in
+`pfemu-online.cfg`, touching only its `ranked=` line. `make gui NOGTK=1`
+keeps the old starter in `host_sdl.c` (no launcher; GOG offer, last
+install, exec). What moved to make the starter possible:
 `write_sound_cfg()`, `pfemu-last.cfg` and `pfemu-winpos.cfg` from `launch.c`
 to `cfg.c`, and the GOG search to `src/gog.c`, which covers both hosts. The
 Linux search is described in RELEASES.md, "The Linux edition". GOG's Linux
@@ -79,7 +91,8 @@ installer ships the same `game.gog` as the Windows one. New flag on both
 platforms: `-import IMAGE DIR`. Releases carry `pfemu-linux-x86_64.tar.gz`
 (`release.yml`, built inside Ubuntu 22.04 for its older glibc and SDL
 2.0.20; CI builds the same on every push) with `install-desktop-entry.sh`
-for the application menu. Not done: a launcher, uploads.
+for the application menu. The tarball now needs `libgtk-3-0` besides SDL2.
+Not done: uploads.
 
 ## Verified, and not
 
@@ -235,10 +248,16 @@ for the application menu. Not done: a launcher, uploads.
    A `-ranked` recording made there (Party Land, 299.5 s, 417 events,
    17,386,520) came back `verified` and `rankable` under `-strict` from
    both `pfemu-headless` and `pfemu.exe`, with the same cycles and wav hash.
-   After that, the
-   choice the user has not made yet: a launcher inside the SDL window, a
-   GTK one, or none. Uploads need `online.c` on libcurl either way, because
-   it is WinHTTP and DPAPI now.
+   **The launcher is GTK 3** (the user's choice, 2026-09-24), in two
+   steps. Step 1, built: everything but the Leaderboard group (see the
+   status paragraph above). To try by hand: the window on Wayland and under
+   WSLg, Play / Record / Replay each launching and coming back, the Replays
+   window (list, details, Replay, Delete to the Trash), Details with Copy,
+   a second installation in the combo, the GOG offer, and the close
+   question while a game runs. Step 2: `online.c` on libcurl, the token
+   stored without DPAPI (libsecret, or a 0600 file), then login, Submit,
+   the submit check against `/api/v1/me`, polling, Submissions and the
+   Replays window's Leaderboard column.
 
 ## Running the gate
 

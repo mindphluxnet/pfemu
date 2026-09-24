@@ -2,14 +2,15 @@ pfemu for Linux
 ===============
 
 pfemu plays Pinball Fantasies from the original DOS game files. This is
-the Linux build: the same emulator as the Windows one, in an SDL2 window.
-Recordings made with it are verified by the leaderboard like any other.
+the Linux build: the same emulator as the Windows one, in an SDL2 window,
+with a GTK 3 launcher. Recordings made with it are verified by the
+leaderboard like any other.
 
-Needs SDL2, which most desktops already have:
+Needs SDL2 and GTK 3, which most desktops already have:
 
-    sudo apt install libsdl2-2.0-0        # Debian, Ubuntu
-    sudo dnf install SDL2                 # Fedora
-    sudo pacman -S sdl2                   # Arch
+    sudo apt install libsdl2-2.0-0 libgtk-3-0   # Debian, Ubuntu
+    sudo dnf install SDL2 gtk3                  # Fedora
+    sudo pacman -S sdl2 gtk3                    # Arch
 
 The game files are not included.
 
@@ -28,7 +29,8 @@ pfemu works in the folder it is started from.
 - A Deluxe CD image pfemu did not find by itself:
       ./pfemu -import path/to/game.gog GOG
 
-pfemu starts the installation played last, or the first one it finds.
+The launcher opens on the installation played last, or the first one it
+finds. Launch starts the game; the launcher stays open behind it.
 
     ./install-desktop-entry.sh
 
@@ -44,9 +46,14 @@ mutes.
 Settings
 --------
 
-There is no launcher on Linux yet. Each installation's settings are in
-PFEMU-STATE/pfemu.cfg, a text file. Recording and replaying work from the
-command line:
+The launcher sets sound, audio enhancement, the game options, the trainer,
+fullscreen and where the game starts, for each installation. They are kept
+in the installation's PFEMU-STATE/pfemu.cfg, a text file.
+
+Session: Play, Record (Ranked records what the leaderboard accepts) or
+Replay. Recordings go to sessions/ here; Replays... lists them, shows what
+each one holds, replays one, and moves the ones you delete to the Trash.
+The command line does the same without the launcher:
 
     ./pfemu -nolauncher -d GOG -ranked -record game.pfr
     ./pfemu -nolauncher -d GOG -replay game.pfr

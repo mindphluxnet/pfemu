@@ -21,21 +21,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # The Linux game window (make gui), packaged as a tarball.  Built inside
-  # Ubuntu 22.04 rather than on the runner's own image: a binary runs on
-  # the glibc it was linked against and anything newer, so the oldest
-  # system still in wide use is the one to build on.  SDL2 is left to the
-  # system (libsdl2-2.0-0), the way every distribution ships it.
+  # The Linux game window and launcher (make gui), packaged as a tarball.
+  # Built inside Ubuntu 22.04 rather than on the runner's own image: a
+  # binary runs on the glibc it was linked against and anything newer, so
+  # the oldest system still in wide use is the one to build on.  SDL2 and
+  # GTK 3 are left to the system (libsdl2-2.0-0, libgtk-3-0), the way every
+  # distribution ships them.
   linux:
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     steps:
-      - name: Toolchain and SDL2
+      - name: Toolchain, SDL2 and GTK 3
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential git ca-certificates libsdl2-dev
+          apt-get install -y --no-install-recommends build-essential git ca-certificates pkg-config libsdl2-dev libgtk-3-dev
       - uses: actions/checkout@v4
       # The container runs as root over a checkout owned by the runner user;
       # without this git refuses the tree and the build id says "unknown".

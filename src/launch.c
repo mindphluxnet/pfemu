@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include "pfemu.h"
+#include "launchcore.h"
 #include "online.h"
 #include "build.h"
 #include "../res/resource.h"
@@ -142,90 +143,14 @@
  *
  * This is also the game's own hardcoded default (a fresh install with no
  * PINBALL.CFG on disk boots with the buffer already at 00 00 01 00 00 00) -
- * cfg_option_defaults in src/cfg.c, which every reader of the file shares. */
-
-typedef struct { const char *label; const char *values[3]; int n; } OptDef;
-/* "Start at" choices.  Index is the program slot the boot loop EXECs,
- * so 0 really is "the menu" and 1-4 line up with Table1-4.Prg. */
-static const char *table_labels[5] = {
-    "Menu (normal start)",
-    "Table 1 - Party Land",
-    "Table 2 - Speed Devils",
-    "Table 3 - Billion Dollar Gameshow",
-    "Table 4 - Stones 'N Bones",
-};
-
-static const OptDef opts[6] = {
-    { "Balls:",        {"3","5",NULL},                 2 },
-    { "Angle:",        {"High","Low",NULL},             2 },
-    { "Scrolling:",    {"Hard","Medium","Soft"},         3 },
-    { "Ingame Music:", {"On","Off",NULL},                2 },
-    { "Resolution:",   {"Normal","High",NULL},           2 },
-    { "Color Mode:",   {"Color","Mono",NULL},            2 },
-};
-
-/* Trainer cheats, ported from trainer/PINTRN.COM and trainer/TRAINER.EXE
- * (see src/fantasies.c for the reverse-engineering writeup and the actual
- * patch logic).  Its own `trainer` key rather than part of the six option
- * bytes above, since it is not part of PINBALL.CFG's layout - just a
- * starting state that src/fantasies.c applies the moment a table loads.
- * One checkbox in the UI ("Enable trainer") drives the lot: infinite balls,
- * ball control and infinite tilts are still three independent patches
- * underneath (and the '1'-'3' hotkeys still toggle them independently
- * in-game), but there is no reason to make the user tick three boxes to
- * turn "the trainer" on.  (Older builds stored two bytes for what were
- * once two checkboxes; src/cfg.c folds either of them being set into this
- * one flag when it imports such an install.) */
-static int read_trainer_cfg(const char *dir){
-    PfCfg c;
-    cfg_read(dir, &c);
-    return c.trainer;
-}
+ * cfg_option_defaults in src/cfg.c, which every reader of the file shares.
+ *
+ * The labels and values (launch_opts[], table_labels[], quality_labels[],
+ * ...), the per-install readers and every rule that decides whether a
+ * session may start are in src/launchcore.c, shared with the GTK launcher.
+ * This file is the Win32 face on them. */
 
 /* ------------------------------------------------------------------ UI */
-/* Quality notch labels.  SETSOUND offered these as five unlabelled steps
- * between "Low" and "High"; the rate is what the driver's table actually
- * selects for each (see cfg_sblaster in src/cfg.c), which is more use than the
- * original wording. */
-static const char *quality_labels[5] = {
-    "1 - 12000 Hz",
-    "2 - 16000 Hz",
-    "3 - 20000 Hz",
-    "4 - 21000 Hz",
-    "5 - 21000 Hz (extended mix)"
-};
-
-/* Enhancement combo maps: bass/treble in 3 dB steps, oomph off then up. */
-static const char *eq_labels[9] = {
-    "-12 dB", "-9 dB", "-6 dB", "-3 dB", "Flat",
-    "+3 dB", "+6 dB", "+9 dB", "+12 dB"
-};
-static const char *oomph_labels[5] = {
-    "Off", "+3 dB", "+6 dB", "+9 dB", "+12 dB"
-};
-static int eq_idx_to_db(int idx){
-    if(idx < 0) idx = 4;
-    if(idx > 8) idx = 8;
-    return (idx - 4) * 3;
-}
-static int eq_db_to_idx(int db){
-    int i = (db + 12 + 1) / 3;
-    if(i < 0) i = 0;
-    if(i > 8) i = 8;
-    return i;
-}
-static int oomph_idx_to_db(int idx){
-    if(idx < 0) idx = 0;
-    if(idx > 4) idx = 4;
-    return idx * 3;
-}
-static int oomph_db_to_idx(int db){
-    int i = (db + 1) / 3;
-    if(i < 0) i = 0;
-    if(i > 4) i = 4;
-    return i;
-}
-
 typedef struct {
     int sound;              /* checkbox state */
     int quality;            /* combo state: SOUND.CFG quality notch, 0-4 */
@@ -304,33 +229,6 @@ static const char *cur_game_dir(const LaunchState *st){
     return r ? r->dir : "";
 }
 
-/* "Start at" per install.  Host-only, like everything else in pfemu.cfg:
- * the guest never sees it, and a release whose INT 65h layout cannot be
- * derived just falls back to the menu at boot (src/fantasies.c). */
-static int read_table_cfg(const char *dir){
-    PfCfg c;
-    cfg_read(dir, &c);
-    return c.start_table;
-}
-
-/* Last-used session file per install (record target or replay source).
- * Restored into the dialog so a replay file doesn't have to be re-picked
- * every time; overwritten on each successful Launch in record/replay mode.
- * Display/hint only - replay identity still comes from the file header. */
-static void read_session_path(const char *dir, char *dst, size_t n){
-    PfCfg c;
-    cfg_read(dir, &c);
-    snprintf(dst, n, "%s", c.session);
-}
-
-static void write_session_path(const char *dir, const char *p){
-    PfCfg c;
-    if(!dir || !dir[0] || !p || !p[0]) return;
-    cfg_read(dir, &c);
-    snprintf(c.session, sizeof(c.session), "%s", p);
-    cfg_write(dir, &c);
-}
-
 /* Forward: replay_autorestore()/apply_mode_ui() below call these, which are
  * defined further down next to the controls they update. */
 static void show_detection(HWND h, LaunchState *st);
@@ -338,97 +236,17 @@ static void reload_for_dir(HWND h, LaunchState *st);
 static void launch_save_pos(HWND h);
 static void update_online_ui(HWND h, LaunchState *st);
 
-/* Default record target: sessions/<install>_<date>.pfr (REPLAY.md section
- * 4), next to pfemu.exe.  The install dir is sanitised: it is only ever a
- * plain directory name, but never trust a filename you did not build.
- *
- * Rebuilt on every entry into record mode, so the timestamp in the name is
- * the recording's own.  A second-resolution stamp can still repeat if
- * record mode is re-entered within the same second, so an existing file
- * gets _2, _3, ... rather than being overwritten: a recording is a
- * playthrough that cannot be reproduced, and one lost to a name clash is
- * gone for good. */
+/* A fresh record target for the selected install (launch_record_path(),
+ * src/launchcore.c). */
 static void default_record_path(LaunchState *st){
-    SYSTEMTIME t;
-    char safe[64], stem[480];
-    size_t i;
-    int n;
-    const char *dir = cur_game_dir(st);
-    GetLocalTime(&t);
-    for(i=0;i<sizeof(safe)-1 && dir[i];i++){
-        char c = dir[i];
-        safe[i] = (c=='\\'||c=='/'||c==':'||c==' ') ? '_' : c;
-    }
-    safe[i] = 0;
-    if(!safe[0]) snprintf(safe, sizeof(safe), "GAME");
-    snprintf(stem, sizeof(stem),
-             "sessions\\%s_%04d%02d%02d_%02d%02d%02d",
-             safe, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
-    snprintf(st->replay_path, sizeof(st->replay_path), "%s.pfr", stem);
-    for(n=2; n<100; n++){
-        FILE *f = fopen(st->replay_path, "rb");
-        if(!f) break;
-        fclose(f);
-        snprintf(st->replay_path, sizeof(st->replay_path), "%s_%d.pfr", stem, n);
-    }
-}
-
-/* Identity compare for auto-restore (REPLAY.md 4.1): same release id AND
- * same code hash vector.  Summaries, directory names and timestamps are
- * never identity. */
-static int same_vector(const ReplayHeader *h, const RelResult *r){
-    int k;
-    if(!r->rel || _stricmp(h->release_id, r->rel->id)) return 0;
-    if(h->ncode != r->ncode) return 0;
-    for(k=0;k<h->ncode;k++){
-        if(_stricmp(h->names[k], r->code_names[k])) return 0;
-        if(h->have[k] != r->code_have[k]) return 0;
-        if(h->have[k] && (h->size[k] != r->code_size[k] ||
-                           memcmp(h->sha[k], r->code_sha[k], 32))) return 0;
-    }
-    return 1;
+    launch_record_path(cur_game_dir(st), st->replay_path, sizeof(st->replay_path));
 }
 
 /* Is the currently selected install a valid replay target for the loaded
- * file?  Fills why (when non-NULL) for the detection line. */
+ * file?  Fills why (when non-NULL) for the detection line.  The rules are
+ * replay_check(), src/launchcore.c. */
 static int replay_selection_ok(LaunchState *st, char *why, size_t n){
-    const RelResult *r = cur_inst(st);
-    if(!st->rhdr_ok){
-        if(why) snprintf(why, n, "%s", st->replay_err);
-        return 0;
-    }
-    if(!st->rhdr.trainer_off){
-        if(why) snprintf(why, n, "Replay was recorded with the trainer on - refused.");
-        return 0;
-    }
-    if(!r){
-        if(why) snprintf(why, n, "No game found for this replay.");
-        return 0;
-    }
-    if(!release_runnable(r)){
-        if(why) snprintf(why, n, "%s: %s", release_state_name(r->state), r->summary);
-        return 0;
-    }
-    if(!same_vector(&st->rhdr, r)){
-        if(r->rel && !_stricmp(st->rhdr.release_id, r->rel->id)){
-            if(why) snprintf(why, n, "Same release (%s) but a different copy - replay needs"
-                             " the recorded programs.", r->rel->id);
-        } else {
-            if(why) snprintf(why, n, "Replay is '%s', selected install is '%s' - refused.",
-                             st->rhdr.release_id, r->rel ? r->rel->id : "?");
-        }
-        return 0;
-    }
-    if(_stricmp(st->rhdr.program, r->boot)){
-        if(why) snprintf(why, n, "File starts at '%s', not this install's boot program"
-                         " (direct-table replay is v2).", st->rhdr.program);
-        return 0;
-    }
-    if(read_trainer_cfg(r->dir)){
-        if(why) snprintf(why, n, "Trainer is enabled for '%s' - replay needs it off.", r->dir);
-        return 0;
-    }
-    return 1;
+    return replay_check(st->rhdr_ok, &st->rhdr, st->replay_err, cur_inst(st), why, n);
 }
 
 /* Auto-restore on replay-file load (REPLAY.md 4.1): scan the installs and
@@ -665,7 +483,7 @@ static void reload_for_dir(HWND h, LaunchState *st){
             for(i=0;i<6;i++){
                 int v = st->rhdr.options[i];
                 if(v < 0) v = 0;
-                if(v >= opts[i].n) v = opts[i].n - 1;
+                if(v >= launch_opts[i].n) v = launch_opts[i].n - 1;
                 st->cfg[i] = (uint8_t)v;
                 SendMessageA(st->hOpt[i],CB_SETCURSEL,v,0);
             }
@@ -699,181 +517,10 @@ static void reload_for_dir(HWND h, LaunchState *st){
 /* Close carries IDCANCEL so Esc, the title bar's X and the button are one
  * path (IsDialogMessage turns Esc into WM_COMMAND/IDCANCEL). */
 
-#define DET_MAX 20480
-#define DET_RULE "----------------------------------------------------------------"
-
-static void det_add(char *dst, size_t n, const char *fmt, ...){
-    va_list ap;
-    size_t used = strlen(dst);
-    if(used + 1 >= n) return;
-    va_start(ap, fmt);
-    vsnprintf(dst + used, n - used, fmt, ap);
-    va_end(ap);
-}
-
-static void det_sect(char *dst, size_t n, const char *title){
-    det_add(dst, n, "%s%s\n%s\n", dst[0] ? "\n" : "", title, DET_RULE);
-}
-
-/* One fact per line, label column fixed so the values line up. */
-static void det_kv(char *dst, size_t n, const char *label, const char *fmt, ...){
-    char val[1024];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(val, sizeof(val), fmt, ap);
-    va_end(ap);
-    det_add(dst, n, "  %-13s %s\n", label, val);
-}
-
-/* Someone else's report (release.c's), indented into this one unchanged -
- * its own alignment is already monospace and it is what -releases prints. */
-static void det_body(char *dst, size_t n, const char *text){
-    const char *p = text;
-    while(*p){
-        const char *nl = strchr(p, '\n');
-        int len = nl ? (int)(nl - p) : (int)strlen(p);
-        det_add(dst, n, "  %.*s\n", len, p);
-        if(!nl) break;
-        p = nl + 1;
-    }
-}
-
-static void det_hex32(const uint8_t d[32], char out[65]){
-    static const char *hx = "0123456789abcdef";
-    int i;
-    for(i=0;i<32;i++){ out[i*2] = hx[d[i]>>4]; out[i*2+1] = hx[d[i]&15]; }
-    out[64] = 0;
-}
-
-/* The six intro options as words rather than the raw bytes the .pfr keeps:
- * the labels are the launcher's own, minus their trailing colon.  Three to
- * a line - all six on one runs past the width the code vector below already
- * decides, and this is the one value here long enough to do that. */
-static void det_options(const uint8_t o[6], char *dst, size_t n, int from, int to){
-    int i;
-    dst[0] = 0;
-    for(i=from;i<to;i++){
-        char lab[32];
-        int v = o[i];
-        size_t l;
-        snprintf(lab, sizeof(lab), "%s", opts[i].label);
-        l = strlen(lab);
-        if(l && lab[l-1] == ':') lab[l-1] = 0;
-        snprintf(dst + strlen(dst), n - strlen(dst), "%s%s %s",
-                 dst[0] ? ", " : "", lab,
-                 (v >= 0 && v < opts[i].n) ? opts[i].values[v] : "?");
-    }
-}
-
-/* Recorded identity against what is on disk now.  This is the one place any
- * hash is printed in replay mode; the second line only appears for a program
- * that actually differs, in release.c's expected/actual idiom. */
-static void det_vector(char *dst, size_t n, const ReplayHeader *h,
-                       const RelResult *r){
-    int k;
-    char hx[65];
-    for(k=0;k<h->ncode;k++){
-        int same;
-        /* The leftmost column is the program name, or DIFFERS on the second
-         * line of a pair - so a mismatch is visible down the left edge and
-         * every line still ends at the same column. */
-        if(h->have[k]){
-            det_hex32(h->sha[k], hx);
-            det_add(dst, n, "  %-11s %-9s %8u  %s\n",
-                    h->names[k], "recorded", (unsigned)h->size[k], hx);
-        } else {
-            det_add(dst, n, "  %-11s %-9s %8s\n",
-                    h->names[k], "recorded", "MISSING");
-        }
-        if(!r || k >= r->ncode || _stricmp(h->names[k], r->code_names[k])){
-            det_add(dst, n, "  %-11s %-9s no program of this name\n",
-                    "DIFFERS", "installed");
-            continue;
-        }
-        same = (h->have[k] == r->code_have[k]) &&
-               (!h->have[k] || (h->size[k] == r->code_size[k] &&
-                                !memcmp(h->sha[k], r->code_sha[k], 32)));
-        if(same) continue;
-        if(r->code_have[k]){
-            det_hex32(r->code_sha[k], hx);
-            det_add(dst, n, "  %-11s %-9s %8u  %s\n",
-                    "DIFFERS", "installed", (unsigned)r->code_size[k], hx);
-        } else {
-            det_add(dst, n, "  %-11s %-9s %8s\n",
-                    "DIFFERS", "installed", "MISSING");
-        }
-    }
-}
-
-/* The whole report for whatever the dialog is currently showing. */
+/* The report itself is details_report(), src/launchcore.c. */
 static void details_build(LaunchState *st, char *dst, size_t n){
-    const RelResult *r = cur_inst(st);
-    dst[0] = 0;
-    if(st->mode == LAUNCH_REPLAY){
-        char why[256];
-        int ok = replay_selection_ok(st, why, sizeof(why));
-        det_sect(dst, n, "Status");
-        det_add(dst, n, "  %s\n", ok ? "Ready to replay." : why);
-        if(st->rhdr_ok){
-            const ReplayHeader *h = &st->rhdr;
-            char buf[512];
-            det_sect(dst, n, "Replay file");
-            det_kv(dst, n, "File", "%s", st->replay_path);
-            det_kv(dst, n, "Recorded from", "%s - %s", h->release_id, h->summary);
-            det_kv(dst, n, "Starts at", "%s, then %s", h->program,
-                   (h->start_table >= 1 && h->start_table <= 4)
-                   ? table_labels[h->start_table] : "the table menu");
-            if(h->nevents > 0 && h->have_end)
-                det_kv(dst, n, "Session", "%d events, %.1f s, %llu cycles",
-                       h->nevents, h->end_emu,
-                       (unsigned long long)h->end_cycles);
-            else if(h->nevents > 0)
-                det_kv(dst, n, "Session", "%d events", h->nevents);
-            if(h->sound)
-                det_kv(dst, n, "Sound", "on, quality %s",
-                       (h->quality >= 0 && h->quality < 5)
-                       ? quality_labels[h->quality] : "?");
-            else
-                det_kv(dst, n, "Sound", "off");
-            det_options(h->options, buf, sizeof(buf), 0, 3);
-            det_kv(dst, n, "Options", "%s", buf);
-            det_options(h->options, buf, sizeof(buf), 3, 6);
-            det_kv(dst, n, "", "%s", buf);
-            det_kv(dst, n, "Display", "%s", h->fullscreen ? "fullscreen" : "windowed");
-            snprintf(buf, sizeof(buf), "%.0f ips, speed %g", h->ips, h->speed);
-            if(h->nopatch) snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf), ", nopatch");
-            if(h->nolzexe) snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf), ", nolzexe");
-            det_kv(dst, n, "Emulation", "%s", buf);
-            /* Only worth a line when it is the reason the file is refused:
-             * a playable replay always recorded with the trainer off. */
-            if(!h->trainer_off)
-                det_kv(dst, n, "Trainer", "on when recorded - unplayable");
-            if(h->overlay[0]) det_kv(dst, n, "Overlay", "%s", h->overlay);
-            det_kv(dst, n, "State", "%s", h->state[0]
-                   ? "canonical (ranked)" : "the player's own PFEMU-STATE");
-            if(h->have_wav && strcmp(h->wav_hash, "none"))
-                det_kv(dst, n, "Capture", "%s, %lu samples",
-                       h->wav_hash, h->wav_samples);
-            if(h->dir_hint[0]) det_kv(dst, n, "Recorded in", "%s", h->dir_hint);
-            snprintf(buf, sizeof(buf), "Programs - recorded (%s layout)"
-                     " vs. this install", h->layout);
-            det_sect(dst, n, buf);
-            det_vector(dst, n, h, r);
-        }
-    }
-    det_sect(dst, n, "Installation");
-    if(r) det_body(dst, n, r->detail);
-    else  det_add(dst, n, "  No installation is selected.\n");
-}
-
-/* Edit controls want CRLF; every report above is built with bare \n. */
-static void det_crlf(const char *src, char *dst, size_t n){
-    size_t o = 0;
-    for(; *src && o + 3 < n; src++){
-        if(*src == '\n') dst[o++] = '\r';
-        dst[o++] = *src;
-    }
-    dst[o] = 0;
+    details_report(dst, n, st->mode, st->replay_path, st->rhdr_ok, &st->rhdr,
+                   st->replay_err, cur_inst(st));
 }
 
 typedef struct {
@@ -1098,30 +745,6 @@ static void resp_message(const HttpResp *r, char *out, size_t n){
     snprintf(out, n, "The server answered with status %d.", r->status);
 }
 
-static void fmt_score(long long v, char *out, size_t n){
-    char d[32];
-    int len, i;
-    size_t k = 0;
-    snprintf(d, sizeof(d), "%lld", v);
-    len = (int)strlen(d);
-    for(i = 0; i < len && k + 2 < n; i++){
-        if(i && d[0] != '-' && (len - i) % 3 == 0) out[k++] = ',';
-        out[k++] = d[i];
-    }
-    out[k] = 0;
-}
-
-static const char *base_name(const char *p){
-    const char *b = p, *s;
-    for(s = p; *s; s++) if(*s == '\\' || *s == '/') b = s + 1;
-    return b;
-}
-
-/* "Speed Devils" out of "Table 2 - Speed Devils". */
-static const char *table_name(long long t){
-    return t >= 1 && t <= 4 ? table_labels[t] + 10 : "?";
-}
-
 /* One submission object, as a line for the status row.  A result names the
  * pfemu build that produced it: the server verifies a kept recording again
  * when its build changes, so which build said "mismatch" is the part that
@@ -1298,29 +921,8 @@ static void start_submit(HWND h, LaunchState *st, const char *cand){
  * (src/fantasies.c) says what the recording claims, /api/v1/me where the
  * player stands.  This only ever asks.  The claim is not evidence and the
  * server decides; without the file or an answer the upload simply goes. */
-#define RANKED_BALLS 3   /* pfemu-web's policy: a 5-ball game is another game */
-
-/* The best claimed three-ball rankable score per table 1-4, -1 where there
- * is none.  0 when the recording has no .games file. */
-static int read_claims(const char *pfr, long long best[5]){
-    char path[600], line[128];
-    FILE *f;
-    int i;
-    for(i = 0; i < 5; i++) best[i] = -1;
-    snprintf(path, sizeof(path), "%s.games", pfr);
-    f = fopen(path, "r");
-    if(!f) return 0;
-    while(fgets(line, sizeof(line), f)){
-        int t, balls, rankable;
-        unsigned long long sc;
-        if(line[0] == '#') continue;
-        if(sscanf(line, "%d %d %d %llu", &t, &balls, &rankable, &sc) != 4) continue;
-        if(t < 1 || t > 4 || !rankable || balls != RANKED_BALLS) continue;
-        if((long long)sc > best[t]) best[t] = (long long)sc;
-    }
-    fclose(f);
-    return 1;
-}
+/* RANKED_BALLS and read_claims(), what a recording claims, are in
+ * src/launchcore.c. */
 
 static void start_submit_check(HWND h, LaunchState *st, const char *cand){
     long long claim[5];
@@ -2314,32 +1916,7 @@ static void rl_detail(RlState *d){
                ? "yes, recorded against the canonical state"
                : "no, recorded with the player's own high-score tables");
     }
-    /* Every game the recording claims, not just the best per table.  This
-     * is pfemu's own count on this machine; the server's is Leaderboard. */
-    { char path[600], line[128];
-      FILE *f;
-      int any = 0;
-      snprintf(path, sizeof(path), "%s.games", x->path);
-      f = fopen(path, "r");
-      while(f && fgets(line, sizeof(line), f)){
-          int t, balls, rankable;
-          unsigned long long g;
-          char sc[32];
-          if(line[0] == '#' || sscanf(line, "%d %d %d %llu", &t, &balls, &rankable, &g) != 4)
-              continue;
-          fmt_score((long long)g, sc, sizeof(sc));
-          det_kv(raw, sizeof(raw), any ? "" : "Counted here", "%-18s %d balls %14s%s",
-                 table_name(t), balls, sc,
-                 !rankable ? "  not a finished one-player game" :
-                 balls != RANKED_BALLS ? "  only 3-ball games rank" : "");
-          any = 1;
-      }
-      if(f) fclose(f);
-      /* A recording from before the .games file gets one from its first
-       * complete replay in the launcher (run.c). */
-      if(!any) det_kv(raw, sizeof(raw), "Counted here", "%s", x->have_games
-                      ? "no finished game"
-                      : "not yet - replay it once to the end to count its games"); }
+    games_report(raw, sizeof(raw), x->path, x->have_games);
     if(x->sub_s >= 0){
         int pending = 0;
         sub_describe(d->subs + x->sub_s, d->subs + x->sub_e, buf, sizeof(buf), &pending);
@@ -3131,7 +2708,7 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             int lx = ox + ((col == 0) ? 24 : 218);
             int cx = ox + ((col == 0) ? 110 : 304);
             int ry = gy + 20 + row * 24;
-            c = CreateWindowExA(0,"STATIC",opts[i].label,WS_CHILD|WS_VISIBLE,
+            c = CreateWindowExA(0,"STATIC",launch_opts[i].label,WS_CHILD|WS_VISIBLE,
                                 lx,ry+3,82,16,h,0,cs->hInstance,0);
             SendMessageA(c,WM_SETFONT,(WPARAM)st->hFont,0);
             st->hOpt[i] = CreateWindowExA(0,"COMBOBOX","",
@@ -3139,8 +2716,8 @@ static LRESULT CALLBACK launch_proc(HWND h, UINT m, WPARAM w, LPARAM l){
                                 CBS_DROPDOWNLIST,
                                 cx,ry,94,200,h,(HMENU)(INT_PTR)(ID_OPT_FIRST+i),cs->hInstance,0);
             SendMessageA(st->hOpt[i],WM_SETFONT,(WPARAM)st->hFont,0);
-            for(k=0;k<opts[i].n;k++)
-                SendMessageA(st->hOpt[i],CB_ADDSTRING,0,(LPARAM)opts[i].values[k]);
+            for(k=0;k<launch_opts[i].n;k++)
+                SendMessageA(st->hOpt[i],CB_ADDSTRING,0,(LPARAM)launch_opts[i].values[k]);
             SendMessageA(st->hOpt[i],CB_SETCURSEL,st->cfg[i],0);
         }
         y += gh + 8;

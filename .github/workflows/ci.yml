@@ -28,12 +28,13 @@ jobs:
       - name: Build (gcc, -O2)
         run: make
 
-      # The Linux game window (src/host_sdl.c).  Compiles and links only:
+      # The Linux game window (src/host_sdl.c) and its launcher
+      # (src/launch_gtk.c).  Compiles and links only:
       # there is no display here and nothing to play without game files.
-      - name: Build the SDL2 game window
+      - name: Build the SDL2 game window and the GTK launcher
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl2-dev
+          sudo apt-get install -y libsdl2-dev libgtk-3-dev
           make gui
 
       # 22 fixed cases with expected verdicts, milliseconds, meaningful exit
@@ -68,19 +69,20 @@ jobs:
         run: make ubsan
 
   # The build the Linux release ships (release.yml, job "linux"): the SDL2
-  # window inside Ubuntu 22.04, whose SDL is 2.0.20.  The job above builds
-  # against the newest SDL; this one catches a call the oldest does not
-  # have, on every push rather than on the first release tag.
+  # window inside Ubuntu 22.04, whose SDL is 2.0.20 and GTK 3.24.33.  The
+  # job above builds against the newest of both; this one catches a call
+  # the oldest does not have, on every push rather than on the first
+  # release tag.
   linux-release-build:
     runs-on: ubuntu-latest
     container: ubuntu:22.04
     steps:
-      - name: Toolchain and SDL2
+      - name: Toolchain, SDL2 and GTK 3
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential git ca-certificates libsdl2-dev
+          apt-get install -y --no-install-recommends build-essential git ca-certificates pkg-config libsdl2-dev libgtk-3-dev
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: make gui

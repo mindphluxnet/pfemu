@@ -79,28 +79,29 @@ Game files and compiled binaries are not included in this repository.
 ### Linux
 
 pfemu also builds as a Linux program with an SDL2 window. It runs the same
-emulator, and recordings made with it are the same kind of file. There is
-no launcher on Linux yet. Starting `pfemu` without arguments offers the GOG
-import once, picks the installation you played last (or the first one that
-runs) and starts it with that installation's saved settings. The keys are
-the same as on Windows.
+emulator, and recordings made with it are the same kind of file. Starting
+`pfemu` without arguments opens the launcher, a GTK 3 window with the same
+groups as on Windows: installation, sound, audio enhancement, game options,
+trainer, fullscreen, Start at, and Play / Record / Replay with the Replays
+window. The keys are the same as on Windows. The Leaderboard group is not
+there yet, so uploading needs the Windows launcher for now.
 
 Each release has a `pfemu-linux-x86_64.tar.gz` next to `pfemu.exe`. It
-needs SDL2 from your distribution (`libsdl2-2.0-0` on Debian and Ubuntu).
+needs SDL2 and GTK 3 from your distribution (`libsdl2-2.0-0` and
+`libgtk-3-0` on Debian and Ubuntu; GNOME desktops already have both).
 Unpack it, start `./pfemu`, and run `./install-desktop-entry.sh` if you
 want pfemu in the application menu. To build it yourself:
 
 ```sh
-sudo apt install build-essential libsdl2-dev   # Debian/Ubuntu
+sudo apt install build-essential pkg-config libsdl2-dev libgtk-3-dev   # Debian/Ubuntu
 make gui
 ./pfemu
 ```
 
-What the Windows launcher sets lives in each installation's
-`PFEMU-STATE/pfemu.cfg`, a text file you can edit by hand. Recording,
-replaying, fullscreen and a start table work through the flags under
-[Command line](#command-line). Uploading to the leaderboard needs the
-Windows launcher for now.
+`make gui NOGTK=1` builds it without the launcher: `pfemu` then offers the
+GOG import once and starts the installation you played last with its saved
+settings. Those settings live in each installation's `PFEMU-STATE/pfemu.cfg`,
+a text file, on both platforms.
 
 ## Where to put the game files
 

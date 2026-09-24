@@ -6,9 +6,11 @@
 # it reports through stderr, -wav, -shot and -shotevery.
 #
 # `make gui` produces pfemu, the playable Linux build: the same objects on the
-# SDL2 host (src/host_sdl.c) - a window, the keyboard, sound.  It needs the
-# SDL2 development files (Debian/Ubuntu: libsdl2-dev), found through
-# pkg-config or sdl2-config; set SDL_CFLAGS and SDL_LIBS to use others.
+# SDL2 host (src/host_sdl.c) - a window, the keyboard, sound - and the GTK 3
+# launcher (src/launch_gtk.c).  It needs the SDL2 and GTK 3 development files
+# (Debian/Ubuntu: libsdl2-dev libgtk-3-dev), found through pkg-config (SDL2
+# also through sdl2-config); set SDL_CFLAGS/SDL_LIBS or GTK_CFLAGS/GTK_LIBS
+# to use others.  `make gui NOGTK=1` builds it without the launcher.
 #
 # The flags are not preference.  docs/VERIFY.md's determinism section names
 # the first two as the things most likely to make this build disagree with the
@@ -67,7 +69,8 @@ LDLIBS  += -lm
 # answers the few Win32 calls the rest makes.  launch.c (the Win32 picker)
 # and main.c (the Win32 host) are excluded, which is the whole point of the
 # split.  What is left is the host: host_null.c here, host_sdl.c for `make
-# gui`.  Everything else is the same objects in both.
+# gui` (plus launch_gtk.c and launchcore.c, the launcher).  Everything else
+# is the same objects in both.
 COMMON := src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c \
        src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c \
        src/replay.c src/snapshot.c src/verify.c src/run.c src/vgafont.c \
@@ -100,10 +103,25 @@ GUIOBJ     := $(COMMON:.c=.o) src/host_sdl.o
 SDL_CFLAGS ?= $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags)
 SDL_LIBS   ?= $(shell pkg-config --libs sdl2 2>/dev/null || sdl2-config --libs)
 
+# The launcher window is GTK 3 (src/launch_gtk.c; Debian/Ubuntu:
+# libgtk-3-dev), on the rules it shares with the Win32 one in
+# src/launchcore.c.  `make gui NOGTK=1` leaves it out: pfemu then starts
+# the installation played last without asking (run_launcher() in
+# src/host_sdl.c).  The game process never initialises GTK either way.
+# Switching between the two needs a `make clean`: host_sdl.o differs.
+ifeq ($(NOGTK),)
+GTK_CFLAGS ?= $(shell pkg-config --cflags gtk+-3.0)
+GTK_LIBS   ?= $(shell pkg-config --libs gtk+-3.0)
+GUIOBJ     += src/launch_gtk.o src/launchcore.o
+src/host_sdl.o:   CFLAGS += -DPFEMU_GTK
+src/launch_gtk.o: CFLAGS += $(GTK_CFLAGS)
+src/launch_gtk.o: src/build.h
+endif
+
 gui: $(GUIBIN)
 
 $(GUIBIN): $(GUIOBJ)
-	$(CC) $(CFLAGS) -o $@ $(GUIOBJ) $(LDLIBS) $(SDL_LIBS)
+	$(CC) $(CFLAGS) -o $@ $(GUIOBJ) $(LDLIBS) $(SDL_LIBS) $(GTK_LIBS)
 
 src/host_sdl.o: CFLAGS += $(SDL_CFLAGS)
 
@@ -180,9 +198,10 @@ fuzz-clang:
 
 clean:
 	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer $(VERBIN) src/build.h
-	rm -f src/host_sdl.o src/host_sdl.d $(GUIBIN)
+	rm -f src/host_sdl.o src/host_sdl.d src/launch_gtk.o src/launch_gtk.d \
+	      src/launchcore.o src/launchcore.d $(GUIBIN)
 
--include $(DEP) src/host_sdl.d
+-include $(DEP) src/host_sdl.d src/launch_gtk.d src/launchcore.d
 
 FORCE:
 
