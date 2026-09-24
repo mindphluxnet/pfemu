@@ -1430,8 +1430,16 @@ int run_launcher(void){
                         "    pfemu-headless runs without a display.\n");
         return 1;
     }
+    /* Beside the program in the release tarball, under res/ in a source
+     * tree.  Neither is fine: the window just has no icon. */
     beside_exe(icon, sizeof(icon), "pfemu.png");
-    gtk_window_set_default_icon_from_file(icon, NULL);   /* none is fine */
+    if(access(icon, R_OK) != 0) beside_exe(icon, sizeof(icon), "res/pfemu.png");
+    if(access(icon, R_OK) == 0){
+        GError *err = NULL;
+        if(!gtk_window_set_default_icon_from_file(icon, &err) && err)
+            fprintf(stderr, "[launcher] no icon: %s\n", err->message);
+        if(err) g_error_free(err);
+    }
 
     memset(&st, 0, sizeof(st));
     st.ranked = ranked_load();
