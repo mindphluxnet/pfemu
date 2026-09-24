@@ -71,7 +71,8 @@ and waveOut implemented on an SDL audio callback so `sound.c` is unchanged.
 **The launcher is GTK 3 (2026-09-24, tried by hand on the Ubuntu desktop,
 everything works; the user found the game running even better there than
 on Windows):**
-`src/launch_gtk.c`, the Win32 window minus the Leaderboard group, on rules
+`src/launch_gtk.c`, the Win32 window with the Leaderboard group (step 2,
+also tried by hand and working), on rules
 moved out of `launch.c` into `src/launchcore.c` so both launchers share
 them (replay refusal, Details report, record path, labels, `.games`
 report). Differences on purpose, listed at the top of `launch_gtk.c`: no
@@ -257,7 +258,8 @@ built (next steps, item 7).
    with it there for step 2 (`sessions/GOG_20260924_104612.pfr`, Party
    Land, 614 s, 39,282,110): it verifies under `-strict` from
    `pfemu-headless` with the recorded cycles and wav hash.
-   **Step 2, built, not tried by hand yet:** the Leaderboard group, the
+   **Step 2, done, tried by hand on 2026-09-24 and everything worked
+   (user):** the Leaderboard group, the
    login window, the Submissions window, the submit check against
    `/api/v1/me`, polling, and the Replays window's Leaderboard column and
    Submit button. `online.c` now has a POSIX half: libcurl (GnuTLS build)
@@ -272,7 +274,9 @@ built (next steps, item 7).
    A console test of the libcurl client passed 7 checks, among them live
    calls against `https://pf.dark-secrets.eu` (401 on a bad token, a POST
    with a body), an unreachable host and an unknown name. The Windows
-   build was relinked after the move; its windows were not opened.
+   build was relinked after the move; its windows were not opened, so the
+   Win32 launcher after the `launchcore.c` move and the two Win32 fixes
+   above are still to be tried by hand.
 
 ## Running the gate
 
