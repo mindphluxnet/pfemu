@@ -372,10 +372,24 @@ void plat_init(const char *title){
     if(!ren){ no_window("renderer"); return; }
     { SDL_RendererInfo ri;
       if(SDL_GetRendererInfo(ren, &ri) == 0)
-          fprintf(stderr, "[sdl] video %s, renderer %s\n",
-                  SDL_GetCurrentVideoDriver(), ri.name); }
+          fprintf(stderr, "[sdl] video %s, renderer %s%s\n",
+                  SDL_GetCurrentVideoDriver(), ri.name,
+                  (ri.flags & SDL_RENDERER_PRESENTVSYNC) ? " (vsync)" : ""); }
     SDL_GetRendererOutputSize(ren, &win_w, &win_h);
+    { int px, py, ww, wh;
+      SDL_GetWindowPosition(win, &px, &py);
+      SDL_GetWindowSize(win, &ww, &wh);
+      fprintf(stderr, "[sdl] window at %d,%d size %dx%d, output %dx%d%s,"
+                      " %d display(s)\n", px, py, ww, wh, win_w, win_h,
+              (x == SDL_WINDOWPOS_CENTERED) ? " (centred)" : " (saved spot)",
+              SDL_GetNumVideoDisplays()); }
 }
+
+/* Presents: how many, and what SDL_RenderPresent costs.  A black or absent
+ * picture with presents counted means the frames reach SDL and stop
+ * there. */
+static unsigned long pres_n;
+static double pres_total, pres_max;
 
 /* Persist the windowed position for the next run (pfemu-winpos.cfg, the
  * same file and keys as on Windows).  Fullscreen keeps the spot from
@@ -469,7 +483,16 @@ void plat_present(const uint32_t *pix, int w, int h){
     /* Screen-space overlays go last, in window pixels. */
     osd_draw();
     rec_draw();
-    SDL_RenderPresent(ren);
+    {   double t = plat_time(), dt;
+        SDL_RenderPresent(ren);
+        dt = plat_time() - t;
+        if(!pres_n)
+            fprintf(stderr, "[sdl] first frame %dx%d into %dx%d at %d,%d\n",
+                    w, h, dw, dh, dx, dy);
+        pres_n++;
+        pres_total += dt;
+        if(dt > pres_max) pres_max = dt;
+    }
 }
 
 double plat_time(void){
@@ -524,6 +547,16 @@ void plat_screenshot(const uint32_t *pix, int w, int h){
 }
 
 void plat_shutdown(void){
+    if(win){
+        Uint32 f = SDL_GetWindowFlags(win);
+        fprintf(stderr, "[sdl] video: %lu presents, SDL_RenderPresent mean %.2f ms"
+                        " max %.1f ms; window%s%s%s%s\n",
+                pres_n, pres_n ? pres_total / pres_n * 1000.0 : 0.0, pres_max * 1000.0,
+                (f & SDL_WINDOW_SHOWN) ? " shown" : "",
+                (f & SDL_WINDOW_HIDDEN) ? " hidden" : "",
+                (f & SDL_WINDOW_MINIMIZED) ? " minimized" : "",
+                (f & SDL_WINDOW_INPUT_FOCUS) ? " focused" : " unfocused");
+    }
     if(tex){ SDL_DestroyTexture(tex); tex = NULL; }
     if(ren){ SDL_DestroyRenderer(ren); ren = NULL; }
     if(win){ SDL_DestroyWindow(win); win = NULL; }
@@ -552,13 +585,40 @@ static WAVEHDR *wq[WQ_MAX];
 static int wq_head, wq_n;
 static DWORD wq_off;              /* bytes of wq[wq_head] already played */
 
+/* What the device actually does with the queue, reported at close: how
+ * regularly SDL asks, how much it takes per second of wall time, and how
+ * often the queue was empty when it asked.  Written by the callback only,
+ * read after the device is closed. */
+static struct {
+    unsigned long calls, starved_calls;
+    double bytes, silence_bytes;
+    double t_first, t_last, gap_max;
+    int len_min, len_max;
+} ast;
+static int adev_frame = 4;        /* bytes per frame in the opened format */
+static int adev_freq = 48000;
+
 static void SDLCALL audio_cb(void *user, Uint8 *out, int len){
+    double now = plat_time();
     (void)user;
+    if(ast.calls){
+        if(now - ast.t_last > ast.gap_max) ast.gap_max = now - ast.t_last;
+    } else ast.t_first = now;
+    ast.t_last = now;
+    ast.calls++;
+    ast.bytes += len;
+    if(!ast.len_min || len < ast.len_min) ast.len_min = len;
+    if(len > ast.len_max) ast.len_max = len;
     while(len > 0){
         WAVEHDR *h;
         DWORD left;
         int k;
-        if(!wq_n){ memset(out, 0, (size_t)len); return; }   /* underrun */
+        if(!wq_n){                                          /* underrun */
+            ast.starved_calls++;
+            ast.silence_bytes += len;
+            memset(out, 0, (size_t)len);
+            return;
+        }
         h = wq[wq_head];
         left = h->dwBufferLength - wq_off;
         k = left < (DWORD)len ? (int)left : len;
@@ -599,7 +659,13 @@ UINT waveOutOpen(HWAVEOUT *h, UINT dev, const WAVEFORMATEX *fmt,
     wq_head = wq_n = 0;
     wq_off = 0;
     SDL_PauseAudioDevice(adev, 0);
-    fprintf(stderr, "[sdl] audio %s\n", SDL_GetCurrentAudioDriver());
+    adev_frame = 2 * want.channels;
+    adev_freq = want.freq;
+    memset(&ast, 0, sizeof(ast));
+    fprintf(stderr, "[sdl] audio %s: asked %d Hz %d ch %d frames, device has"
+                    " %d Hz %d ch %d frames (format %04X)\n",
+            SDL_GetCurrentAudioDriver(), want.freq, want.channels, want.samples,
+            have.freq, have.channels, have.samples, (unsigned)have.format);
     if(h) *h = (HWAVEOUT)(intptr_t)adev;
     return MMSYSERR_NOERROR;
 }
@@ -636,7 +702,21 @@ UINT waveOutReset(HWAVEOUT h){
 
 UINT waveOutClose(HWAVEOUT h){
     (void)h;
-    if(adev){ SDL_CloseAudioDevice(adev); adev = 0; }
+    if(!adev) return 0;
+    SDL_CloseAudioDevice(adev);
+    adev = 0;
+    /* The rate is what SDL took from the queue per second of wall time, in
+     * the format sound.c writes: 48000 when the device keeps pace.  A gap
+     * far above one device buffer means SDL asks in bursts. */
+    if(ast.calls > 1){
+        double span = ast.t_last - ast.t_first;
+        fprintf(stderr, "[sdl] audio: %lu callbacks over %.2fs, %.0f frames/s taken"
+                        " (%d expected), %d-%d bytes per call, max gap %.1f ms,"
+                        " queue empty on %lu calls (%.0f ms of silence)\n",
+                ast.calls, span, span > 0 ? ast.bytes / adev_frame / span : 0.0,
+                adev_freq, ast.len_min, ast.len_max, ast.gap_max * 1000.0,
+                ast.starved_calls, ast.silence_bytes / adev_frame * 1000.0 / adev_freq);
+    }
     return 0;
 }
 
