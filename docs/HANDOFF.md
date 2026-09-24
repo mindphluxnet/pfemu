@@ -103,7 +103,7 @@ built (next steps, item 7).
 | --- | --- |
 | MSVC and gcc 14.2 agree byte-for-byte | **Verified**, on all three vectors |
 | Two platforms agree on a **score** | **Verified**, on two vectors. `deluxe-table1-ranked-644s`: recorded on Windows/MSVC, replayed under WSL/Debian gcc, 33,415,380 at 3,866,538,359 cycles, same capture hash. `deluxe-table1-partyon-295s`: recorded on Windows/MSVC, replayed on Debian/gcc 14.2, same capture hash, all 15 frames, same 1,773,389,028 cycles, same 20,652,570. This is the claim the whole service rests on |
-| A recording **made on Linux** verifies on both | **Verified, 2026-09-24, one game.** Recorded with the SDL2 build under WSLg, `-ranked`, Party Land, 422.5 s, 478 events, 27,531,690 `rankable`. The host fell behind (`fell_behind=26`, 6.8 s over 429 s of wall time) and the sound was poor, which the guest never sees. `-strict -unthrottle -verify` came back `verified` with the same cycles, wav hash and score from `pfemu-headless` (gcc, WSL) and from `pfemu.exe` (MSVC). Pinned as the golden vector `deluxe-table1-linux-ranked-422s`, the first recorded on Linux |
+| A recording **made on Linux** verifies on both | **Verified, 2026-09-24, one game.** Recorded with the SDL2 build under WSLg, `-ranked`, Party Land, 422.5 s, 478 events, 27,531,690 `rankable`. The host fell behind (`fell_behind=26`, 6.8 s over 429 s of wall time) and the sound was poor, which the guest never sees. `-strict -unthrottle -verify` came back `verified` with the same cycles, wav hash and score from `pfemu-headless` (gcc, WSL) and from `pfemu.exe` (MSVC). Pinned as the golden vector `deluxe-table1-linux-ranked-422s`, the first recorded on Linux. A second, from the **Ubuntu desktop** (2026-09-24, launched from the GTK launcher): Party Land, 614.0 s, 605 events, 39,282,110 `rankable`, four launches. It reproduces the footer and wav hash under `pfemu-headless` and is pinned as `deluxe-table1-ubuntu-ranked-614s` |
 | The suite catches a wrong score **and a wrong eligibility verdict** | **Verified**, on two vectors. The attempt lines pin `20652570 ... attract yes` and `33415380 ... attract yes`, and `run.sh` runs the verdict replay of a ranked vector under `-strict`. `run.sh` fails the vector if a replay disagrees, or if the ball-counter watchdog fires |
 | The verdict object is stable | **Verified** for its own logic. `tests/verify/` has 18 cases against stubs under ASan+UBSan. Every emitted object was also parsed with a real JSON parser, and two deliberate mutations of `verify.c` were caught |
 | The verdict matches the report | **Verified** on both hosts. `run.sh` cross-checks the JSON `best` against the `[RANKABLE]` lines the same replay printed: 20,652,570 on both. The ranked vector agrees at 33,415,380 under WSL, under `-strict` |
@@ -257,7 +257,8 @@ built (next steps, item 7).
    2026-09-24 and everything worked (user). The user recorded a session
    with it there for step 2 (`sessions/GOG_20260924_104612.pfr`, Party
    Land, 614 s, 39,282,110): it verifies under `-strict` from
-   `pfemu-headless` with the recorded cycles and wav hash.
+   `pfemu-headless` with the recorded cycles and wav hash, and is the
+   golden vector `deluxe-table1-ubuntu-ranked-614s`.
    **Step 2, done, tried by hand on 2026-09-24 and everything worked
    (user):** the Leaderboard group, the
    login window, the Submissions window, the submit check against
