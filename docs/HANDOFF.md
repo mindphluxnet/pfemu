@@ -85,7 +85,7 @@ file, a Linux job in `release.yml`.
 | --- | --- |
 | MSVC and gcc 14.2 agree byte-for-byte | **Verified**, on all three vectors |
 | Two platforms agree on a **score** | **Verified**, on two vectors. `deluxe-table1-ranked-644s`: recorded on Windows/MSVC, replayed under WSL/Debian gcc, 33,415,380 at 3,866,538,359 cycles, same capture hash. `deluxe-table1-partyon-295s`: recorded on Windows/MSVC, replayed on Debian/gcc 14.2, same capture hash, all 15 frames, same 1,773,389,028 cycles, same 20,652,570. This is the claim the whole service rests on |
-| A recording **made on Linux** verifies on both | **Verified, 2026-09-24, one game.** Recorded with the SDL2 build under WSLg, `-ranked`, Party Land, 422.5 s, 478 events, 27,531,690 `rankable`. The host fell behind (`fell_behind=26`, 6.8 s over 429 s of wall time) and the sound was poor, which the guest never sees. `-strict -unthrottle -verify` came back `verified` with the same cycles, wav hash and score from `pfemu-headless` (gcc, WSL) and from `pfemu.exe` (MSVC). Not a golden vector yet |
+| A recording **made on Linux** verifies on both | **Verified, 2026-09-24, one game.** Recorded with the SDL2 build under WSLg, `-ranked`, Party Land, 422.5 s, 478 events, 27,531,690 `rankable`. The host fell behind (`fell_behind=26`, 6.8 s over 429 s of wall time) and the sound was poor, which the guest never sees. `-strict -unthrottle -verify` came back `verified` with the same cycles, wav hash and score from `pfemu-headless` (gcc, WSL) and from `pfemu.exe` (MSVC). Pinned as the golden vector `deluxe-table1-linux-ranked-422s`, the first recorded on Linux |
 | The suite catches a wrong score **and a wrong eligibility verdict** | **Verified**, on two vectors. The attempt lines pin `20652570 ... attract yes` and `33415380 ... attract yes`, and `run.sh` runs the verdict replay of a ranked vector under `-strict`. `run.sh` fails the vector if a replay disagrees, or if the ball-counter watchdog fires |
 | The verdict object is stable | **Verified** for its own logic. `tests/verify/` has 18 cases against stubs under ASan+UBSan. Every emitted object was also parsed with a real JSON parser, and two deliberate mutations of `verify.c` were caught |
 | The verdict matches the report | **Verified** on both hosts. `run.sh` cross-checks the JSON `best` against the `[RANKABLE]` lines the same replay printed: 20,652,570 on both. The ranked vector agrees at 33,415,380 under WSL, under `-strict` |
@@ -233,7 +233,7 @@ file, a Linux job in `release.yml`.
 The headless build may be run directly - it opens no window and no audio
 device. From the repo root under Git Bash:
 
-    wsl make && wsl sh tests/golden/run.sh          # the gate, ~35 min: real time, each vector twice
+    wsl make && wsl sh tests/golden/run.sh          # the gate, ~50 min: real time, each vector twice
     wsl sh tests/golden/speed-ab.sh                 # pacing A/B, ~4 minutes
     wsl make fuzz && wsl ./pfemu-fuzz-pfr -selftest # parser, milliseconds
     wsl make verify-test && wsl ./pfemu-verify-test # verdict, milliseconds
