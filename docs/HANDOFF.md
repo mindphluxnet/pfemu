@@ -77,8 +77,8 @@ moved out of `launch.c` into `src/launchcore.c` so both launchers share
 them (replay refusal, Details report, record path, labels, `.games`
 report). Differences on purpose, listed at the top of `launch_gtk.c`: no
 saved position (Wayland), and Delete is a button and uses the Trash.
-Two **Win32 launcher bugs** found on the way are fixed in both (Windows
-built, its window not tried by hand yet): leaving Replay mode kept the
+Two **Win32 launcher bugs** found on the way are fixed in both (tried by
+hand on Windows too, 2026-09-24, both work): leaving Replay mode kept the
 replay's settings in the window, so a Play launch wrote them to the
 install (now `shown_mode` reloads the install's on the way out), and an
 install switch kept the previous install's six options and Start at
@@ -274,9 +274,9 @@ built (next steps, item 7).
    A console test of the libcurl client passed 7 checks, among them live
    calls against `https://pf.dark-secrets.eu` (401 on a bad token, a POST
    with a body), an unreachable host and an unknown name. The Windows
-   build was relinked after the move; its windows were not opened, so the
-   Win32 launcher after the `launchcore.c` move and the two Win32 fixes
-   above are still to be tried by hand.
+   build was relinked after the move; the user tried the Win32 launcher
+   after it, and the two Win32 fixes above, by hand (2026-09-24): both
+   work.
 
 ## Running the gate
 
