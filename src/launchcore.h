@@ -62,4 +62,37 @@ void fmt_score(long long v, char *out, size_t n);        /* 1,234,567 */
 const char *base_name(const char *p);
 const char *table_name(long long t);                     /* "Speed Devils" */
 
+/* ------------------------------------------------------------ leaderboard
+ * What the launchers make of pfemu-web's answers (pfemu-web/docs/API.md),
+ * over src/online.c.  The requests themselves and every window are the
+ * launchers' own. */
+#include "online.h"
+
+/* The sentence to show for a failed request. */
+void online_message(const HttpResp *r, char *out, size_t n);
+/* One submission object as the status line; *pending when it is not done. */
+void sub_describe(const char *s, const char *e, char *out, size_t n, int *pending);
+/* The newest submission in a GET /api/v1/submissions answer, described as
+ * above.  0 when there is none. */
+int  sub_latest(const HttpResp *r, long long *id, char *out, size_t n, int *pending);
+
+/* The submissions table: one row per submission object.  sl_row() fills
+ * the cells and returns how the row is coloured. */
+enum { SL_PLAIN, SL_COUNTS, SL_PENDING };
+#define SL_COLS 7
+#define SL_CELL 200
+extern const char *const sl_titles[SL_COLS];
+int  sl_row(const char *p, const char *oe, char col[SL_COLS][SL_CELL]);
+
+/* Before an upload: 1 to upload straight away, 0 to ask first, with the
+ * question in box.  me is the answer to GET /api/v1/me. */
+int  submit_check(const char *pfr, const HttpResp *me, char *box, size_t n);
+/* A recording's bytes, exactly as on disk, for the upload.  0 and a
+ * sentence in err when it cannot be sent. */
+int  read_recording(const char *path, char **data, size_t *n, const char **err);
+/* The JSON body of a login (reg 0) or register (reg 1) request.  0 when
+ * user or password is empty. */
+int  login_body(int reg, const char *user, const char *pass, const char *email,
+                char *body, size_t n);
+
 #endif

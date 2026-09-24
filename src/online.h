@@ -1,8 +1,9 @@
-/* online.h - the launcher's client for pfemu-web (src/online.c).
+/* online.h - the launchers' client for pfemu-web (src/online.c).
  *
- * Win32 only, like the launcher that uses it.  The contract is
- * pfemu-web/docs/API.md; nothing here is part of the emulator, and nothing
- * the emulator does depends on it.
+ * Both launchers use it: WinHTTP and DPAPI on Windows, libcurl and the
+ * desktop's keyring on Linux.  The contract is pfemu-web/docs/API.md;
+ * nothing here is part of the emulator, and nothing the emulator does
+ * depends on it.
  */
 #ifndef PFEMU_ONLINE_H
 #define PFEMU_ONLINE_H
@@ -11,9 +12,11 @@
 
 #define ONLINE_DEFAULT_SERVER "https://pf.dark-secrets.eu"
 
-/* pfemu-online.cfg, next to pfemu.exe.  The token is stored encrypted with
- * DPAPI, so the file is useless on another machine or to another Windows
- * account; everything else in it is plain text. */
+/* pfemu-online.cfg, next to the program.  On Windows the token is stored
+ * in it encrypted with DPAPI, so the file is useless on another machine or
+ * to another Windows account; everything else in it is plain text.  On
+ * Linux the username and token are in the desktop's keyring instead, and
+ * the file holds only the server and Ranked. */
 typedef struct {
     char server[256];
     char username[64];
@@ -21,7 +24,11 @@ typedef struct {
     int  ranked;         /* Record mode's Ranked checkbox, default on */
 } OnlineCfg;
 void online_load(OnlineCfg *c);
-void online_save(const OnlineCfg *c);
+/* 1 when the login is kept for the next start as well.  0 when it lasts
+ * only as long as this launcher: no keyring, or the file cannot be written. */
+int  online_save(const OnlineCfg *c);
+/* Zero a password or token copy in a way the compiler may not drop. */
+void secure_wipe(void *p, size_t n);
 
 /* One HTTP exchange, synchronous: the launcher calls it from a worker
  * thread.  status is the HTTP status, or 0 when there was no response at

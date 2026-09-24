@@ -6,11 +6,11 @@ the Linux build: the same emulator as the Windows one, in an SDL2 window,
 with a GTK 3 launcher. Recordings made with it are verified by the
 leaderboard like any other.
 
-Needs SDL2 and GTK 3, which most desktops already have:
+Needs SDL2, GTK 3, libcurl and libsecret, which most desktops already have:
 
-    sudo apt install libsdl2-2.0-0 libgtk-3-0   # Debian, Ubuntu
-    sudo dnf install SDL2 gtk3                  # Fedora
-    sudo pacman -S sdl2 gtk3                    # Arch
+    sudo apt install libsdl2-2.0-0 libgtk-3-0 libcurl3-gnutls libsecret-1-0   # Debian, Ubuntu
+    sudo dnf install SDL2 gtk3 libcurl libsecret                             # Fedora
+    sudo pacman -S sdl2 gtk3 curl libsecret                                  # Arch
 
 The game files are not included.
 
@@ -58,6 +58,10 @@ The command line does the same without the launcher:
     ./pfemu -nolauncher -d GOG -ranked -record game.pfr
     ./pfemu -nolauncher -d GOG -replay game.pfr
 
-Uploading to the leaderboard needs the Windows launcher for now.
+Leaderboard: log in (or register) in the launcher, then Submit sends the
+last ranked recording, or the one picked in Replays. The launcher follows
+it until the server has verified it. The login is kept in the desktop's
+keyring (GNOME Keyring, KWallet); without one it lasts until the launcher
+closes.
 
 Everything else: https://github.com/mindphluxnet/pfemu

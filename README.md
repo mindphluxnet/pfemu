@@ -83,17 +83,20 @@ emulator, and recordings made with it are the same kind of file. Starting
 `pfemu` without arguments opens the launcher, a GTK 3 window with the same
 groups as on Windows: installation, sound, audio enhancement, game options,
 trainer, fullscreen, Start at, and Play / Record / Replay with the Replays
-window. The keys are the same as on Windows. The Leaderboard group is not
-there yet, so uploading needs the Windows launcher for now.
+window, and the Leaderboard group for logging in and submitting. The keys
+are the same as on Windows. The login is kept in the desktop's keyring
+(GNOME Keyring, KWallet); without one it lasts until the launcher closes.
 
 Each release has a `pfemu-linux-x86_64.tar.gz` next to `pfemu.exe`. It
-needs SDL2 and GTK 3 from your distribution (`libsdl2-2.0-0` and
-`libgtk-3-0` on Debian and Ubuntu; GNOME desktops already have both).
-Unpack it, start `./pfemu`, and run `./install-desktop-entry.sh` if you
-want pfemu in the application menu. To build it yourself:
+needs SDL2, GTK 3, libcurl and libsecret from your distribution
+(`libsdl2-2.0-0 libgtk-3-0 libcurl3-gnutls libsecret-1-0` on Debian and
+Ubuntu; a GNOME desktop already has all of them). Unpack it, start
+`./pfemu`, and run `./install-desktop-entry.sh` if you want pfemu in the
+application menu. To build it yourself:
 
 ```sh
-sudo apt install build-essential pkg-config libsdl2-dev libgtk-3-dev   # Debian/Ubuntu
+sudo apt install build-essential pkg-config libsdl2-dev libgtk-3-dev \
+                 libcurl4-gnutls-dev libsecret-1-dev   # Debian/Ubuntu
 make gui
 ./pfemu
 ```

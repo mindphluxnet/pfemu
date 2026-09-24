@@ -109,19 +109,27 @@ SDL_LIBS   ?= $(shell pkg-config --libs sdl2 2>/dev/null || sdl2-config --libs)
 # the installation played last without asking (run_launcher() in
 # src/host_sdl.c).  The game process never initialises GTK either way.
 # Switching between the two needs a `make clean`: host_sdl.o differs.
+#
+# The launcher's leaderboard client (src/online.c) is libcurl and the
+# desktop's keyring through libsecret (Debian/Ubuntu: libcurl4-gnutls-dev
+# libsecret-1-dev); NET_CFLAGS and NET_LIBS override them.
 ifeq ($(NOGTK),)
 GTK_CFLAGS ?= $(shell pkg-config --cflags gtk+-3.0)
 GTK_LIBS   ?= $(shell pkg-config --libs gtk+-3.0)
-GUIOBJ     += src/launch_gtk.o src/launchcore.o
+NET_CFLAGS ?= $(shell pkg-config --cflags libcurl libsecret-1)
+NET_LIBS   ?= $(shell pkg-config --libs libcurl libsecret-1)
+GUIOBJ     += src/launch_gtk.o src/launchcore.o src/online.o
 src/host_sdl.o:   CFLAGS += -DPFEMU_GTK
 src/launch_gtk.o: CFLAGS += $(GTK_CFLAGS)
 src/launch_gtk.o: src/build.h
+src/online.o:     CFLAGS += $(NET_CFLAGS)
+src/online.o:     src/build.h
 endif
 
 gui: $(GUIBIN)
 
 $(GUIBIN): $(GUIOBJ)
-	$(CC) $(CFLAGS) -o $@ $(GUIOBJ) $(LDLIBS) $(SDL_LIBS) $(GTK_LIBS)
+	$(CC) $(CFLAGS) -o $@ $(GUIOBJ) $(LDLIBS) $(SDL_LIBS) $(GTK_LIBS) $(NET_LIBS)
 
 src/host_sdl.o: CFLAGS += $(SDL_CFLAGS)
 
@@ -199,9 +207,9 @@ fuzz-clang:
 clean:
 	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer $(VERBIN) src/build.h
 	rm -f src/host_sdl.o src/host_sdl.d src/launch_gtk.o src/launch_gtk.d \
-	      src/launchcore.o src/launchcore.d $(GUIBIN)
+	      src/launchcore.o src/launchcore.d src/online.o src/online.d $(GUIBIN)
 
--include $(DEP) src/host_sdl.d src/launch_gtk.d src/launchcore.d
+-include $(DEP) src/host_sdl.d src/launch_gtk.d src/launchcore.d src/online.d
 
 FORCE:
 

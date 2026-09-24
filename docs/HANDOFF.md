@@ -92,8 +92,9 @@ installer ships the same `game.gog` as the Windows one. New flag on both
 platforms: `-import IMAGE DIR`. Releases carry `pfemu-linux-x86_64.tar.gz`
 (`release.yml`, built inside Ubuntu 22.04 for its older glibc and SDL
 2.0.20; CI builds the same on every push) with `install-desktop-entry.sh`
-for the application menu. The tarball now needs `libgtk-3-0` besides SDL2.
-Not done: uploads.
+for the application menu. The tarball now needs `libgtk-3-0`,
+`libcurl3-gnutls` and `libsecret-1-0` besides SDL2; uploads from Linux are
+built (next steps, item 7).
 
 ## Verified, and not
 
@@ -253,10 +254,25 @@ Not done: uploads.
    steps. Step 1, done: everything but the Leaderboard group (see the
    status paragraph above), tried by hand on the Ubuntu desktop on
    2026-09-24 and everything worked (user). The user recorded a session
-   with it there, to use for step 2; it is on that machine. Step 2: `online.c` on libcurl, the token
-   stored without DPAPI (libsecret, or a 0600 file), then login, Submit,
-   the submit check against `/api/v1/me`, polling, Submissions and the
-   Replays window's Leaderboard column.
+   with it there for step 2 (`sessions/GOG_20260924_104612.pfr`, Party
+   Land, 614 s, 39,282,110): it verifies under `-strict` from
+   `pfemu-headless` with the recorded cycles and wav hash.
+   **Step 2, built, not tried by hand yet:** the Leaderboard group, the
+   login window, the Submissions window, the submit check against
+   `/api/v1/me`, polling, and the Replays window's Leaderboard column and
+   Submit button. `online.c` now has a POSIX half: libcurl (GnuTLS build)
+   for HTTP and libsecret for the token. The user chose the keyring over a
+   0600 file (2026-09-24). One keyring item per server holds
+   "username\ntoken"; `pfemu-online.cfg` keeps only `server=` and
+   `ranked=` there and leaves a Windows build's lines alone. Without a
+   keyring (WSLg has none) the login lasts until the launcher closes, and
+   the status line says so. What an answer means moved to `launchcore.c`
+   too (`sub_describe`, `sl_row`, `submit_check`, `login_body`,
+   `read_recording`); `online_save()` returns whether the login was kept.
+   A console test of the libcurl client passed 7 checks, among them live
+   calls against `https://pf.dark-secrets.eu` (401 on a bad token, a POST
+   with a body), an unreachable host and an unknown name. The Windows
+   build was relinked after the move; its windows were not opened.
 
 ## Running the gate
 

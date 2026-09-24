@@ -24,9 +24,11 @@ jobs:
   # The Linux game window and launcher (make gui), packaged as a tarball.
   # Built inside Ubuntu 22.04 rather than on the runner's own image: a
   # binary runs on the glibc it was linked against and anything newer, so
-  # the oldest system still in wide use is the one to build on.  SDL2 and
-  # GTK 3 are left to the system (libsdl2-2.0-0, libgtk-3-0), the way every
-  # distribution ships them.
+  # the oldest system still in wide use is the one to build on.  SDL2,
+  # GTK 3, libcurl and libsecret are left to the system (libsdl2-2.0-0,
+  # libgtk-3-0, libcurl3-gnutls, libsecret-1-0), the way every distribution
+  # ships them.  libcurl is the GnuTLS build because that is the one a
+  # desktop Ubuntu already has.
   linux:
     runs-on: ubuntu-latest
     container: ubuntu:22.04
@@ -36,7 +38,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends build-essential git ca-certificates pkg-config libsdl2-dev libgtk-3-dev
+          apt-get install -y --no-install-recommends build-essential git ca-certificates pkg-config libsdl2-dev libgtk-3-dev libcurl4-gnutls-dev libsecret-1-dev
       - uses: actions/checkout@v4
       # The container runs as root over a checkout owned by the runner user;
       # without this git refuses the tree and the build id says "unknown".

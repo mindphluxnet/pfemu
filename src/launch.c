@@ -744,73 +744,8 @@ static int net_start(NetJob *j){
     return 1;
 }
 
-/* The sentence to show for a failed request: the server's own message when
- * it sent one (API.md: "an English sentence to show the player as is"),
- * else what went wrong on the way. */
-static void resp_message(const HttpResp *r, char *out, size_t n){
-    if(r->status == 0){
-        snprintf(out, n, "%s", r->err[0] ? r->err : "No answer from the server.");
-        return;
-    }
-    if(json_str(r->body, r->body + r->len, "message", out, n) && out[0]) return;
-    snprintf(out, n, "The server answered with status %d.", r->status);
-}
-
-/* One submission object, as a line for the status row.  A result names the
- * pfemu build that produced it: the server verifies a kept recording again
- * when its build changes, so which build said "mismatch" is the part that
- * tells an old answer from a current one. */
-static void sub_describe(const char *s, const char *e, char *out, size_t n,
-                         int *pending){
-    long long id = 0, score = 0, qp = 0;
-    char state[24] = "", reason[96] = "", sc[32], build[40] = "", where[48] = "";
-    char games[160] = "";
-    const char *rs, *re, *as, *ae, *o, *oe;
-    int rankable = 0, have_result;
-    json_num(s, e, "id", &id);
-    json_str(s, e, "state", state, sizeof(state));
-    have_result = json_obj(s, e, "result", &rs, &re);
-    if(strcmp(state, "done") || !have_result){
-        *pending = 1;
-        /* Everybody's uploads wait in one line, first come first served
-         * (pfemu-web API.md), and 1 is the one being verified or next. */
-        if(json_num(s, e, "queue_position", &qp) && qp > 1)
-            snprintf(where, sizeof(where), ", position %lld in the queue", qp);
-        /* A result while not done is the previous round's: this one is a
-         * re-verification (a new pfemu build on the server). */
-        snprintf(out, n, "Submission #%lld: %s%s...", id,
-                 have_result ? "being verified again with the server's new build" :
-                 !strcmp(state, "queued") || qp > 1 ? "queued for verification"
-                                                    : "being verified", where);
-        return;
-    }
-    *pending = 0;
-    json_bool(rs, re, "rankable", &rankable);
-    json_str(rs, re, "reason", reason, sizeof(reason));
-    json_str(rs, re, "build", build, sizeof(build));
-    /* A session on several tables ranks on each of them. */
-    if(rankable && json_arr(rs, re, "games", &as, &ae)){
-        size_t k = 0;
-        for(o = as; (o = json_next_obj(o, ae, &oe)) != NULL && k < sizeof(games); o = oe){
-            long long t = 0, g = 0;
-            if(!json_num(o, oe, "table", &t) || !json_num(o, oe, "score", &g)) continue;
-            fmt_score(g, sc, sizeof(sc));
-            k += (size_t)snprintf(games + k, sizeof(games) - k, "%s%s on %s",
-                                  k ? ", " : "", sc, table_name(t));
-        }
-    }
-    if(rankable && games[0]){
-        snprintf(out, n, "Submission #%lld verified and ranked: %s (build %s)", id, games,
-                 build[0] ? build : "?");
-    } else if(rankable && json_num(rs, re, "score", &score)){
-        fmt_score(score, sc, sizeof(sc));
-        snprintf(out, n, "Submission #%lld verified and ranked: %s points (build %s)", id, sc,
-                 build[0] ? build : "?");
-    } else {
-        snprintf(out, n, "Submission #%lld: %s (build %s)", id,
-                 online_reason_text(reason), build[0] ? build : "?");
-    }
-}
+/* What an answer means - online_message(), sub_describe(), sl_row(),
+ * submit_check() - is src/launchcore.c's, shared with the GTK launcher. */
 
 /* The recording Submit would send: in Replay mode the picked file, else the
  * last recording that finished.  Only a complete ranked one qualifies, and
@@ -897,32 +832,17 @@ static HWND ui_owner(const LaunchState *st, HWND h){
  * submit_candidate(), the Replays window the row that was clicked. */
 static void start_submit(HWND h, LaunchState *st, const char *cand){
     NetJob *j;
-    FILE *f;
-    long len;
+    const char *err;
     if(!cand || st->submitting || !st->online.token[0]) return;
     j = net_new(NJ_SUBMIT, h, &st->online, "POST", "/api/v1/submissions");
     if(!j) return;
     snprintf(j->file, sizeof(j->file), "%s", cand);
     snprintf(j->ctype, sizeof(j->ctype), "application/octet-stream");
-    /* The bytes exactly as pfemu wrote them: the file is hashed over its raw
-     * disk bytes, so "rb" and nothing in between. */
-    f = fopen(cand, "rb");
-    if(!f){ net_free(j); MessageBoxA(ui_owner(st, h), "The recording cannot be read.", "pfemu",
-                                     MB_OK|MB_ICONEXCLAMATION); return; }
-    fseek(f, 0, SEEK_END);
-    len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if(len <= 0 || len > 16L * 1024 * 1024){
-        fclose(f);
+    if(!read_recording(cand, &j->data, &j->n, &err)){
         net_free(j);
-        MessageBoxA(ui_owner(st, h), "The recording is empty or far too large to upload.", "pfemu",
-                    MB_OK|MB_ICONEXCLAMATION);
+        MessageBoxA(ui_owner(st, h), err, "pfemu", MB_OK|MB_ICONEXCLAMATION);
         return;
     }
-    j->data = (char*)malloc((size_t)len);
-    j->n = j->data ? fread(j->data, 1, (size_t)len, f) : 0;
-    fclose(f);
-    if(!j->data || j->n != (size_t)len){ net_free(j); return; }
     st->submitting = 1;
     update_online_ui(h, st);
     if(!net_start(j)){ st->submitting = 0; update_online_ui(h, st); }
@@ -948,56 +868,16 @@ static void start_submit_check(HWND h, LaunchState *st, const char *cand){
     if(!net_start(j)){ st->submitting = 0; start_submit(h, st, cand); }
 }
 
-/* The answer to start_submit_check(): upload, or ask first.  A tie does not
- * beat a best, because on a board the earlier of two equal scores stays. */
+/* The answer to start_submit_check(): upload, or ask first
+ * (submit_check(), src/launchcore.c). */
 static void submit_after_check(HWND h, LaunchState *st, const NetJob *j){
-    const char *s = j->r.body, *e = j->r.body + j->r.len, *as, *ae, *o, *oe;
     const char *cand = j->file;
-    long long claim[5], mine[5];
-    char box[900], a[32], b[32];
-    size_t k = 0;
-    int t, any = 0, beats = 0;
+    char box[900];
     st->submitting = 0;
-    /* No answer, or no claims to hold against it: upload, and let the
-     * server say what it thinks. */
-    if(j->r.status != 200 || !read_claims(cand, claim)){
+    if(submit_check(cand, &j->r, box, sizeof(box))){
         start_submit(h, st, cand);
         return;
     }
-    for(t = 0; t < 5; t++) mine[t] = -1;
-    if(json_arr(s, e, "standings", &as, &ae))
-        for(o = as; (o = json_next_obj(o, ae, &oe)) != NULL; o = oe){
-            long long tb = 0, sc = 0;
-            if(json_num(o, oe, "table", &tb) && json_num(o, oe, "score", &sc)
-               && tb >= 1 && tb <= 4)
-                mine[tb] = sc;
-        }
-    for(t = 1; t <= 4; t++){
-        if(claim[t] < 0) continue;
-        any = 1;
-        if(claim[t] > mine[t]) beats = 1;
-    }
-    if(beats){ start_submit(h, st, cand); return; }
-    if(!any)
-        k += (size_t)snprintf(box + k, sizeof(box) - k,
-                              "pfemu counted no finished three-ball game in this"
-                              " recording, so it will not reach a board.\n");
-    else {
-        k += (size_t)snprintf(box + k, sizeof(box) - k,
-                              "This recording does not beat your best on any table"
-                              " it was played on:\n\n");
-        for(t = 1; t <= 4 && k < sizeof(box); t++){
-            if(claim[t] < 0) continue;
-            fmt_score(claim[t], a, sizeof(a));
-            fmt_score(mine[t], b, sizeof(b));
-            k += (size_t)snprintf(box + k, sizeof(box) - k, "%s: %s (your best: %s)\n",
-                                  table_name(t), a, b);
-        }
-    }
-    if(k < sizeof(box))
-        snprintf(box + k, sizeof(box) - k,
-                 "\nEvery upload is verified in turn, so one that changes nothing"
-                 " only makes the queue longer for everybody.\n\nSubmit anyway?");
     update_online_ui(h, st);
     if(MessageBoxA(ui_owner(st, h), box, "pfemu - submit",
                    MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2) == IDYES)
@@ -1029,15 +909,8 @@ static void open_web(HWND h, const char *server, const char *path){
 #define ID_SL_LIST   400
 #define ID_SL_COPY   401
 #define ID_SL_WEB    402
-#define SL_COLS      7
-#define SL_CELL      200
-
-/* A row's lParam: how custom draw colours it. */
-enum { SL_PLAIN, SL_COUNTS, SL_PENDING };
-
-static const char *sl_titles[SL_COLS] = {
-    "#", "Received (UTC)", "State", "Score", "Result", "Verified (UTC)", "Build"
-};
+/* SL_COLS, the titles, sl_row() and the SL_* row colours (a row's lParam,
+ * for custom draw) are src/launchcore.c's. */
 
 typedef struct {
     const HttpResp *r;
@@ -1047,63 +920,6 @@ typedef struct {
     int done;
 } SubListState;
 static int sublist_registered = 0;
-
-/* "2026-09-23T10:00:00+00:00" -> "2026-09-23 10:00". */
-static void sl_time(char *t){
-    if(strlen(t) < 16) return;
-    if(t[10] == 'T') t[10] = ' ';
-    t[16] = 0;
-}
-
-/* One submission object as the table's cells.  Returns the row's colour. */
-static int sl_row(const char *p, const char *oe, char col[SL_COLS][SL_CELL]){
-    long long id = 0, qp = 0, score = 0;
-    char state[24] = "", reason[96] = "", sc[32];
-    const char *rs, *re, *as, *ae, *o, *ge;
-    int rankable = 0, have_result, done, i;
-    for(i = 0; i < SL_COLS; i++) col[i][0] = 0;
-    json_num(p, oe, "id", &id);
-    snprintf(col[0], SL_CELL, "%lld", id);
-    json_str(p, oe, "received_at", col[1], SL_CELL);
-    sl_time(col[1]);
-    json_str(p, oe, "state", state, sizeof(state));
-    done = !strcmp(state, "done");
-    have_result = json_obj(p, oe, "result", &rs, &re);
-    if(done) snprintf(col[2], SL_CELL, "done");
-    else {
-        /* The same words as the status line (sub_describe). */
-        json_num(p, oe, "queue_position", &qp);
-        snprintf(col[2], SL_CELL, "%s", have_result ? "verifying again" :
-                 !strcmp(state, "queued") || qp > 1 ? "queued" : "verifying");
-        if(qp > 1)
-            snprintf(col[2] + strlen(col[2]), SL_CELL - strlen(col[2]),
-                     " (position %lld)", qp);
-    }
-    if(!have_result) return SL_PENDING;
-    json_bool(rs, re, "rankable", &rankable);
-    json_str(rs, re, "reason", reason, sizeof(reason));
-    json_str(rs, re, "finished_at", col[5], SL_CELL);
-    sl_time(col[5]);
-    json_str(rs, re, "build", col[6], SL_CELL);
-    /* Every table the session ranked on, else the one-line summary. */
-    if(rankable && json_arr(rs, re, "games", &as, &ae)){
-        size_t k = 0;
-        for(o = as; (o = json_next_obj(o, ae, &ge)) != NULL && k < SL_CELL; o = ge){
-            long long t = 0, g = 0;
-            if(!json_num(o, ge, "table", &t) || !json_num(o, ge, "score", &g)) continue;
-            fmt_score(g, sc, sizeof(sc));
-            k += (size_t)snprintf(col[3] + k, SL_CELL - k, "%s%s %s",
-                                  k ? ", " : "", sc, table_name(t));
-        }
-    }
-    if(!col[3][0] && json_num(rs, re, "score", &score) && score > 0)
-        fmt_score(score, col[3], SL_CELL);
-    /* Not done but with a result: the previous round's answer, shown as
-     * such while the server verifies it again. */
-    snprintf(col[4], SL_CELL, "%s%s", done ? "" : "previous: ",
-             online_reason_text(reason));
-    return !done ? SL_PENDING : rankable ? SL_COUNTS : SL_PLAIN;
-}
 
 static void sl_fill(SubListState *d){
     const HttpResp *r = d->r;
@@ -1380,7 +1196,7 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
                 MessageBoxA(ui_owner(st, h), box, "pfemu - submit", MB_OK|MB_ICONINFORMATION);
             }
         } else {
-            resp_message(&j->r, msg, sizeof(msg));
+            online_message(&j->r, msg, sizeof(msg));
             MessageBoxA(ui_owner(st, h), msg, "pfemu - submit", MB_OK|MB_ICONEXCLAMATION);
         }
         break;
@@ -1403,16 +1219,9 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
         break;
     case NJ_LIST:
         if(j->r.status == 200){
-            const char *v = NULL, *oe, *o;
-            for(o = s; o < e; o++) if(*o == '['){ v = o + 1; break; }
-            /* Newest first (API.md), so the first object is the one to
-             * show and, while it is still running, to follow. */
-            if(v && (o = json_next_obj(v, e, &oe)) != NULL){
-                long long id = 0;
-                json_num(o, oe, "id", &id);
-                sub_describe(o, oe, st->sub_line, sizeof(st->sub_line), &pending);
+            long long id = 0;
+            if(sub_latest(&j->r, &id, st->sub_line, sizeof(st->sub_line), &pending))
                 follow(h, st, id, pending);
-            }
         }
         break;
     case NJ_ME:
@@ -1421,7 +1230,7 @@ static void on_net_done(HWND h, LaunchState *st, NetJob *j){
     case NJ_LIST_SHOW:
         if(j->r.status == 200) show_submission_list(h, st->online.server, &j->r);
         else {
-            resp_message(&j->r, msg, sizeof(msg));
+            online_message(&j->r, msg, sizeof(msg));
             MessageBoxA(h, msg, "pfemu - submissions", MB_OK|MB_ICONEXCLAMATION);
         }
         break;
@@ -1464,30 +1273,19 @@ static void login_busy(LoginState *d, int busy, const char *msg){
 }
 
 static void login_send(HWND h, LoginState *d, int reg){
-    char user[80], pass[300], email[300], eu[200], ep[700], ee[700];
+    char user[80], pass[300], email[300];
     static char body[1800];
     NetJob *j;
+    int ok;
     GetWindowTextA(d->hUser, user, (int)sizeof(user));
     GetWindowTextA(d->hPass, pass, (int)sizeof(pass));
     GetWindowTextA(d->hEmail, email, (int)sizeof(email));
-    if(!user[0] || !pass[0]){
+    ok = login_body(reg, user, pass, email, body, sizeof(body));
+    SecureZeroMemory(pass, sizeof(pass));
+    if(!ok){
         SetWindowTextA(d->hMsg, "Enter a username and a password.");
         return;
     }
-    json_esc(user, eu, sizeof(eu));
-    json_esc(pass, ep, sizeof(ep));
-    if(reg && email[0]){
-        json_esc(email, ee, sizeof(ee));
-        snprintf(body, sizeof(body),
-                 "{\"username\":\"%s\",\"password\":\"%s\",\"email\":\"%s\"}", eu, ep, ee);
-    } else if(reg){
-        snprintf(body, sizeof(body),
-                 "{\"username\":\"%s\",\"password\":\"%s\",\"email\":null}", eu, ep);
-    } else {
-        snprintf(body, sizeof(body), "{\"username\":\"%s\",\"password\":\"%s\"}", eu, ep);
-    }
-    SecureZeroMemory(pass, sizeof(pass));
-    SecureZeroMemory(ep, sizeof(ep));
     j = net_new(reg ? NJ_REGISTER : NJ_LOGIN, h, &d->st->online, "POST",
                 reg ? "/api/v1/register" : "/api/v1/login");
     if(!j){ SecureZeroMemory(body, sizeof(body)); return; }
@@ -1555,7 +1353,7 @@ static LRESULT CALLBACK login_proc(HWND h, UINT m, WPARAM w, LPARAM l){
             return 0;
         }
         if(d){
-            resp_message(&j->r, msg, sizeof(msg));
+            online_message(&j->r, msg, sizeof(msg));
             login_busy(d, 0, msg);
         }
         net_free(j);
