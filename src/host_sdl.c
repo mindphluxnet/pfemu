@@ -578,20 +578,36 @@ int plat_abspath(const char *in, char *out, size_t n){
  * waveOut on an SDL callback.  The queue holds header pointers in the order
  * they were written; the callback copies from the head and marks each
  * header WHDR_DONE as it finishes it.  src/sound.c reuses a header only once
- * it is done, which is the same contract it has with Windows. */
+ * it is done, which is the same contract it has with Windows.
+ *
+ * One thing waveOut does that a callback does not: when its queue runs dry
+ * it stops, and the next buffer written starts it again, so the lead the
+ * writer had is back.  An SDL device keeps running and asks every 21 ms
+ * whatever is there.  Fed in real time with no lead at all, it came up
+ * empty on 143 of 2227 calls in a 47 s run under WSLg - 2.8 s of silence cut
+ * into the sound in slivers, heard as crackling.  So the callback plays
+ * silence until PRIME_MS of sound is queued, at the start and again after
+ * any underrun, and only then plays the queue.  One gap and a fresh lead,
+ * instead of a crackle on every late frame.  The 64 ms are two device
+ * buffers plus one of sound.c's pushes, well inside what its twelve
+ * buffers can hold. */
 #define WQ_MAX 64
+#define PRIME_MS 64
 static SDL_AudioDeviceID adev;
 static WAVEHDR *wq[WQ_MAX];
 static int wq_head, wq_n;
 static DWORD wq_off;              /* bytes of wq[wq_head] already played */
+static DWORD wq_bytes;            /* bytes queued and not yet played */
+static DWORD prime_bytes;         /* the lead to build before playing */
+static int primed;
 
 /* What the device actually does with the queue, reported at close: how
  * regularly SDL asks, how much it takes per second of wall time, and how
  * often the queue was empty when it asked.  Written by the callback only,
  * read after the device is closed. */
 static struct {
-    unsigned long calls, starved_calls;
-    double bytes, silence_bytes;
+    unsigned long calls, starved_calls, primes;
+    double bytes, silence_bytes, wait_bytes;
     double t_first, t_last, gap_max;
     int len_min, len_max;
 } ast;
@@ -609,6 +625,18 @@ static void SDLCALL audio_cb(void *user, Uint8 *out, int len){
     ast.bytes += len;
     if(!ast.len_min || len < ast.len_min) ast.len_min = len;
     if(len > ast.len_max) ast.len_max = len;
+    if(!primed){
+        /* Eight headers queued counts as a lead too: sound.c has twelve, and
+         * a wait that could only end in bytes would never end if they were
+         * all short ones. */
+        if(wq_bytes < prime_bytes && wq_n < 8){     /* still building the lead */
+            ast.wait_bytes += len;
+            memset(out, 0, (size_t)len);
+            return;
+        }
+        primed = 1;
+        ast.primes++;
+    }
     while(len > 0){
         WAVEHDR *h;
         DWORD left;
@@ -617,6 +645,7 @@ static void SDLCALL audio_cb(void *user, Uint8 *out, int len){
             ast.starved_calls++;
             ast.silence_bytes += len;
             memset(out, 0, (size_t)len);
+            primed = 0;
             return;
         }
         h = wq[wq_head];
@@ -624,6 +653,7 @@ static void SDLCALL audio_cb(void *user, Uint8 *out, int len){
         k = left < (DWORD)len ? (int)left : len;
         memcpy(out, h->lpData + wq_off, (size_t)k);
         out += k; len -= k; wq_off += (DWORD)k;
+        wq_bytes -= (DWORD)k;
         if(wq_off >= h->dwBufferLength){
             h->dwFlags |= WHDR_DONE;
             wq_head = (wq_head + 1) % WQ_MAX;
@@ -658,6 +688,9 @@ UINT waveOutOpen(HWAVEOUT *h, UINT dev, const WAVEFORMATEX *fmt,
     }
     wq_head = wq_n = 0;
     wq_off = 0;
+    wq_bytes = 0;
+    primed = 0;
+    prime_bytes = (DWORD)((long)want.freq * PRIME_MS / 1000) * (DWORD)(2 * want.channels);
     SDL_PauseAudioDevice(adev, 0);
     adev_frame = 2 * want.channels;
     adev_freq = want.freq;
@@ -681,6 +714,7 @@ UINT waveOutWrite(HWAVEOUT h, WAVEHDR *hdr, UINT n){
         hdr->dwFlags &= ~(DWORD)WHDR_DONE;
         wq[(wq_head + wq_n) % WQ_MAX] = hdr;
         wq_n++;
+        wq_bytes += hdr->dwBufferLength;
     } else hdr->dwFlags |= WHDR_DONE;     /* cannot happen with NBUF 12 */
     SDL_UnlockAudioDevice(adev);
     return 0;
@@ -696,6 +730,8 @@ UINT waveOutReset(HWAVEOUT h){
         wq_n--;
     }
     wq_off = 0;
+    wq_bytes = 0;
+    primed = 0;
     SDL_UnlockAudioDevice(adev);
     return 0;
 }
@@ -712,10 +748,12 @@ UINT waveOutClose(HWAVEOUT h){
         double span = ast.t_last - ast.t_first;
         fprintf(stderr, "[sdl] audio: %lu callbacks over %.2fs, %.0f frames/s taken"
                         " (%d expected), %d-%d bytes per call, max gap %.1f ms,"
-                        " queue empty on %lu calls (%.0f ms of silence)\n",
+                        " %lu underruns (%.0f ms cut), lead of %d ms built %lu times"
+                        " (%.0f ms waiting for it)\n",
                 ast.calls, span, span > 0 ? ast.bytes / adev_frame / span : 0.0,
                 adev_freq, ast.len_min, ast.len_max, ast.gap_max * 1000.0,
-                ast.starved_calls, ast.silence_bytes / adev_frame * 1000.0 / adev_freq);
+                ast.starved_calls, ast.silence_bytes / adev_frame * 1000.0 / adev_freq,
+                PRIME_MS, ast.primes, ast.wait_bytes / adev_frame * 1000.0 / adev_freq);
     }
     return 0;
 }
