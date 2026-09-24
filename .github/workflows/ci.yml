@@ -28,6 +28,14 @@ jobs:
       - name: Build (gcc, -O2)
         run: make
 
+      # The Linux game window (src/host_sdl.c).  Compiles and links only:
+      # there is no display here and nothing to play without game files.
+      - name: Build the SDL2 game window
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev
+          make gui
+
       # 22 fixed cases with expected verdicts, milliseconds, meaningful exit
       # status.  Fourteen of them are accepted by the parser as it stood
       # before the validation pass, so this is a gate and not a formality.

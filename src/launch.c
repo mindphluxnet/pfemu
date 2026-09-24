@@ -102,68 +102,8 @@
 #define TIMER_POLL      1
 #define POLL_MS         10000          /* API.md: every 10 s is enough */
 
-/* ------------------------------------------------------- SOUND.CFG I/O */
-/* Sound off: byte-identical to what SETSOUND writes for NOSOUND.SDR. */
-static const uint8_t cfg_nosound[16] = {
-    'N','O','S','O','U','N','D','.','S','D','R',0, 0,0,0x64,0
-};
-
-/* Sound on: SBLASTER.SDR with defaults.  Layout from static analysis of the
- * driver's config parse (open, lseek to 0x0E/0x11/0x14, one answer byte
- * each, masked with 7 through lookup tables for base port, IRQ, quality):
- * byte 0x0E = base-port index (1 -> 220h), 0x11 = IRQ index (3 -> IRQ 7),
- * 0x14 = quality index.  The gap bytes are never read by the driver.
- *
- * The quality byte is SETSOUND's five-notch Low..High setting, and the
- * driver's own table says exactly what it buys (disassembled at image
- * 0x1969, table at DS:6BA2 = image 0x25D3, five 4-byte entries):
- *
- *   notch  mixing rate   second word
- *     0      12000 Hz       0
- *     1      16000 Hz       0
- *     2      20000 Hz       0
- *     3      21000 Hz       0
- *     4      21000 Hz     0x00FF
- *
- * The first word is the mixing rate.  Notch 0's 12000 is the rate pfemu
- * already sees at today's default, so the word does reach the DSP time
- * constant; the other four are read out of the table, not measured, and
- * -snddbg prints what each one actually programs.
- *
- * The second word picks which of two templates the driver's code generator
- * at 0x1752 stamps out 64 times, patching each copy with its own index 0-63
- * (a per-volume-level mixing routine, on the usual MOD-player pattern):
- * 11 bytes per copy for notches 0-3, 31 bytes for notch 4.  What the longer
- * one computes has not been decoded, so notch 4 is offered but not described
- * beyond "21 kHz plus something extra" - it is the only way it differs from
- * notch 3.
- *
- * Cost is real and lands on the emulated 386, not the host: the mixer is
- * guest code, so a higher rate spends more of the fixed ~6 MIPS budget
- * (src/dev.c emu_ips) per second of audio, exactly as it would have on
- * period hardware.  -ips raises the modelled CPU if a high notch starves
- * the game loop. */
-static void cfg_sblaster(uint8_t out[25], int quality){
-    int i;
-    for(i=0;i<25;i++) out[i]=0;
-    memcpy(out, "SBLASTER.SDR", 12);
-    out[0x0E]=1; out[0x11]=3;
-    out[0x14]=(uint8_t)(quality < 0 ? 0 : (quality > 4 ? 4 : quality));
-}
-
-void write_sound_cfg(const char *dir, int on, int quality){
-    char path[600], sub[600];
-    FILE *f;
-    snprintf(sub, sizeof(sub), "%s/PFEMU-STATE", dir);
-    CreateDirectoryA(sub, NULL);
-    snprintf(path, sizeof(path), "%s/PFEMU-STATE/SOUND.CFG", dir);
-    f = fopen(path, "wb");
-    if(!f) return;
-    if(on){ uint8_t cfg[25]; cfg_sblaster(cfg, quality); fwrite(cfg, 1, 25, f); }
-    else fwrite(cfg_nosound, 1, sizeof(cfg_nosound), f);
-    fclose(f);
-}
-
+/* SOUND.CFG I/O (write_sound_cfg) lives in src/cfg.c now: the Linux build
+ * has no launcher and still has to write it. */
 
 /* --------------------------------------------------- launcher options I/O
  *
@@ -245,7 +185,7 @@ static int read_trainer_cfg(const char *dir){
 /* ------------------------------------------------------------------ UI */
 /* Quality notch labels.  SETSOUND offered these as five unlabelled steps
  * between "Low" and "High"; the rate is what the driver's table actually
- * selects for each (see cfg_sblaster above), which is more use than the
+ * selects for each (see cfg_sblaster in src/cfg.c), which is more use than the
  * original wording. */
 static const char *quality_labels[5] = {
     "1 - 12000 Hz",
@@ -2912,8 +2852,6 @@ static void cmd_add_path(char *cmd, size_t n, const char *flag, const char *path
     cmd_add(cmd, n, " %s \"%s\"", flag, p);
 }
 
-static void last_save(const RelResult *r);
-
 static int spawn_game(HWND h, LaunchState *st){
     const RelResult *r = cur_inst(st);
     char exe[1024], cmd[4096];
@@ -3632,149 +3570,9 @@ static void launch_save_pos(HWND h){
     if(setthread) setthread(prev ? prev : (void*)(INT_PTR)-4);
 }
 
-/* Persistent memory of the last launched installation, across runs.
- * One tiny host-only file next to the exe (a file can never be mistaken
- * for an installation - release_scan() only looks at directories): the
- * directory as picked plus the release id it detected as, so a renamed
- * folder can still land on the same version.  Missing or unreadable just
- * reads as "no memory", exactly like a first run - these are preferences,
- * never a reason to refuse.  Deliberately not called pfemu.cfg: that name
- * is already the per-install settings file (PFEMU-STATE/pfemu.cfg), and
- * two different files sharing it would only confuse. */
-#define LAST_FILE "pfemu-last.cfg"
-/* Window positions live apart from install memory on purpose
- * (pfemu-winpos.cfg): a read that finds nothing must only mean "center the
- * window", never wipe the remembered installation - and vice versa.  Two
- * tiny files that cannot clobber each other beat one clever one. */
-#define LAST_WINPOS "pfemu-winpos.cfg"
-
-/* Absolute path next to the exe.  A relative path would follow the process
- * CWD, which is not stable: a shortcut's "Start in" directory, a CLI run
- * from another folder, or any future file dialog can point launch-time and
- * quit-time at two different files, so a position saved on quit is never
- * found again on launch (or vice versa).  The exe's own directory never
- * moves under a running process. */
-static void last_path(char *out, size_t n, const char *name){
-    char exe[1024];
-    DWORD len = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
-    if(len > 0 && len < sizeof(exe)){
-        char *sep = strrchr(exe, '\\');
-        char *sep2 = strrchr(exe, '/');
-        if(sep2 && (!sep || sep2 > sep)) sep = sep2;
-        if(sep){
-            size_t dlen = (size_t)(sep - exe);
-            if(dlen + 1 + strlen(name) < n){
-                memcpy(out, exe, dlen);
-                out[dlen] = 0;
-                snprintf(out + dlen, n - dlen, "\\%s", name);
-                return;
-            }
-        }
-    }
-    snprintf(out, n, "%s", name);   /* degraded, but never a failure */
-}
-
-/* Install memory only: dir + release.  Written outright on Launch, so there
- * is no read whose failure could ever blank it. */
-static void last_save(const RelResult *r){
-    char path[1080];
-    FILE *f;
-    if(!r || !r->dir[0]) return;
-    last_path(path, sizeof(path), LAST_FILE);
-    f = fopen(path, "w");
-    if(!f) return;
-    fprintf(f, "# Last installation launched from the pfemu launcher.\n");
-    fprintf(f, "dir=%s\n", r->dir);
-    fprintf(f, "release=%s\n", r->rel ? r->rel->id : "");
-    fclose(f);
-}
-
-/* Window positions only. Stored as full pairs or nothing: a half-written file
- * (crash between lines) centers instead of restoring garbage. */
-typedef struct {
-    int win_x, win_y;
-    int have_win;
-    int launch_x, launch_y;
-    int have_launch;
-} WinPos;
-
-static void winpos_read(WinPos *o){
-    char line[600], path[1080];
-    FILE *f;
-    memset(o, 0, sizeof(*o));
-    last_path(path, sizeof(path), LAST_WINPOS);
-    f = fopen(path, "r");
-    if(!f) return;
-    while(fgets(line, sizeof(line), f)){
-        char *k = line, *eq, *e;
-        while(*k==' '||*k=='\t') k++;
-        e = k + strlen(k);
-        while(e > k && (e[-1]==' '||e[-1]=='\t'||e[-1]=='\r'||e[-1]=='\n')) *--e = 0;
-        if(!*k || *k=='#' || *k==';') continue;
-        eq = strchr(k, '=');
-        if(!eq) continue;
-        *eq = 0;
-        { char *v = eq + 1;
-          while(*v==' '||*v=='\t') v++;
-          if(!strcmp(k, "win_x")){ o->win_x = atoi(v); o->have_win |= 1; }
-          else if(!strcmp(k, "win_y")){ o->win_y = atoi(v); o->have_win |= 2; }
-          else if(!strcmp(k, "launch_x")){ o->launch_x = atoi(v); o->have_launch |= 1; }
-          else if(!strcmp(k, "launch_y")){ o->launch_y = atoi(v); o->have_launch |= 2; } }
-    }
-    fclose(f);
-    if(o->have_win != 3) o->have_win = 0;   /* need the full pair to restore */
-    if(o->have_launch != 3) o->have_launch = 0;
-}
-
-static void winpos_write(const WinPos *o){
-    char path[1080];
-    FILE *f;
-    last_path(path, sizeof(path), LAST_WINPOS);
-    f = fopen(path, "w");
-    if(!f) return;
-    fprintf(f, "# pfemu window positions - delete to re-center.\n");
-    if(o->have_win)
-        fprintf(f, "win_x=%d\nwin_y=%d\n", o->win_x, o->win_y);
-    if(o->have_launch)
-        fprintf(f, "launch_x=%d\nlaunch_y=%d\n", o->launch_x, o->launch_y);
-    fclose(f);
-}
-
-/* Global game-window position, shared by all installs (see pfemu.h). */
-int last_read_winpos(int *x, int *y){
-    WinPos o;
-    winpos_read(&o);
-    if(!o.have_win) return 0;
-    if(x) *x = o.win_x;
-    if(y) *y = o.win_y;
-    return 1;
-}
-
-void last_save_winpos(int x, int y){
-    WinPos o;
-    winpos_read(&o);   /* keep the launcher dialog's spot */
-    o.win_x = x; o.win_y = y; o.have_win = 3;
-    winpos_write(&o);
-}
-
-/* Launcher dialog position: same global file, its own keys (see pfemu.h).
- * Saved on every teardown path, restored in show_launcher, centered when
- * there is nothing saved yet. */
-int last_read_launchpos(int *x, int *y){
-    WinPos o;
-    winpos_read(&o);
-    if(!o.have_launch) return 0;
-    if(x) *x = o.launch_x;
-    if(y) *y = o.launch_y;
-    return 1;
-}
-
-void last_save_launchpos(int x, int y){
-    WinPos o;
-    winpos_read(&o);   /* keep the game window's spot */
-    o.launch_x = x; o.launch_y = y; o.have_launch = 3;
-    winpos_write(&o);
-}
+/* The last launched installation (pfemu-last.cfg) and the window positions
+ * (pfemu-winpos.cfg) are kept by src/cfg.c: last_save(), last_pick(),
+ * last_read_winpos() and friends.  The Linux build shares them. */
 
 /* Center a w*h window in the work area of the monitor with the mouse cursor.
  * That is the screen the user is looking at; the primary monitor's full size
@@ -3807,104 +3605,27 @@ void center_on_cursor_monitor(int w, int h, int *ox, int *oy){
     if(oy) *oy = (sh - h) / 2 < 0 ? 0 : (sh - h) / 2;
 }
 
-/* Point st->sel at the remembered installation when it is still there:
- * the same directory wins outright (even if what is in it changed - the
- * detection line then says so), otherwise the first runnable install of
- * the remembered release.  Returns 1 when it moved the selection. */
+/* Point st->sel at the remembered installation when it is still there
+ * (last_pick(), src/cfg.c).  Returns 1 when it moved the selection. */
 static int last_restore(LaunchState *st){
-    char line[600], path[1080], dir[512] = "", rel[64] = "";
-    FILE *f;
-    int i;
-    last_path(path, sizeof(path), LAST_FILE);
-    f = fopen(path, "r");
-    if(!f) return 0;
-    while(fgets(line, sizeof(line), f)){
-        char *k = line, *eq, *e;
-        while(*k==' '||*k=='\t') k++;
-        e = k + strlen(k);
-        while(e > k && (e[-1]==' '||e[-1]=='\t'||e[-1]=='\r'||e[-1]=='\n')) *--e = 0;
-        if(!*k || *k=='#' || *k==';') continue;
-        eq = strchr(k, '=');
-        if(!eq) continue;
-        *eq = 0;
-        { char *v = eq + 1;
-          while(*v==' '||*v=='\t') v++;
-          if(!strcmp(k, "dir")) snprintf(dir, sizeof(dir), "%s", v);
-          else if(!strcmp(k, "release")) snprintf(rel, sizeof(rel), "%s", v); }
-    }
-    fclose(f);
-    if(dir[0]){
-        for(i=0;i<st->ninst;i++)
-            if(!_stricmp(st->inst[i].dir, dir)){ st->sel = i; return 1; }
-    }
-    if(rel[0]){
-        for(i=0;i<st->ninst;i++)
-            if(release_runnable(&st->inst[i]) && st->inst[i].rel &&
-               !_stricmp(st->inst[i].rel->id, rel)){ st->sel = i; return 1; }
-    }
-    return 0;
+    int i = last_pick(st->inst, st->ninst);
+    if(i < 0) return 0;
+    st->sel = i;
+    return 1;
 }
 
-/* GOG.com sells the Deluxe CD as DOSBox plus game.gog, a raw image of the
- * disc (docs/RELEASES.md, GOG section).  When that is installed and no
- * Deluxe is here yet, the launcher offers once to copy the game out of the
- * image into GOG\, beside the other installations, so nobody has to unpack
- * it by hand.  The GOG installation itself is only read.  What the copy is
- * gets decided by release_detect() like any other folder - the offer never
- * makes it a release by itself.  A "No" is remembered in pfemu-gog.cfg next
- * to the exe (its own file, for the same reason as LAST_WINPOS). */
-#define GOG_GAME_ID  "1207664103"
-#define GOG_DIR      "GOG"
-#define GOG_FILE     "pfemu-gog.cfg"
-
-/* <install path>\game.gog, from the key GOG's installer writes. */
-static int gog_find_image(char *out, size_t n){
-    static const char *const keys[] = {
-        "SOFTWARE\\WOW6432Node\\GOG.com\\Games\\" GOG_GAME_ID,
-        "SOFTWARE\\GOG.com\\Games\\" GOG_GAME_ID,
-    };
-    char dir[MAX_PATH];
-    int i;
-    for(i = 0; i < 2; i++){
-        DWORD len = sizeof(dir);
-        if(RegGetValueA(HKEY_LOCAL_MACHINE, keys[i], "path", RRF_RT_REG_SZ,
-                        NULL, dir, &len) != ERROR_SUCCESS) continue;
-        snprintf(out, n, "%s\\game.gog", dir);
-        if(GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return 1;
-    }
-    return 0;
-}
-
-/* 1 when GOG\ was just filled from the image. */
+/* GOG.com's Deluxe: finding game.gog and deciding whether to offer the
+ * import is src/gog.c, shared with the Linux build.  Asking is this
+ * window's.  1 when GOG\ was just filled from the image. */
 static int gog_offer(const RelResult *inst, int ninst){
-    char image[MAX_PATH + 16], cfg[1080], msg[1400], err[800];
-    FILE *f;
-    int i, r;
+    char image[MAX_PATH + 16], msg[1400], err[800];
+    int r;
     HCURSOR prev;
-    for(i = 0; i < ninst; i++)
-        if(release_runnable(&inst[i]) && !_stricmp(inst[i].rel->id, "deluxe"))
-            return 0;
-    if(GetFileAttributesA(GOG_DIR) != INVALID_FILE_ATTRIBUTES) return 0;
-    last_path(cfg, sizeof(cfg), GOG_FILE);
-    if(GetFileAttributesA(cfg) != INVALID_FILE_ATTRIBUTES) return 0;
-    if(!gog_find_image(image, sizeof(image))) return 0;
-    snprintf(msg, sizeof(msg),
-             "Pinball Fantasies Deluxe from GOG.com is installed here:\n\n"
-             "    %s\n\n"
-             "pfemu can copy the game out of its CD image into a folder named "
-             GOG_DIR " beside your other installations (24 files, 3.7 MB). "
-             "The GOG installation is not changed.\n\n"
-             "Import it now? If you choose No, pfemu will not ask again.",
-             image);
+    if(!gog_candidate(inst, ninst, image, sizeof(image))) return 0;
+    gog_offer_text(msg, sizeof(msg), image);
     if(MessageBoxA(NULL, msg, "pfemu - GOG version found",
                    MB_YESNO | MB_ICONQUESTION) != IDYES){
-        f = fopen(cfg, "w");
-        if(f){
-            fprintf(f, "# The launcher offered to import the GOG version and"
-                       " was told No.\n# Delete this file to be asked again.\n");
-            fprintf(f, "declined=%s\n", image);
-            fclose(f);
-        }
+        gog_decline(image);
         return 0;
     }
     prev = SetCursor(LoadCursor(NULL, IDC_WAIT));

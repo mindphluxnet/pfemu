@@ -195,6 +195,7 @@ int emu_main(int argc, char **argv){
     const char *prog = NULL;  /* -p/-setup, or the detected release's boot file */
     const char *force_release = NULL; /* -release ID: skip detection's verdict */
     int list_releases = 0;    /* -releases: print the detection report and exit */
+    const char *import_image = NULL, *import_dir = NULL; /* -import IMAGE DIR */
     RelResult rel;
     int no_launcher = 0;      /* -nolauncher: skip the picker dialog */
     int explicit_prog = 0;    /* -p / -setup names the program directly */
@@ -364,6 +365,15 @@ int emu_main(int argc, char **argv){
          * This is also the intake format for a version not in the database -
          * it prints the five sizes and SHA-256s without running any of it. */
         else if(!strcmp(argv[i],"-releases")) list_releases = 1;
+        /* -import IMAGE DIR: copy the game out of an image of the Deluxe CD
+         * (GOG's game.gog, or any ISO/raw image of that disc) into a new
+         * folder DIR, and exit.  What the launchers offer for a GOG install
+         * they find themselves, for one they cannot find: a Wine prefix, a
+         * disc image of one's own. */
+        else if(!strcmp(argv[i],"-import") && i+2<argc){
+            import_image = argv[++i];
+            import_dir = argv[++i];
+        }
         /* -release ID: treat the directory as that release whatever the
          * hashes say.  For development, and for an installation that is a
          * known build with something harmless changed.  It is the one way to
@@ -469,6 +479,18 @@ int emu_main(int argc, char **argv){
     if(unthrottle)
         fprintf(stderr, "[pfemu] -unthrottle: wall-clock pacing off,"
                         " batch deadlines unchanged\n");
+
+    if(import_image){
+        char err[800];
+        if(cdimage_import(import_image, import_dir, err, sizeof(err)) != 0){
+            fprintf(stderr, "[import] %s\n", err);
+            return 1;
+        }
+        printf("Imported %s into %s: %s\n"
+               "Run -releases to see what it was identified as.\n",
+               import_image, import_dir, err);
+        return 0;
+    }
 
     if(list_releases){
         static RelResult found[8];

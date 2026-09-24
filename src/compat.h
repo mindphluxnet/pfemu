@@ -90,6 +90,9 @@ DWORD  GetTempPathA(DWORD n, char *buf);
 DWORD  GetFullPathNameA(const char *name, DWORD n, char *out, char **part);
 DWORD  GetTickCount(void);
 DWORD  GetCurrentProcessId(void);
+/* The running program's path, for the files kept beside it (beside_exe(),
+ * src/cfg.c).  Only a NULL module is supported. */
+DWORD  GetModuleFileNameA(void *module, char *out, DWORD n);
 
 /* Resolve the last component of a host path against the directory, ignoring
  * case, when the exact name does not exist.  Rewrites in place; a

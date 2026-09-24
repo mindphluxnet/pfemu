@@ -62,7 +62,22 @@ The work done before it is finished:
 
 All of it has a test, and CI runs on every push the tests that do not need
 game files: build, parser suite, 50k fuzz cases, verdict suite, ubsan
-compile.
+compile, and since 2026-09-24 the SDL2 build.
+
+**A playable Linux build exists (2026-09-24), and nobody has played it
+yet.** `make gui` builds `pfemu` from the headless build's objects plus
+`src/host_sdl.c`: an SDL2 window, the keyboard mapped back to PC scan codes,
+and waveOut implemented on an SDL audio callback so `sound.c` is unchanged.
+There is no launcher. `run_launcher()` in `host_sdl.c` offers the GOG import,
+picks an installation (last launched, else the first runnable), writes a
+SoundBlaster `SOUND.CFG` when there is none, and execs itself with the
+command line `spawn_game()` would build. What moved to make it possible:
+`write_sound_cfg()`, `pfemu-last.cfg` and `pfemu-winpos.cfg` from `launch.c`
+to `cfg.c`, and the GOG search to `src/gog.c`, which covers both hosts. The
+Linux search is described in RELEASES.md, "The Linux edition". GOG's Linux
+installer ships the same `game.gog` as the Windows one. New flag on both
+platforms: `-import IMAGE DIR`. Not done: a launcher, uploads, a `.desktop`
+file, a Linux job in `release.yml`.
 
 ## Verified, and not
 
@@ -195,12 +210,20 @@ compile.
 6. **Optional:** make the memory helpers explicitly little-endian. Correct
    in principle, but unobservable on any host we build for.
 
+7. **The Linux build, once a person has played it.** In order: a session
+   under WSLg or on a Linux desktop (keys, sound, fullscreen, F11, the GOG
+   offer, REC badge); a recording made on Linux that verifies with
+   `-strict`; then `release.yml` (build on an old glibc, ship `pfemu` with
+   SDL2 as a system dependency). After that, the choice the user has not
+   made yet: a launcher inside the SDL window, a GTK one, or none. Uploads
+   need `online.c` on libcurl either way, because it is WinHTTP and DPAPI now.
+
 ## Running the gate
 
 The headless build may be run directly - it opens no window and no audio
 device. From the repo root under Git Bash:
 
-    wsl make && wsl sh tests/golden/run.sh          # the gate, a few minutes
+    wsl make && wsl sh tests/golden/run.sh          # the gate, ~35 min: real time, each vector twice
     wsl sh tests/golden/speed-ab.sh                 # pacing A/B, ~4 minutes
     wsl make fuzz && wsl ./pfemu-fuzz-pfr -selftest # parser, milliseconds
     wsl make verify-test && wsl ./pfemu-verify-test # verdict, milliseconds
@@ -246,7 +269,11 @@ follow-up `make clean` is needed.
   the good outcome. Check each file with `file` before editing it; a
   scripted edit that gets this wrong turns the whole file into the diff.
 - **Running the golden suite needs the game files.** `run.sh` takes an
-  installation path, or reads `PFEMU_INSTALL`.
+  installation path, or reads `PFEMU_INSTALL`. Its default, `FANTASYDX`, is
+  gone from this checkout: the Deluxe here is `GOG/`. **Give it the binary
+  as an absolute path.** It changes directory before each run, so
+  `./pfemu-headless` finds nothing, and every check fails with empty output
+  that looks like a total divergence.
 - **A wall of undefined `__ubsan_handle_*` at link time is a stale-object
   problem, not a source problem.** Instrumented `.o` files relinked without
   `-fsanitize=undefined` produce it, and it reads like the code is broken when

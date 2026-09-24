@@ -1,9 +1,14 @@
-# Headless build (Linux and other POSIX hosts).  Windows is built by build.bat.
+# Linux and other POSIX hosts.  Windows is built by build.bat.
 #
 # Produces pfemu-headless: the emulation core plus the session driver
 # (src/run.c) on the null host (src/host_null.c).  No window, no audio device,
 # no launcher - a run is whatever -replay, -keys, -untilemu and -secs say, and
 # it reports through stderr, -wav, -shot and -shotevery.
+#
+# `make gui` produces pfemu, the playable Linux build: the same objects on the
+# SDL2 host (src/host_sdl.c) - a window, the keyboard, sound.  It needs the
+# SDL2 development files (Debian/Ubuntu: libsdl2-dev), found through
+# pkg-config or sdl2-config; set SDL_CFLAGS and SDL_LIBS to use others.
 #
 # The flags are not preference.  docs/VERIFY.md's determinism section names
 # the first two as the things most likely to make this build disagree with the
@@ -25,6 +30,7 @@
 #
 # Targets:
 #   make              the headless binary
+#   make gui          pfemu, the same emulator in an SDL2 window (see above)
 #   make ubsan        pfemu-headless-ubsan, instrumented.  Drive it with
 #                     tests/golden/ubsan.sh, which keeps its logs.  The
 #                     first pass found 32 unaligned guest-RAM accesses in
@@ -57,13 +63,16 @@ CFLAGS  += $(CSTD) $(WARN) $(DETERM) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 CFLAGS  += -MMD -MP        # header dependencies, so editing pfemu.h rebuilds
 LDLIBS  += -lm
 
-# The emulation core is platform-free; run.c is the session driver; the last
-# two are this host.  launch.c (the Win32 picker) and main.c (the Win32 host)
-# are excluded, which is the whole point of the split.
-SRC := src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c \
+# The emulation core is platform-free; run.c is the session driver; posix.c
+# answers the few Win32 calls the rest makes.  launch.c (the Win32 picker)
+# and main.c (the Win32 host) are excluded, which is the whole point of the
+# split.  What is left is the host: host_null.c here, host_sdl.c for `make
+# gui`.  Everything else is the same objects in both.
+COMMON := src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c \
        src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c \
        src/replay.c src/snapshot.c src/verify.c src/run.c src/vgafont.c \
-       src/host_null.c src/posix.c
+       src/cdimage.c src/gog.c src/posix.c
+SRC := $(COMMON) src/host_null.c
 
 # The build identity the -verify object carries (src/verify.c).  The
 # header is regenerated on every make but rewritten only when the ID
@@ -81,6 +90,22 @@ all: $(BIN)
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDLIBS)
+
+# The game window.  Only host_sdl.o sees the SDL headers; the other objects
+# are the headless build's, compiled with exactly its flags, so the two
+# binaries run the same emulator.  ?= defines them deferred, so a plain
+# `make` never asks for SDL at all.
+GUIBIN     := pfemu
+GUIOBJ     := $(COMMON:.c=.o) src/host_sdl.o
+SDL_CFLAGS ?= $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags)
+SDL_LIBS   ?= $(shell pkg-config --libs sdl2 2>/dev/null || sdl2-config --libs)
+
+gui: $(GUIBIN)
+
+$(GUIBIN): $(GUIOBJ)
+	$(CC) $(CFLAGS) -o $@ $(GUIOBJ) $(LDLIBS) $(SDL_LIBS)
+
+src/host_sdl.o: CFLAGS += $(SDL_CFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -155,9 +180,10 @@ fuzz-clang:
 
 clean:
 	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer $(VERBIN) src/build.h
+	rm -f src/host_sdl.o src/host_sdl.d $(GUIBIN)
 
--include $(DEP)
+-include $(DEP) src/host_sdl.d
 
 FORCE:
 
-.PHONY: all clean ubsan fuzz fuzz-clang verify-test FORCE
+.PHONY: all gui clean ubsan fuzz fuzz-clang verify-test FORCE

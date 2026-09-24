@@ -422,7 +422,10 @@ typedef enum { LAUNCH_PLAY = 0, LAUNCH_RECORD, LAUNCH_REPLAY } LaunchMode;
  * process (this executable with -nolauncher -launched); the launcher stays
  * open and returns only when it is closed.  Returns the exit code. */
 int  run_launcher(void);
+/* SOUND.CFG and the readers below are src/cfg.c's: the Linux build has no
+ * launcher and needs them all the same. */
 void write_sound_cfg(const char *dir, int on, int quality);
+int  sound_cfg_exists(const char *dir);        /* overlay or installed */
 int  read_sound_is_sb(const char *dir);
 int  read_sound_quality(const char *dir);      /* SOUND.CFG byte 14h, 0-4 */
 int  read_volume_cfg(const char *dir);         /* host-only file, 0-100 */
@@ -442,6 +445,19 @@ void last_save_launchpos(int x, int y);
  * monitor's full size is the wrong answer twice over (wrong monitor, and
  * under the taskbar). */
 void center_on_cursor_monitor(int w, int h, int *x, int *y);
+/* The rest of the global state, also src/cfg.c.  beside_exe() is where all
+ * of these files live: the program's own directory, whatever the CWD. */
+void beside_exe(char *out, size_t n, const char *name);
+void last_save(const RelResult *r);            /* pfemu-last.cfg */
+int  last_pick(const RelResult *inst, int n);  /* its install, or -1 */
+
+/* src/gog.c: GOG.com's Deluxe CD image, found on either host.  The copy
+ * goes into GOG_DIR beside the other installations. */
+#define GOG_DIR "GOG"
+int  gog_find_image(char *out, size_t n);
+int  gog_candidate(const RelResult *inst, int n, char *image, size_t len);
+void gog_offer_text(char *msg, size_t n, const char *image);
+void gog_decline(const char *image);
 
 /* ------------------------------------------------- session record/replay */
 /* Deterministic input recording (docs/REPLAY.md).  v1 records from the boot

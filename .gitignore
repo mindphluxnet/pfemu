@@ -13,16 +13,20 @@ savestates
 *.pfs
 FANTDEMO
 GAME
+GOG
+goglinux
 *.bin
 *.txt
 /pfemu-last.cfg
 /pfemu-winpos.cfg
 /pfemu-online.cfg
+/pfemu-gog.cfg
 
 # Headless build (Makefile)
 *.o
 *.d
 /pfemu-headless
+/pfemu
 /pfemu-headless-ubsan
 /pfemu-fuzz-pfr
 /pfemu-fuzz-pfr-libfuzzer
@@ -36,4 +40,3 @@ GAME
 /probe.pfr
 /*.pfr
 !tests/golden/*.pfr
-GOG

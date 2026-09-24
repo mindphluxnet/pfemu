@@ -261,6 +261,17 @@ DWORD GetFullPathNameA(const char *name, DWORD n, char *out, char **part){
     return (len < 0 || (DWORD)len >= n) ? 0 : (DWORD)len;
 }
 
+/* /proc/self/exe, so Linux only.  0 on any failure, including a path that
+ * does not fit: the caller then falls back to the CWD, as on Windows. */
+DWORD GetModuleFileNameA(void *module, char *out, DWORD n){
+    ssize_t len;
+    if(module || !out || n == 0) return 0;
+    len = readlink("/proc/self/exe", out, (size_t)n);
+    if(len <= 0 || (DWORD)len >= n) return 0;
+    out[len] = 0;
+    return (DWORD)len;
+}
+
 /* ---------------------------------------------------------------- time --- */
 /* Host wall clock.  Never guest-visible: the only host-clock reads the guest
  * can make are INT 21h AH=2Ah/2Ch, which a replay freezes (src/dos.c). */

@@ -299,8 +299,41 @@ the 24 files into `GOG\`, then scans again. The copy is made in a hidden
 nothing half-filled behind. The import only copies. `release_detect()` decides
 what the result is, as for any other folder. A No is kept in `pfemu-gog.cfg`
 next to the exe. The same code reads a plain 2048-byte ISO or a Mode 1 raw
-image, so an image of the retail disc would work too, but nothing offers that
-yet.
+image, so an image of the retail disc would work too. The launchers only
+offer GOG's; `pfemu -import IMAGE DIR` takes any image by hand, on both
+platforms.
+
+### The Linux edition
+
+Examined 2026-09-24 from the offline installer
+`gog_pinball_fantasies_deluxe_2.0.0.5.sh` (32,496,566 bytes, SHA-256
+`941b420d9ec2564777b022045e72e55d6ef2a42b7ed58ed2b665d0c92610fe39`), without
+running it. GOG released the Linux build on 2014-08-19.
+
+- **`game.gog` is the Windows edition's image, byte for byte**: 8,805,888
+  bytes, SHA-256 `7c31793b5fa2dce2a3145731152b4532770be51d1a91693818cfca6a61ae63c5`
+  in both. The import and the detection need nothing new.
+- The installer is a MojoSetup shell stub with a ZIP appended, so
+  `unzip -l` (or 7-Zip) lists it. In the ZIP `game.gog` is deflated to
+  3,924,899 bytes, so reading it straight out of the installer would need an
+  inflater. pfemu does not do that; it reads the installed file.
+- It installs `data/noarch/` into
+  `<base>/GOG Games/Pinball Fantasies Deluxe/`, where the installer offers
+  `~`, `/opt` and `/usr/local/games` as the base. Unlike on Windows the image
+  sits in a `data/` subdirectory, next to the same `21STCENT\` tree, a
+  32/64-bit DOSBox 0.74 with its own SDL 1.2 libraries, `start.sh` and a
+  `gameinfo` file (`Pinball Fantasies Deluxe`, `2.0.0.5`).
+- DOSBox mounts `data` as C: and the cue sheet `game.ins` as D:, then runs
+  `C:\21STCENT\PFD.EXE`, as on Windows.
+
+There is no registry on Linux, so the Linux build (`src/gog.c`) looks in
+Heroic's `gog_store/installed.json` (native and Flatpak) for id
+`1207664103`, then in `~/GOG Games/`, `~/Games/Heroic/`, `/opt/GOG Games/` and
+`/usr/local/games/GOG Games/`. It tries `data/game.gog` and `game.gog` in each,
+because Heroic can also install the Windows edition under Wine. Only the GOG
+installer's own layout was checked against a real file. The Heroic and
+Minigalaxy paths are from their defaults and have not been checked against
+an installation.
 
 The disc also holds the menu (`PFD.EXE`) and Pinball Mania. Our `deluxe`
 collection has neither, so this is the first copy of them we have. pfemu does

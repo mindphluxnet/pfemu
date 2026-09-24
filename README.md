@@ -76,6 +76,27 @@ Game files and compiled binaries are not included in this repository.
 > `build.bat` expects the default Build Tools install location. If yours lives
 > elsewhere, update the `vcvars64.bat` path in that file.
 
+### Linux
+
+pfemu also builds as a Linux program with an SDL2 window. It runs the same
+emulator, and recordings made with it are the same kind of file. There is
+no launcher on Linux yet. Starting `pfemu` without arguments offers the GOG
+import once, picks the installation you played last (or the first one that
+runs) and starts it with that installation's saved settings. The keys are
+the same as on Windows.
+
+```sh
+sudo apt install build-essential libsdl2-dev   # Debian/Ubuntu
+make gui
+./pfemu
+```
+
+What the Windows launcher sets lives in each installation's
+`PFEMU-STATE/pfemu.cfg`, a text file you can edit by hand. Recording,
+replaying, fullscreen and a start table work through the flags under
+[Command line](#command-line). Uploading to the leaderboard needs the
+Windows launcher for now.
+
 ## Where to put the game files
 
 Put one installation's files directly in a folder. `GAME\` is the convention,
@@ -92,7 +113,9 @@ finds.
   and no Deluxe is present yet, the launcher offers once to copy the game out
   of GOG's `game.gog` CD image into `GOG\`. The GOG installation is not
   changed. If you said No, delete `pfemu-gog.cfg` next to `pfemu.exe` to be
-  asked again.
+  asked again. On Linux the same offer finds GOG's own installer, Heroic and
+  Minigalaxy installs. For anything else, such as a Wine prefix, run
+  `pfemu -import path/to/game.gog GOG`.
 - **Deluxe CD-ROM:** copy the files yourself. The 1995 release installed in
   two halves. `PINBALL.EXE`, `SETSOUND.EXE`, and the
   `.SDR` drivers went onto the hard drive, while `INTRO.PRG`, `TABLE1-4.PRG`,
@@ -274,6 +297,7 @@ development.
 | `-nolauncher` | Skip the launcher, boot the detected release |
 | `-d DIR` | Use a specific game directory (default: first found) |
 | `-releases` | Print the detection report, then exit |
+| `-import IMAGE DIR` | Copy the game out of a Deluxe CD image (GOG's `game.gog`, or an ISO) into the new folder DIR, then exit |
 | `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`, `demo`) |
 | `-p PROGRAM` | Run a specific DOS program instead of the boot program |
 | `-setup` | Run `SETSOUND.EXE` |
