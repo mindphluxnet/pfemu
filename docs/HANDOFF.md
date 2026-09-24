@@ -229,7 +229,9 @@ for the application menu. Not done: a launcher, uploads.
    needs more slack. v1.6 (2026-09-24) is the first release with the
    Linux tarball; unpacked on that Ubuntu machine, set up and launched
    fine, and Alt+Enter fullscreen and F11 screenshots work there too.
-   Still to do: a recording on real hardware.
+   A `-ranked` recording made there (Party Land, 299.5 s, 417 events,
+   17,386,520) came back `verified` and `rankable` under `-strict` from
+   both `pfemu-headless` and `pfemu.exe`, with the same cycles and wav hash.
    After that, the
    choice the user has not made yet: a launcher inside the SDL window, a
    GTK one, or none. Uploads need `online.c` on libcurl either way, because
