@@ -218,10 +218,15 @@ file, a Linux job in `release.yml`.
    but `SDL_RenderPresent` blocking up to 70 ms and WSLg's sink asking with
    gaps up to 45 ms. Against sound.c's twelve buffers (about 144 ms at
    21 kHz) plus the 64 ms lead that gave 5 underruns and `audio_drops=9658`.
-   Believed to be WSLg, not proven. If it shows on real hardware too: copy
-   into a ring of about 250 ms in `waveOutWrite()` and return the header at
-   once, so sound.c never drops. Still to do, in order: a session on a
-   real Linux desktop (sound, fullscreen, F11, the GOG offer, REC badge);
+   **It was WSLg:** on real hardware (Ubuntu, GNOME on Wayland, GTX 960,
+   2026-09-24) a 92 s run had one underrun of 2 ms, `audio_drops=0`,
+   callback gaps of at most 26.5 ms and `fell_behind=0`. The same machine
+   showed that SDL2 takes X11 even in a Wayland session and then dies in
+   Xlib when GLX is broken (`glxinfo` failed there too), even with the
+   software renderer; `plat_early_init()` now picks Wayland in a Wayland
+   session. The ring of about 250 ms in `waveOutWrite()` stays the idea for
+   when a slow machine needs it. Still to do, in order: a longer session
+   on that machine (fullscreen, F11, the GOG offer, REC badge);
    a recording made on Linux that verifies with
    `-strict`; then `release.yml` (build on an old glibc, ship `pfemu` with
    SDL2 as a system dependency). After that, the choice the user has not

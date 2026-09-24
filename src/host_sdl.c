@@ -323,11 +323,30 @@ void plat_kbd_reconcile(void){
 }
 
 /* ------------------------------------------------------------- lifecycle */
+/* Wayland in a Wayland session.  SDL2 picks X11 first even there, which
+ * means XWayland, and on X11 SDL opens a GLX context even for the software
+ * renderer.  On a desktop whose GLX is broken - measured on one: Ubuntu,
+ * GNOME on Wayland, a GTX 960 that Mesa had no driver for, glxinfo failing
+ * too - Xlib then ends the process on BadValue from X_GLXCreateContext
+ * before SDL can report anything.  Native Wayland needs no GLX and played
+ * cleanly on the same machine.  Only a default: SDL_VIDEODRIVER set by the
+ * user still wins, and plat_init() falls back to X11 if Wayland fails.
+ * Set through the environment rather than a hint so the exec'd game
+ * inherits it, and so SDL versions older than SDL_HINT_VIDEODRIVER
+ * (2.0.22) read it too. */
+static int chose_wayland = 0;
+
 void plat_early_init(void){
+    const char *st = getenv("XDG_SESSION_TYPE");
     /* Nearest-neighbour scaling, as StretchDIBits under COLORONCOLOR. */
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     /* Leave the compositor on: this is a windowed game first. */
     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+    if(!getenv("SDL_VIDEODRIVER") && st && !strcmp(st, "wayland") &&
+       getenv("WAYLAND_DISPLAY")){
+        setenv("SDL_VIDEODRIVER", "wayland", 1);
+        chose_wayland = 1;
+    }
 }
 
 /* 1 when (x, y) is inside some display's usable area. */
@@ -354,7 +373,15 @@ static void no_window(const char *what){
 
 void plat_init(const char *title){
     int x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED, sx, sy;
-    if(SDL_InitSubSystem(SDL_INIT_VIDEO) != 0){ no_window("video"); return; }
+    if(SDL_InitSubSystem(SDL_INIT_VIDEO) != 0 && chose_wayland){
+        /* Our choice, not the user's: try what SDL would have taken. */
+        fprintf(stderr, "[sdl] wayland: %s; trying x11\n", SDL_GetError());
+        setenv("SDL_VIDEODRIVER", "x11", 1);
+        chose_wayland = 0;
+    }
+    if(!SDL_WasInit(SDL_INIT_VIDEO) && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0){
+        no_window("video"); return;
+    }
     /* The saved spot, unless it is on no display any more (a monitor
      * unplugged, a resolution change): then centred, like main.c. */
     if(last_read_winpos(&sx, &sy) && point_visible(sx + 960/2, sy + 16)){
