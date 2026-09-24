@@ -210,9 +210,18 @@ file, a Linux job in `release.yml`.
 6. **Optional:** make the memory helpers explicitly little-endian. Correct
    in principle, but unobservable on any host we build for.
 
-7. **The Linux build, once a person has played it.** In order: a session
-   under WSLg or on a Linux desktop (keys, sound, fullscreen, F11, the GOG
-   offer, REC badge); a recording made on Linux that verifies with
+7. **The Linux build: played under WSLg (2026-09-24), not yet on a real
+   Linux desktop.** Picture and keys work and it is playable. The sound
+   crackles and the music now and then stalls or jumps. Measured on a 95 s
+   run: the emulator on time (`fell_behind=0`), SDL taking 47,999 frames/s,
+   but `SDL_RenderPresent` blocking up to 70 ms and WSLg's sink asking with
+   gaps up to 45 ms. Against sound.c's twelve buffers (about 144 ms at
+   21 kHz) plus the 64 ms lead that gave 5 underruns and `audio_drops=9658`.
+   Believed to be WSLg, not proven. If it shows on real hardware too: copy
+   into a ring of about 250 ms in `waveOutWrite()` and return the header at
+   once, so sound.c never drops. Still to do, in order: a session on a
+   real Linux desktop (sound, fullscreen, F11, the GOG offer, REC badge);
+   a recording made on Linux that verifies with
    `-strict`; then `release.yml` (build on an old glibc, ship `pfemu` with
    SDL2 as a system dependency). After that, the choice the user has not
    made yet: a launcher inside the SDL window, a GTK one, or none. Uploads
