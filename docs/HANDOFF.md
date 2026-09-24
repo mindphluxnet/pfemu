@@ -320,9 +320,13 @@ built (next steps, item 7).
    break makes that one round per guest frame: 25,000 sleeps. It is now
    skipped under `-unthrottle` (VERIFY.md, Capacity, the update): 75.6 s
    instead of 126.0 s, same `-verify` object and wav, `speed-ab.sh` PASS
-   at 6.0x. **The validator gets it only with a new `PFEMU_REF`**, and
-   the Mac Mini has not been re-measured (`git pull && make` in the
-   video clone, then the `NOVIDEO=1` line).
+   at 6.0x. **The validator gets it only with a new `PFEMU_REF`.** The
+   Mac Mini at `f3ae589`, `deluxe-table1-ranked-644s`: 125.4 s without
+   video (was 185.7 s; 5.1x), 241.2 s with it (was 266.6 s; 224.3 s of
+   it in pfemu, 42.8 s waiting in `src/video.c`), 70 MB. So encoding is
+   now what limits a video there, probably with x264 and the emulator
+   sharing cores (a 2012 Mac Mini with 4 threads may be 2 cores; `lscpu`
+   not checked). `PRESET=superfast` is the untried next lever.
 
 ## Running the gate
 

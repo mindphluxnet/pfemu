@@ -781,8 +781,9 @@ unthrottled replay slept about 1 ms sixty times per emulated second. With
 the sleep skipped under `-unthrottle`, the same vector on the WSL laptop:
 33.4 s, **6.0x**, `host_mips=36.01` (`speed-ab.sh` PASS: footer, wav hash
 and all 11 frames identical to the paced run). The 422 s Linux vector went
-from 126.0 s to 75.6 s with an identical `-verify` object. The Mac Mini
-has not been re-measured.
+from 126.0 s to 75.6 s with an identical `-verify` object. The Mac Mini,
+on `deluxe-table1-ranked-644s`: 125.4 s instead of 185.7 s, **5.1x**, so
+one gameplay-hour is now about 12 minutes of one core there.
 
 If that ever stops being true, attempts can be verified in parallel: have the
 client upload periodic snapshots, verify chunk *N* by re-simulating from
