@@ -66,3 +66,21 @@ jobs:
       # vector to execute, which needs an install.
       - name: Instrumented build compiles
         run: make ubsan
+
+  # The build the Linux release ships (release.yml, job "linux"): the SDL2
+  # window inside Ubuntu 22.04, whose SDL is 2.0.20.  The job above builds
+  # against the newest SDL; this one catches a call the oldest does not
+  # have, on every push rather than on the first release tag.
+  linux-release-build:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - name: Toolchain and SDL2
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential git ca-certificates libsdl2-dev
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: make gui

@@ -41,3 +41,7 @@ goglinux
 /probe.pfr
 /*.pfr
 !tests/golden/*.pfr
+
+# Shipped in the Linux release tarball (release.yml).
+!res/pfemu.png
+!res/linux/README.txt

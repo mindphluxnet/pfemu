@@ -20,3 +20,48 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The Linux game window (make gui), packaged as a tarball.  Built inside
+  # Ubuntu 22.04 rather than on the runner's own image: a binary runs on
+  # the glibc it was linked against and anything newer, so the oldest
+  # system still in wide use is the one to build on.  SDL2 is left to the
+  # system (libsdl2-2.0-0), the way every distribution ships it.
+  linux:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - name: Toolchain and SDL2
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential git ca-certificates libsdl2-dev
+      - uses: actions/checkout@v4
+      # The container runs as root over a checkout owned by the runner user;
+      # without this git refuses the tree and the build id says "unknown".
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: make gui
+      - name: Package
+        run: |
+          d=pfemu-linux-x86_64
+          mkdir "$d"
+          cp pfemu res/pfemu.png res/linux/install-desktop-entry.sh res/linux/README.txt "$d/"
+          chmod 755 "$d/pfemu" "$d/install-desktop-entry.sh"
+          tar czf "$d.tar.gz" "$d"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pfemu-linux-x86_64
+          path: pfemu-linux-x86_64.tar.gz
+
+  # Onto the release the Windows job created.  A job of its own on the
+  # runner, which has gh; the build container does not.
+  linux-upload:
+    needs: [build, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pfemu-linux-x86_64
+      - run: gh release upload "${{ github.ref_name }}" pfemu-linux-x86_64.tar.gz --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

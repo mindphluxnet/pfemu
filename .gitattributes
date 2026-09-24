@@ -12,3 +12,7 @@ tests/golden/*.sh text eol=lf
 # in this repository, and a CRLF checkout would put a carriage return on the
 # end of every extracted value.
 tests/golden/*.expected text eol=lf
+
+# Shipped in the Linux release tarball and run by sh; a CRLF checkout on
+# Windows would break it the same way as the suite scripts above.
+res/linux/*.sh text eol=lf

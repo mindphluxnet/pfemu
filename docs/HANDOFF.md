@@ -76,8 +76,10 @@ command line `spawn_game()` would build. What moved to make it possible:
 to `cfg.c`, and the GOG search to `src/gog.c`, which covers both hosts. The
 Linux search is described in RELEASES.md, "The Linux edition". GOG's Linux
 installer ships the same `game.gog` as the Windows one. New flag on both
-platforms: `-import IMAGE DIR`. Not done: a launcher, uploads, a `.desktop`
-file, a Linux job in `release.yml`.
+platforms: `-import IMAGE DIR`. Releases carry `pfemu-linux-x86_64.tar.gz`
+(`release.yml`, built inside Ubuntu 22.04 for its older glibc and SDL
+2.0.20; CI builds the same on every push) with `install-desktop-entry.sh`
+for the application menu. Not done: a launcher, uploads.
 
 ## Verified, and not
 
@@ -211,27 +213,25 @@ file, a Linux job in `release.yml`.
 6. **Optional:** make the memory helpers explicitly little-endian. Correct
    in principle, but unobservable on any host we build for.
 
-7. **The Linux build: played under WSLg (2026-09-24), not yet on a real
-   Linux desktop.** Picture and keys work and it is playable. The sound
-   crackles and the music now and then stalls or jumps. Measured on a 95 s
-   run: the emulator on time (`fell_behind=0`), SDL taking 47,999 frames/s,
-   but `SDL_RenderPresent` blocking up to 70 ms and WSLg's sink asking with
-   gaps up to 45 ms. Against sound.c's twelve buffers (about 144 ms at
-   21 kHz) plus the 64 ms lead that gave 5 underruns and `audio_drops=9658`.
-   **It was WSLg:** on real hardware (Ubuntu, GNOME on Wayland, GTX 960,
-   2026-09-24) a 92 s run had one underrun of 2 ms, `audio_drops=0`,
-   callback gaps of at most 26.5 ms and `fell_behind=0`. The same machine
-   showed that SDL2 takes X11 even in a Wayland session and then dies in
-   Xlib when GLX is broken (`glxinfo` failed there too), even with the
-   software renderer; `plat_early_init()` now picks Wayland in a Wayland
-   session, and the machine starts straight into the game with it. The ring of about 250 ms in `waveOutWrite()` stays the idea for
-   when a slow machine needs it. Still to do, in order: a longer session
-   on that machine (fullscreen, F11, the GOG offer, REC badge);
-   a recording made on Linux that verifies with
-   `-strict`; then `release.yml` (build on an old glibc, ship `pfemu` with
-   SDL2 as a system dependency). After that, the choice the user has not
-   made yet: a launcher inside the SDL window, a GTK one, or none. Uploads
-   need `online.c` on libcurl either way, because it is WinHTTP and DPAPI now.
+7. **The Linux build: plays cleanly on a real desktop (2026-09-24).**
+   Under WSLg it was playable but the sound crackled, stalled and jumped:
+   `SDL_RenderPresent` blocked up to 70 ms and WSLg's sink asked with gaps
+   up to 97 ms, which sound.c's twelve buffers (about 144 ms at 21 kHz)
+   plus the 64 ms lead turned into underruns and `audio_drops`. On real
+   hardware (Ubuntu, GNOME on Wayland, GTX 960) a 92 s run had one 2 ms
+   underrun, `audio_drops=0`, gaps of at most 26.5 ms and `fell_behind=0`,
+   and the user heard it as perfect. The same machine showed that SDL2
+   takes X11 even in a Wayland session and then dies in Xlib when GLX is
+   broken (`glxinfo` failed there too), software renderer included;
+   `plat_early_init()` now picks Wayland in a Wayland session, and `./pfemu`
+   starts there with no errors and no environment variables. A ring of
+   about 250 ms in `waveOutWrite()` stays the idea for a machine that
+   needs more slack. Still to do, in order: the first tagged release with
+   the Linux tarball, tried on a machine that did not build it; fullscreen,
+   F11, the GOG offer and a recording on real hardware. After that, the
+   choice the user has not made yet: a launcher inside the SDL window, a
+   GTK one, or none. Uploads need `online.c` on libcurl either way, because
+   it is WinHTTP and DPAPI now.
 
 ## Running the gate
 

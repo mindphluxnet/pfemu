@@ -85,6 +85,11 @@ import once, picks the installation you played last (or the first one that
 runs) and starts it with that installation's saved settings. The keys are
 the same as on Windows.
 
+Each release has a `pfemu-linux-x86_64.tar.gz` next to `pfemu.exe`. It
+needs SDL2 from your distribution (`libsdl2-2.0-0` on Debian and Ubuntu).
+Unpack it, start `./pfemu`, and run `./install-desktop-entry.sh` if you
+want pfemu in the application menu. To build it yourself:
+
 ```sh
 sudo apt install build-essential libsdl2-dev   # Debian/Ubuntu
 make gui
