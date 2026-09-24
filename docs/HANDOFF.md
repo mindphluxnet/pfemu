@@ -306,8 +306,8 @@ built (next steps, item 7).
    `veryfast` CRF 20): 249.7 s in pfemu, 266.6 s with the mux, against
    185.7 s for the same replay without video. 2.4x real time, about 1.4
    verifications per video. 40.7 s of that was `src/video.c`, nearly all
-   of it waiting for ffmpeg to take frames; the rest is presumably the
-   emulator and x264 sharing cores (core count not recorded). So it can
+   of it waiting for ffmpeg to take frames. The machine has 4 cores, so the
+   emulator (one core) and x264 should not crowd each other. So it can
    afford videos on request, queued behind verification. Not checked yet:
    the file size there, and whether picture and sound line up by eye.
    Untried ways to cut the cost: the sleep below, `PRESET=ultrafast`,
