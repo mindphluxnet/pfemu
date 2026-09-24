@@ -326,7 +326,10 @@ built (next steps, item 7).
    it in pfemu, 42.8 s waiting in `src/video.c`), 70 MB. So encoding is
    now what limits a video there, probably with x264 and the emulator
    sharing cores (a 2012 Mac Mini with 4 threads may be 2 cores; `lscpu`
-   not checked). `PRESET=superfast` is the untried next lever.
+   not checked). `PRESET=superfast` was tried and rejected: 228.8 s
+   instead of 241.2 s for 126 MB instead of 70 MB, and the wait in
+   `src/video.c` barely moved (40.1 s), so x264's preset is not the whole
+   bottleneck. `veryfast` stays the default.
 
 ## Running the gate
 
