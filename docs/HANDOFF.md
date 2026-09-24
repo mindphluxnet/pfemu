@@ -130,7 +130,10 @@ for the application menu. Not done: a launcher, uploads.
    - **The validator has to build `e50929c` or later before a ranked
      file can verify.** An older build ignores the `state:` line, replays
      the file against its own `PFEMU-STATE/`, and so mismatches wherever
-     the high-score tables matter.
+     the high-score tables matter. **Done:** the Mac Mini runs `e50929c`
+     (user, 2026-09-24). The one verdict change since is `5a40ee6`
+     (`ball_scores`); moving `PFEMU_REF` to v1.6 (`6456cd0`) would add it
+     and changes nothing a replay does.
 
 1. **The service** lives in `pfemu-service` and `pfemu-web`; their HANDOFFs
    have the order. From this repository they need two things:
