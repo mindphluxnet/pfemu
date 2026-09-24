@@ -224,7 +224,7 @@ file, a Linux job in `release.yml`.
    showed that SDL2 takes X11 even in a Wayland session and then dies in
    Xlib when GLX is broken (`glxinfo` failed there too), even with the
    software renderer; `plat_early_init()` now picks Wayland in a Wayland
-   session. The ring of about 250 ms in `waveOutWrite()` stays the idea for
+   session, and the machine starts straight into the game with it. The ring of about 250 ms in `waveOutWrite()` stays the idea for
    when a slow machine needs it. Still to do, in order: a longer session
    on that machine (fullscreen, F11, the GOG offer, REC badge);
    a recording made on Linux that verifies with
