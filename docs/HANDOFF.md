@@ -253,6 +253,14 @@ follow-up `make clean` is needed.
 
 ## Traps, all of them paid for once already
 
+- **A blank Linux window under WSLg titled "WARNING: COPY MODE" is WSLg,
+  not pfemu.** It happens when WSLg could not open its shared memory at
+  start (`rdp_allocate_shared_memory: Failed` in `/mnt/wslg/weston.log`).
+  Frames and keys never cross over, although SDL reports the window shown
+  and focused. Check that log before debugging `host_sdl.c`;
+  `wsl --shutdown` starts WSLg again. WSLg sound goes over RDP and is known
+  to crackle (microsoft/wslg#1429). pfemu's own side of it is in the
+  `[sdl] audio:` exit line.
 - **Never delete `<install>/PFEMU-STATE/`.** It holds `SOUND.CFG`; without it
   the guest prints a DOS error and terminates about 1.3 emulated seconds in,
   which then surfaces as some confusing downstream failure.

@@ -391,9 +391,9 @@ void plat_init(const char *title){
 static unsigned long pres_n;
 static double pres_total, pres_max;
 
-/* Persist the windowed position for the next run (pfemu-winpos.cfg, the
- * same file and keys as on Windows).  Fullscreen keeps the spot from
- * before it.  Under Wayland a window has no position to read, and SDL
+/* Persist the windowed position for the next run: the same keys as on
+ * Windows, in a file of its own (pfemu-winpos-sdl.cfg; src/cfg.c says why).
+ * Fullscreen keeps the spot from before it.  Under Wayland a window has no position to read, and SDL
  * reports 0,0; restoring that is harmless, because Wayland places the
  * window itself anyway. */
 void plat_save_window_pos(void){

@@ -19,6 +19,7 @@ goglinux
 *.txt
 /pfemu-last.cfg
 /pfemu-winpos.cfg
+/pfemu-winpos-sdl.cfg
 /pfemu-online.cfg
 /pfemu-gog.cfg
 

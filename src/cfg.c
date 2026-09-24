@@ -392,8 +392,17 @@ void write_sound_cfg(const char *dir, int on, int quality){
 /* Window positions live apart from install memory on purpose
  * (pfemu-winpos.cfg): a read that finds nothing must only mean "center the
  * window", never wipe the remembered installation - and vice versa.  Two
- * tiny files that cannot clobber each other beat one clever one. */
+ * tiny files that cannot clobber each other beat one clever one.
+ *
+ * The Linux build keeps its own.  Under WSL both programs sit in one folder,
+ * and their coordinates do not mean the same place: Windows puts 0,0 at the
+ * primary monitor's corner, WSLg at the leftmost monitor's.  A Windows
+ * position restored under WSLg opened the window on the wrong monitor. */
+#ifdef _WIN32
 #define LAST_WINPOS "pfemu-winpos.cfg"
+#else
+#define LAST_WINPOS "pfemu-winpos-sdl.cfg"
+#endif
 
 /* Absolute path next to the exe.  A relative path would follow the process
  * CWD, which is not stable: a shortcut's "Start in" directory, a CLI run
