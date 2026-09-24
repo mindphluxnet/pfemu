@@ -308,8 +308,8 @@ built (next steps, item 7).
    verifications per video. 40.7 s of that was `src/video.c`, nearly all
    of it waiting for ffmpeg to take frames. The machine has 4 cores, so the
    emulator (one core) and x264 should not crowd each other. So it can
-   afford videos on request, queued behind verification. Not checked yet:
-   the file size there, and whether picture and sound line up by eye.
+   afford videos on request, queued behind verification. The user watched
+   the MP4 on the PC: picture and sound are in sync (2026-09-24).
    Untried ways to cut the cost: the sleep below, `PRESET=ultrafast`,
    rgb24 instead of bgr0 in the pipe. The Pi 4 is 2.2x on emulation alone
    and x264 is slow there; not a video machine without measuring.
