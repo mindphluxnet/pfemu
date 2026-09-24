@@ -322,13 +322,18 @@ static int16_t pcm[SB_CHUNK];
 static int pcm_n;
 
 void sb_tick(void){
-    double now, dt;
+    double now, dt, t_first;
     int due;
+    int16_t vs[4096];                            /* -video's copy, see below */
+    int vn = 0;
     if(!sb.playing || sb.last_t < 0.0) return;
     now = emu_now();
     dt = now - sb.last_t;
     if(dt <= 0.0) return;
     if(dt > 0.25) dt = 0.25;                     /* never try to catch up far */
+    /* when the first sample of this tick is due: one whole sample after the
+     * last, less the fraction already carried */
+    t_first = sb.last_t + (1.0 - sb.frac) / sb.rate;
     sb.last_t = now;
     sb.frac += dt * sb.rate;
     due = (int)sb.frac;
@@ -339,6 +344,7 @@ void sb_tick(void){
         int eob, b = dma_fetch(1, &eob);
         if(b < 0){ sb.playing = 0; break; }
         pcm[pcm_n++] = (int16_t)((b - 128) * 192);
+        if(video_on) vs[vn++] = pcm[pcm_n - 1];
         if(pcm_n == SB_CHUNK){ plat_audio_push(pcm, pcm_n); pcm_n = 0; }
         /* What ends a transfer, and so interrupts: the DSP's own byte count,
          * which is the card's job on hardware.  The controller's wrap (eob)
@@ -356,6 +362,8 @@ void sb_tick(void){
               if(!sb.auto_init) sb.playing = 0;
           } }
     }
+    /* -video's soundtrack wants each sample's time, which -wav never kept */
+    if(vn) video_audio_feed(vs, vn, sb.rate, t_first);
 }
 
 /* ---------------------------------------------------------------- OPL stub */

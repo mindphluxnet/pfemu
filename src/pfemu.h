@@ -673,6 +673,21 @@ const char *snapshot_error(void);
 void snapshot_slot_path(const char *dir, char *dst, size_t n);
 /* ------------------------------------------------------------- imaging --- */
 int save_png(const char *path, const uint32_t *pix, int w, int h); /* src/png.c */
+/* -video FRAMES [-videowav FILE] (src/video.c): raw constant-rate frames for
+ * an encoder, one per guest frame, sampled on the emulated clock, plus a
+ * soundtrack placed on the same clock.  Observes the run, never alters it. */
+extern int video_on;
+void video_arm(const char *frames, const char *wav);
+void video_set_scale(int n);                 /* -videoscale N: 320N x 240N */
+int  video_open(void);                       /* 0, or -1 with a message */
+void video_poll(void);                       /* after every main-loop batch */
+int  video_last_frame(uint32_t *dst, int *w, int *h);
+void video_audio_feed(const int16_t *s, int n, double rate, double t_first);
+void video_close(void);
+int  video_failed(void);
+/* The present-phase window test run.c's present gate uses, shared with
+ * -video so both sample the ball at the same point of the frame. */
+int  present_phase_in(void);
 /* src/cdimage.c: copy the Deluxe CD's game files out of an image (GOG's
  * game.gog, or any ISO/raw image of that disc) into one new flat folder.
  * 0 on success; err gets the reason on failure, the file count on success. */

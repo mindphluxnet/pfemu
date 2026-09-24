@@ -280,6 +280,39 @@ built (next steps, item 7).
    build was relinked after the move; the user tried the Win32 launcher
    after it, and the two Win32 fixes above, by hand (2026-09-24): both
    work.
+8. **Videos of replays (started 2026-09-24).** `-video` and
+   `tools/render-video.sh` exist in this repository ([Videos](REPLAY.md#videos));
+   the plan the user agreed to is: first pfemu and measurements, then
+   render jobs in pfemu-service (`POST /v1/renders` with the `.pfr`, queued
+   behind every verification, run in the same sandbox), then pfemu-web's
+   `dispatch` pulling the file (`GET /v1/renders/<id>/video`, size and hash
+   checked) and keeping it beside the recordings. The validator never
+   pushes and holds no credentials. The render run can carry `-verify` as
+   well, and pfemu-web keeps the video only when that verdict matches the
+   stored one. Measured so far, all on the Windows PC under WSL
+   (`deluxe-table1-linux-ranked-422s`):
+   - `-verify` with and without `-video` is identical apart from the wall
+     time, and so is `-wav`. Two runs wrote the same frame stream and
+     soundtrack (sha256).
+   - Emulation with `-video` to `/dev/null` at 640x480: 133.1 s against
+     126.2 s without, 8 s of it in `src/video.c`.
+   - x264 `veryfast` CRF 20 at 640x480: 5.0x real time on one thread, 8.4x
+     on two, so one extra core outruns the emulator. 52 MB for 422 s,
+     about 7 MB a minute.
+   - A frame from the MP4 and a lossless `-shot` at the same moment look
+     the same, the DMD included.
+   **Not measured: the Mac Mini.** Its line would be
+   `tools/render-video.sh tests/golden/deluxe-table1-ranked-644s.pfr
+   /tmp/party.mp4 -d <install>` with ffmpeg installed, and
+   `NOVIDEO=1` for the baseline. The Pi 4 is 2.2x on emulation alone and
+   x264 is slow there; not a video machine without measuring.
+   **Separate finding, not acted on:** `wsplit` puts 47 s of the 126 s
+   baseline in `other`. The outer loop ends every round with
+   `plat_sleep_ms(1)`, `-unthrottle` included, and the present-phase
+   break makes that one round per guest frame: 25,000 sleeps. Skipping
+   the sleep under `-unthrottle` should make every verification
+   noticeably faster; it is host pacing, so guest-invisible by the same
+   argument as `-unthrottle` itself, but it needs the speed A/B to show it.
 
 ## Running the gate
 

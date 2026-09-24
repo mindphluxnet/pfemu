@@ -252,6 +252,50 @@ still ends the process - it prints its box first. On the command line
 nothing changed: with no picker to return to, every refusal exits with a
 status.
 
+## Videos
+
+A replay can be rendered to a video file:
+
+    tools/render-video.sh session.pfr session.mp4 -d FANTASYDX
+
+The script needs `ffmpeg` on the PATH. It makes a FIFO, starts ffmpeg
+reading raw frames from it, runs `pfemu-headless -replay ... -unthrottle
+-video FIFO -videowav FILE`, and muxes the two when the replay ends. pfemu
+itself never encodes (`src/video.c`). Options after the output name go to
+pfemu (`-verify`, `-strict`); `SCALE`, `PRESET` and `CRF` in the environment
+set the size and the x264 settings, and `NOVIDEO=1` times the same replay
+without video, for comparison.
+
+- **The run is unchanged.** Frames are sampled at batch boundaries without
+  moving one, and nothing the guest reads is touched. Measured on
+  `deluxe-table1-linux-ranked-422s`: the `-verify` object with and without
+  `-video` is identical apart from the wall time, and so is the `-wav` file.
+- **The stream is deterministic.** Every decision is taken on the emulated
+  clock, so two runs write the same frames and the same soundtrack
+  (measured: same sha256 for both, same vector).
+- **What it costs**, on the Windows PC under WSL: the emulation itself 5%
+  more wall time at 640x480, and x264 `veryfast` runs 5x real time on one
+  thread, ahead of the 3.3x emulator. About 7 MB per minute at CRF 20.
+- **One frame per guest frame, in the quiet window.** A frame sampled while
+  PUTTHEBALL has the ball erased shows no ball, so -video samples in the same
+  window the present gate aims for (`present_phase_in()`), never at the
+  wall-clock moments the window's present path is also gated on. While
+  -video runs, the window shows its frames rather than rendering its own.
+- **Constant rate: 25175000/421600 = 59.713 fps**, the tables' own CRT rate,
+  so on a table every guest frame is written exactly once. Other screens run
+  at other rates and there a frame is repeated or skipped now and then; the
+  exit line `[video] ... repeated, ... skipped` counts them.
+- **Size 320N x 240N** (`-videoscale N`, default 2). At 2, both the 320x240
+  tables and the 640x480 menu scale by whole numbers, and the chroma of
+  yuv420p lines up with the doubled pixels. Other shapes are framed as the
+  window frames them (`plat_present_rect()`): 320x200 stretched to 4:3, the
+  rest centred at their own shape.
+- **The soundtrack is not `-wav`.** `-wav` holds what the card played, back
+  to back: no silence for the time it was idle, no record of a rate change.
+  Right for a hash, useless next to a picture. `-videowav` places each
+  sample on the emulated clock, fills gaps with silence, resamples to 48 kHz
+  mono and pads to the video's length.
+
 ## Validation ("accurate" means)
 
 - Replay twice -> `-wav` hash, `-shotevery` frames, and exit `emu_time/cycles`

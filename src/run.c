@@ -189,6 +189,20 @@ static unsigned long irq_count[32];
 #define PRESENT_PHASE_HI 0.379   /* line 200/527 */
 int present_phaselock = 1;       /* -nophaselock reverts to the wall timer */
 
+/* Is the beam in the present window right now?  The seed constants only
+ * stand until the bands have been learned from the game itself
+ * (src/fantasies.c). */
+int present_phase_in(void){
+    double per, inv, hde, f, lo = PRESENT_PHASE_LO, hi = PRESENT_PHASE_HI;
+    int vt, vd, vrs, vre;
+    vga_timing_cached(&per, &inv, &vt, &vd, &vrs, &vre, &hde);
+    (void)per; (void)inv; (void)vd; (void)vrs; (void)vre; (void)hde;
+    f = (vt > 0) ? vga_scanline_now(NULL) / (double)vt : 0.0;
+    fantasies_present_window(&lo, &hi);
+    return (lo <= hi) ? (f >= lo && f <= hi)
+                      : (f >= lo || f <= hi);   /* span may wrap */
+}
+
 /* ------------------------------------------------------------ main loop */
 int emu_main(int argc, char **argv){
     const char *dir = NULL;   /* -d, the launcher, or release_scan() */
@@ -224,6 +238,7 @@ int emu_main(int argc, char **argv){
     /* -shotevery: both are EMULATED seconds now, not wall seconds.  See
      * the capture site in the batch loop below. */
     double shot_every = 0, next_shot = 0;
+    const char *video_frames = NULL, *video_wav = NULL;
     double speed = 1.0;
     /* -unthrottle: drop the wall-clock pacer and run as fast as the host
      * allows.  Host pacing only - it overrides nothing the .pfr carries,
@@ -287,6 +302,12 @@ int emu_main(int argc, char **argv){
         else if(!strcmp(argv[i],"-xring")){ extern int x_on; x_on = 1; }
         else if(!strcmp(argv[i],"-iotrace") && i+1<argc){ extern int io_trace; io_trace = atoi(argv[++i]); }
         else if(!strcmp(argv[i],"-wav") && i+1<argc){ extern const char *wav_path; wav_path = argv[++i]; }
+        /* -video FRAMES: raw frames for an encoder, normally a FIFO that
+         * ffmpeg reads (src/video.c, tools/render-video.sh).  -videowav is
+         * its soundtrack, which -wav is not. */
+        else if(!strcmp(argv[i],"-video") && i+1<argc) video_frames = argv[++i];
+        else if(!strcmp(argv[i],"-videowav") && i+1<argc) video_wav = argv[++i];
+        else if(!strcmp(argv[i],"-videoscale") && i+1<argc) video_set_scale(atoi(argv[++i]));
         else if(!strcmp(argv[i],"-snddbg")){ extern int sound_debug; sound_debug = 1; }
         else if(!strcmp(argv[i],"-vol") && i+1<argc) vol_override = atoi(argv[++i]);
         /* -res normal|high: one-run resolution override without saving
@@ -381,6 +402,14 @@ int emu_main(int argc, char **argv){
          * it is a switch the user has to type, never a fallback. */
         else if(!strcmp(argv[i],"-release") && i+1<argc) force_release = argv[++i];
     }
+    /* -video opens first: its FIFO blocks until the encoder is there, and
+     * once open, every refusal below still ends the encoder's input. */
+    if(video_wav && !video_frames){
+        fail_msg("-videowav goes with -video");
+        return 1;
+    }
+    video_arm(video_frames, video_wav);
+    if(video_open() != 0) return 1;
     /* Session record / replay (docs/REPLAY.md): refuse nonsense combos
      * first, then let the replay header override the clock. */
     if(record_path && replay_path){
@@ -987,6 +1016,9 @@ int emu_main(int argc, char **argv){
                     irq_count[v&31]++; cpu_interrupt(v, 0);
                 }
             }
+            /* -video samples on the emulated clock, ahead of the test below
+             * that can end the batch loop (src/video.c) */
+            if(video_on) video_poll();
             /* Decide the present phase HERE, not after the catch-up loop.
              * This loop advances emulated time in ~10 us batches, but one
              * outer iteration can cover most of a frame (plat_sleep_ms(1)
@@ -1002,19 +1034,9 @@ int emu_main(int argc, char **argv){
                 unsigned long long idx2;
                 vga_timing_cached(&per2, &inv2, &vt2, &vd2, &vrs2, &vre2, &hde2);
                 idx2 = per2 > 0.0 ? (unsigned long long)(emu_time / per2) : 0ULL;
-                if(idx2 != pres_last_frame){
-                    double f2 = (vt2 > 0) ? vga_scanline_now(NULL) / (double)vt2 : 0.0;
-                    double lo = PRESENT_PHASE_LO, hi = PRESENT_PHASE_HI;
-                    int in;
-                    /* the seed constants only stand until the bands have been
-                     * learned from the game itself (src/fantasies.c) */
-                    fantasies_present_window(&lo, &hi);
-                    in = (lo <= hi) ? (f2 >= lo && f2 <= hi)
-                                    : (f2 >= lo || f2 <= hi);   /* span may wrap */
-                    if(in){
-                        pending_present = 1;
-                        break;
-                    }
+                if(idx2 != pres_last_frame && present_phase_in()){
+                    pending_present = 1;
+                    break;
                 }
             }
             /* -shotevery capture, on the emulated clock.
@@ -1163,7 +1185,10 @@ int emu_main(int argc, char **argv){
             pres_last_frame = idx;
             last_present = plat_time();
             fantasies_ballgap_present(fell_behind);
-            vga_render(fb, &fbw, &fbh);
+            /* -video owns vga_render(): a second call here, at wall-clock
+             * moments, would make its frames differ run to run */
+            if(video_on) video_last_frame(fb, &fbw, &fbh);
+            else vga_render(fb, &fbw, &fbh);
             /* Live hi-res latch: the F5 menu can switch resolution without
              * rebooting, which the boot-time cfg check above never sees.
              * A 256-colour table frame 340-360 rows high IS the hi-res
@@ -1220,6 +1245,7 @@ int emu_main(int argc, char **argv){
      * unaffected - the window lives on the desk, not in the install. */
     plat_save_window_pos();
 
+    video_close();
     vga_render(fb,&fbw,&fbh);
     plat_present(fb,fbw,fbh);
     if(shotfile) save_ppm(shotfile, fb, fbw, fbh);
@@ -1266,6 +1292,8 @@ int emu_main(int argc, char **argv){
      * never say something the stderr log does not. */
     verify_report();
     if(verify_on) exit_code = verify_exit_code();
+    /* A verdict keeps its own exit code; the video's failure is on stderr */
+    else if(video_failed() && !exit_code) exit_code = 1;
     { extern unsigned long vsync_edges;
       printf("[pfemu] vsync edges seen = %lu (%.1f/s)\n",
              vsync_edges, vsync_edges/(emu_time>0?emu_time:1)); }
