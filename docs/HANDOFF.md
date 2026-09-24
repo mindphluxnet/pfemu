@@ -301,11 +301,18 @@ built (next steps, item 7).
      about 7 MB a minute.
    - A frame from the MP4 and a lossless `-shot` at the same moment look
      the same, the DMD included.
-   **Not measured: the Mac Mini.** Its line would be
-   `tools/render-video.sh tests/golden/deluxe-table1-ranked-644s.pfr
-   /tmp/party.mp4 -d <install>` with ffmpeg installed, and
-   `NOVIDEO=1` for the baseline. The Pi 4 is 2.2x on emulation alone and
-   x264 is slow there; not a video machine without measuring.
+   **The Mac Mini, measured 2026-09-24** (a separate clone at `bfe195b`
+   beside the service, `deluxe-table1-ranked-644s`, 640x480, x264
+   `veryfast` CRF 20): 249.7 s in pfemu, 266.6 s with the mux, against
+   185.7 s for the same replay without video. 2.4x real time, about 1.4
+   verifications per video. 40.7 s of that was `src/video.c`, nearly all
+   of it waiting for ffmpeg to take frames; the rest is presumably the
+   emulator and x264 sharing cores (core count not recorded). So it can
+   afford videos on request, queued behind verification. Not checked yet:
+   the file size there, and whether picture and sound line up by eye.
+   Untried ways to cut the cost: the sleep below, `PRESET=ultrafast`,
+   rgb24 instead of bgr0 in the pipe. The Pi 4 is 2.2x on emulation alone
+   and x264 is slow there; not a video machine without measuring.
    **Separate finding, not acted on:** `wsplit` puts 47 s of the 126 s
    baseline in `other`. The outer loop ends every round with
    `plat_sleep_ms(1)`, `-unthrottle` included, and the present-phase
