@@ -226,9 +226,10 @@ for the application menu. Not done: a launcher, uploads.
    `plat_early_init()` now picks Wayland in a Wayland session, and `./pfemu`
    starts there with no errors and no environment variables. A ring of
    about 250 ms in `waveOutWrite()` stays the idea for a machine that
-   needs more slack. Still to do, in order: the first tagged release with
-   the Linux tarball, tried on a machine that did not build it; fullscreen,
-   F11, the GOG offer and a recording on real hardware. After that, the
+   needs more slack. v1.6 (2026-09-24) is the first release with the
+   Linux tarball; unpacked on that Ubuntu machine, set up and launched
+   fine. Still to do: fullscreen, F11 and a recording on real hardware.
+   After that, the
    choice the user has not made yet: a launcher inside the SDL window, a
    GTK one, or none. Uploads need `online.c` on libcurl either way, because
    it is WinHTTP and DPAPI now.
