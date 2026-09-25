@@ -13,7 +13,8 @@
 # to use others.  `make gui NOGTK=1` builds it without the launcher.
 #
 # macOS builds the same way with the Command Line Tools
-# (xcode-select --install) and Homebrew's SDL2 (brew install sdl2); `make gui`
+# (xcode-select --install) and SDL2: SDL2.framework from SDL's release .dmg
+# in ~/Library/Frameworks, or Homebrew's (brew install sdl2).  `make gui`
 # there has no launcher, see PLATDEF below.
 #
 # The flags are not preference.  docs/VERIFY.md's determinism section names
@@ -118,6 +119,22 @@ $(BIN): $(OBJ)
 # `make` never asks for SDL at all.
 GUIBIN     := pfemu
 GUIOBJ     := $(COMMON:.c=.o) src/host_sdl.o
+
+# On macOS, SDL2.framework from SDL's own release .dmg, when it is in one of
+# the two places its ReadMe says to copy it.  Homebrew builds for Intel Macs
+# only from source since Homebrew 7.0, so the framework is the way there.
+# The framework's install name is @rpath/..., hence the rpath.  Found
+# before pkg-config: an installed framework was put there on purpose.
+ifeq ($(UNAME_S),Darwin)
+SDL_FW := $(firstword $(wildcard $(HOME)/Library/Frameworks/SDL2.framework \
+                                 /Library/Frameworks/SDL2.framework))
+ifneq ($(SDL_FW),)
+SDL_FWDIR  := $(patsubst %/,%,$(dir $(SDL_FW)))
+SDL_CFLAGS ?= -I$(SDL_FW)/Headers
+SDL_LIBS   ?= -F$(SDL_FWDIR) -framework SDL2 -Wl,-rpath,$(SDL_FWDIR)
+endif
+endif
+
 SDL_CFLAGS ?= $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags)
 SDL_LIBS   ?= $(shell pkg-config --libs sdl2 2>/dev/null || sdl2-config --libs)
 

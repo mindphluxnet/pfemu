@@ -75,20 +75,41 @@ jobs:
   # x86_64 image it offers.  Apple Silicon beside it, since that is every
   # Mac sold now, and a new architecture for the determinism claims.
   # Compiles and the stub suites only, as above: no game files here.
+  #
+  # SDL2 comes the way each kind of Mac gets it: on Intel, SDL's own
+  # SDL2.framework in ~/Library/Frameworks (Homebrew builds for Intel only
+  # from source since 7.0), on Apple Silicon from Homebrew.
   macos:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15-intel, macos-latest]
+        include:
+          - os: macos-15-intel
+            sdl: framework
+          - os: macos-latest
+            sdl: brew
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Build (clang, -O2)
         run: make
+      - name: SDL2 from Homebrew
+        if: matrix.sdl == 'brew'
+        run: brew install sdl2
+      - name: SDL2.framework from SDL's release .dmg
+        if: matrix.sdl == 'framework'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download release-2.32.10 -R libsdl-org/SDL -p 'SDL2-2.32.10.dmg'
+          hdiutil attach -nobrowse -mountpoint /tmp/sdl2 SDL2-2.32.10.dmg
+          mkdir -p ~/Library/Frameworks
+          cp -R /tmp/sdl2/SDL2.framework ~/Library/Frameworks/
+          hdiutil detach /tmp/sdl2
       - name: Build the SDL2 game window
         run: |
-          brew install sdl2
           make gui
+          otool -L pfemu | grep -i sdl
       - name: Parser regression suite
         run: |
           make fuzz
