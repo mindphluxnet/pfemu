@@ -382,7 +382,10 @@ built (next steps, item 7).
    system's, and the token is a generic password in the login Keychain
    (service `org.pfemu.LeaderboardLogin`, the server as account). Ad-hoc
    signing means the Keychain asks once after every update whether the new
-   pfemu may read it; not seen yet. `make app` (`res/mac/build-app.sh`)
+   pfemu may read it: **seen** on the MacBook (user, 2026-09-25) after the
+   `make app` at `c4e4765`, the first rebuild since the login. It asks for
+   the login Keychain's password; Always Allow ends it until the next
+   build. `make app` (`res/mac/build-app.sh`)
    builds `pfemu.app`: x86_64 and arm64 lipo'd, macOS 11 and newer,
    `SDL2.framework` from SDL's .dmg inside, the build machine's rpath
    removed, signed ad hoc; CI checks all of that and uploads the zip as
@@ -397,9 +400,7 @@ built (next steps, item 7).
    from a read-only copy (App Translocation). Outside a bundle nothing
    changed. Not tried yet: the downloaded zip and Gatekeeper's Open
    Anyway (the user cannot log in to GitHub on the MacBook, so artifacts
-   are out of reach there; the first release will show it), the Keychain
-   question after an update (a rebuild signs ad hoc anew, so one is
-   expected once; none came on a restart of the same build), and Apple
+   are out of reach there; the first release will show it) and Apple
    Silicon by hand. Next: a release, which attaches `pfemu-macos.zip`.
    **The GOG offer on the Mac (2026-09-25):** GOG's Mac edition is a
    `.dmg` whose `Pinball Gold Fantasies.app` is dragged to Applications;
