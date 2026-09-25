@@ -1081,8 +1081,6 @@ static UTType *pfr_type(void){
     lgEmail = [NSTextField textFieldWithString:@""];
     lgEmail.placeholderString = @"optional";
     [lgUser.widthAnchor constraintGreaterThanOrEqualToConstant:240].active = YES;
-    [lgPass.widthAnchor constraintEqualToAnchor:lgUser.widthAnchor].active = YES;
-    [lgEmail.widthAnchor constraintEqualToAnchor:lgUser.widthAnchor].active = YES;
     note = [NSTextField wrappingLabelWithString:@"Email is optional and only used by Register."
                                                  " Without one, a forgotten password cannot be"
                                                  " recovered."];
@@ -1115,7 +1113,11 @@ static UTType *pfr_type(void){
     buttons.translatesAutoresizingMaskIntoConstraints = NO;
     [cv addSubview:g];
     [cv addSubview:buttons];
+    /* Only now: a constraint between two views needs them in one window,
+     * or activating it throws. */
     [NSLayoutConstraint activateConstraints:@[
+        [lgPass.widthAnchor constraintEqualToAnchor:lgUser.widthAnchor],
+        [lgEmail.widthAnchor constraintEqualToAnchor:lgUser.widthAnchor],
         [g.topAnchor constraintEqualToAnchor:cv.topAnchor constant:20],
         [g.leadingAnchor constraintEqualToAnchor:cv.leadingAnchor constant:20],
         [g.trailingAnchor constraintEqualToAnchor:cv.trailingAnchor constant:-20],
