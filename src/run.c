@@ -58,6 +58,23 @@ int snap_save_pending = 0, snap_load_pending = 0;
 static char snap_dir[512] = "";
 static RelResult snap_rel;
 static int snap_have_rel = 0;
+/* The OSD line for a refused F6/F8.  snapshot_error() is a log line - a
+ * "[snapshot]" prefix, sometimes a full path - and runs past the OSD's 47
+ * characters, so the notice showed a cut-off sentence.  The refusals a
+ * player actually hits get their own short line; the full text goes to
+ * stderr.  The first three mirror snapshot.c's own checks, in its order. */
+static const char *snap_osd_refusal(const char *slot, int saving){
+    FILE *f;
+    if(replay_is_recording()) return "No snapshots while recording";
+    if(replay_is_replaying()) return "No snapshots while replaying";
+    if(fantasies_trainer_enabled()) return "No snapshots with the trainer on";
+    if(!saving){
+        f = fopen(slot, "rb");
+        if(!f) return "No snapshot saved yet";
+        fclose(f);
+    }
+    return saving ? "Snapshot save failed" : "Snapshot load failed";
+}
 /* Mute state for the keypad-* toggle, kept out here because the exit path
  * needs it: see the volume keys in wndproc() and the save in main(). */
 int vol_premute = -1, vol_muted = 0;
@@ -1113,8 +1130,10 @@ int emu_main(int argc, char **argv){
                 snap_save_pending = 0;
                 if(snap_have_rel && snapshot_save(slot, &snap_rel) == 0)
                     osd_show("Snapshot saved");
-                else osd_show(snapshot_error() ? snapshot_error()
-                                               : "Snapshot save failed");
+                else {
+                    if(snapshot_error()) fprintf(stderr, "%s\n", snapshot_error());
+                    osd_show(snap_osd_refusal(slot, 1));
+                }
             } else {
                 char why[512] = "";
                 snap_load_pending = 0;
@@ -1134,7 +1153,10 @@ int emu_main(int argc, char **argv){
                     t0 = plat_time() - emu_now() / speed;
                     osd_show("Snapshot loaded");
                 }
-                else osd_show(why[0] ? why : "Snapshot load failed");
+                else {
+                    if(why[0]) fprintf(stderr, "%s\n", why);
+                    osd_show(snap_osd_refusal(slot, 0));
+                }
             }
         }
 
