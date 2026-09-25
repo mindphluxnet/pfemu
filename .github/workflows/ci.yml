@@ -68,6 +68,36 @@ jobs:
       - name: Instrumented build compiles
         run: make ubsan
 
+  # macOS, with Apple's clang and Homebrew's SDL2, and no launcher (the
+  # Makefile sets NOGTK=1 there: libsecret has no Secret Service on a Mac).
+  # Intel first, because that is the Mac the golden suite runs on;
+  # GitHub keeps macos-15-intel until August 2027, and it is the last
+  # x86_64 image it offers.  Apple Silicon beside it, since that is every
+  # Mac sold now, and a new architecture for the determinism claims.
+  # Compiles and the stub suites only, as above: no game files here.
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (clang, -O2)
+        run: make
+      - name: Build the SDL2 game window
+        run: |
+          brew install sdl2
+          make gui
+      - name: Parser regression suite
+        run: |
+          make fuzz
+          ./pfemu-fuzz-pfr -selftest
+      - name: Verdict regression suite
+        run: |
+          make verify-test
+          ./pfemu-verify-test
+
   # The build the Linux release ships (release.yml, job "linux"): the SDL2
   # window inside Ubuntu 22.04, whose SDL is 2.0.20 and GTK 3.24.33.  The
   # job above builds against the newest of both; this one catches a call

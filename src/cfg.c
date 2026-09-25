@@ -411,7 +411,7 @@ void write_sound_cfg(const char *dir, int on, int quality){
  * found again on launch (or vice versa).  The exe's own directory never
  * moves under a running process.  The separator is the one the path already
  * uses, so this is right on both hosts (src/posix.c answers
- * GetModuleFileNameA from /proc/self/exe). */
+ * GetModuleFileNameA from /proc/self/exe, or from dyld on macOS). */
 void beside_exe(char *out, size_t n, const char *name){
     char exe[1024];
     DWORD len = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));

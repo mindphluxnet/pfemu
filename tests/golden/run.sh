@@ -15,6 +15,11 @@
 # Exit status is 0 only if every vector matched.
 set -u
 
+# md5sum is GNU coreutils; macOS has md5 -q instead.
+if command -v md5sum >/dev/null 2>&1; then md5hex() { md5sum | cut -d' ' -f1; }
+else md5hex() { md5 -q; }
+fi
+
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 BIN=${1:-${PFEMU_BIN:-$root/pfemu-headless}}
@@ -66,7 +71,7 @@ for pfr in "$here"/*.pfr; do
         f="$d/seq$idx.ppm"
         nf=$((nf+1))
         if [ ! -f "$f" ]; then badf=$((badf+1)); continue; fi
-        got=$(md5sum < "$f" | cut -d' ' -f1)
+        got=$(md5hex < "$f")
         [ "$got" = "$want" ] || badf=$((badf+1))
     done < "$exp"
     if [ "$badf" -eq 0 ]; then

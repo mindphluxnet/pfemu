@@ -12,6 +12,10 @@
 # also through sdl2-config); set SDL_CFLAGS/SDL_LIBS or GTK_CFLAGS/GTK_LIBS
 # to use others.  `make gui NOGTK=1` builds it without the launcher.
 #
+# macOS builds the same way with the Command Line Tools
+# (xcode-select --install) and Homebrew's SDL2 (brew install sdl2); `make gui`
+# there has no launcher, see PLATDEF below.
+#
 # The flags are not preference.  docs/VERIFY.md's determinism section names
 # the first two as the things most likely to make this build disagree with the
 # Windows one:
@@ -60,8 +64,22 @@ CC      ?= cc
 CSTD    ?= -std=c99
 WARN    ?= -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 DETERM  := -ffp-contract=off -fno-strict-aliasing -fno-fast-math
+PLATDEF := -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+
+# macOS.  Its headers take _POSIX_C_SOURCE literally and hide everything
+# newer, clock_gettime() and CLOCK_MONOTONIC included; _DARWIN_C_SOURCE
+# (glibc's _DEFAULT_SOURCE, more or less) brings them back.  The launcher
+# is off by default there: libsecret needs the Secret Service over D-Bus,
+# which a Mac does not have, so `make gui` is the NOGTK=1 build.  Pass
+# NOGTK= to try GTK anyway.
+UNAME_S := $(shell uname -s 2>/dev/null)
+ifeq ($(UNAME_S),Darwin)
+PLATDEF += -D_DARWIN_C_SOURCE
+NOGTK   ?= 1
+endif
+
 CFLAGS  ?= -O2
-CFLAGS  += $(CSTD) $(WARN) $(DETERM) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+CFLAGS  += $(CSTD) $(WARN) $(DETERM) $(PLATDEF)
 CFLAGS  += -MMD -MP        # header dependencies, so editing pfemu.h rebuilds
 LDLIBS  += -lm
 
@@ -156,7 +174,7 @@ UBBIN := $(BIN)-ubsan
 
 ubsan:
 	$(MAKE) clean
-	$(MAKE) CFLAGS="-O1 -g $(CSTD) $(WARN) $(DETERM) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -fsanitize=undefined -fno-omit-frame-pointer" \
+	$(MAKE) CFLAGS="-O1 -g $(CSTD) $(WARN) $(DETERM) $(PLATDEF) -fsanitize=undefined -fno-omit-frame-pointer" \
 	        LDLIBS="-lm -fsanitize=undefined" BIN=$(UBBIN)
 	rm -f $(OBJ) $(DEP)
 	@echo "built $(UBBIN); objects removed so a later 'make' recompiles clean"
@@ -176,7 +194,7 @@ ubsan:
 FUZZSRC := tests/fuzz/fuzz_pfr.c src/replay.c src/posix.c
 FUZZBIN := pfemu-fuzz-pfr
 FUZZFLAGS := -O1 -g $(CSTD) $(WARN) $(DETERM) \
-             -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+             $(PLATDEF) \
              -fsanitize=address,undefined -fno-sanitize-recover=all \
              -fno-omit-frame-pointer
 

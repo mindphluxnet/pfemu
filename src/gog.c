@@ -26,6 +26,9 @@
  *            Heroic records its installs in gog_store/installed.json.  Both
  *            layouts are tried in every candidate, because Heroic can just
  *            as well have installed the Windows edition under Wine.
+ *   macOS    Heroic's installed.json under ~/Library/Application Support,
+ *            which is where Heroic keeps its config there.  GOG Galaxy's
+ *            own Mac install is not searched: its layout is not known yet.
  */
 #include "compat.h"
 #include "pfemu.h"
@@ -146,9 +149,11 @@ int gog_find_image(char *out, size_t n){
             /* Heroic, native and Flatpak */
             ".config/heroic/gog_store/installed.json",
             ".var/app/com.heroicgameslauncher.hgl/config/heroic/gog_store/installed.json",
+            /* Heroic on macOS */
+            "Library/Application Support/heroic/gog_store/installed.json",
         };
         int i;
-        for(i = 0; i < 2; i++){
+        for(i = 0; i < (int)(sizeof(rel) / sizeof(rel[0])); i++){
             snprintf(path, sizeof(path), "%s/%s", home, rel[i]);
             if(gog_heroic(path, out, n)) return 1;
         }

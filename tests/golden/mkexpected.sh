@@ -29,6 +29,11 @@
 #       least anchored to a run that passed the stronger check.
 set -u
 
+# md5sum is GNU coreutils; macOS has md5 -q instead.
+if command -v md5sum >/dev/null 2>&1; then md5hex() { md5sum | cut -d' ' -f1; }
+else md5hex() { md5 -q; }
+fi
+
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 
@@ -186,7 +191,7 @@ events=$(sed -n 's/.*: [a-z]*, \([0-9]*\) events,.*/\1/p' "$work/run.log" | head
     for f in "$work"/seq*.ppm; do
         [ -f "$f" ] || continue
         b=$(basename "$f" .ppm)
-        printf 'frame %s %s\n' "${b#seq}" "$(md5sum < "$f" | cut -d' ' -f1)"
+        printf 'frame %s %s\n' "${b#seq}" "$(md5hex < "$f")"
     done
     # The score, which is the number a verification service would publish and
     # the one thing the suite did not previously pin.  Only emitted when

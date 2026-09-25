@@ -28,6 +28,9 @@
 #include <ctype.h>
 #include <time.h>
 #include <limits.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>   /* _NSGetExecutablePath */
+#endif
 
 /* --------------------------------------------------------------- glob --- */
 /* DOS wildcards, case-insensitive, as Windows matches them.  '*' spans any
@@ -261,15 +264,31 @@ DWORD GetFullPathNameA(const char *name, DWORD n, char *out, char **part){
     return (len < 0 || (DWORD)len >= n) ? 0 : (DWORD)len;
 }
 
-/* /proc/self/exe, so Linux only.  0 on any failure, including a path that
- * does not fit: the caller then falls back to the CWD, as on Windows. */
+/* /proc/self/exe on Linux; macOS has no /proc and asks dyld.  0 on any
+ * failure, including a path that does not fit: the caller then falls back to
+ * the CWD, as on Windows. */
 DWORD GetModuleFileNameA(void *module, char *out, DWORD n){
+#ifdef __APPLE__
+    /* dyld hands back the path the program was started by, symlinks and
+     * ".." included; realpath() makes it the file, which is what the
+     * /proc link names on Linux. */
+    char raw[PATH_MAX], real[PATH_MAX];
+    uint32_t size = sizeof(raw);
+    size_t len;
+    if(module || !out || n == 0) return 0;
+    if(_NSGetExecutablePath(raw, &size) != 0 || !realpath(raw, real)) return 0;
+    len = strlen(real);
+    if(len >= n) return 0;
+    memcpy(out, real, len + 1);
+    return (DWORD)len;
+#else
     ssize_t len;
     if(module || !out || n == 0) return 0;
     len = readlink("/proc/self/exe", out, (size_t)n);
     if(len <= 0 || (DWORD)len >= n) return 0;
     out[len] = 0;
     return (DWORD)len;
+#endif
 }
 
 /* ---------------------------------------------------------------- time --- */
