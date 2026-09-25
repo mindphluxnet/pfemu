@@ -154,9 +154,11 @@ static void one_case(const uint8_t *data, size_t n){
         /* THE invariant.  An accepted file must not leave an event that
          * never comes due; if it can, replay_should_stop() is unreachable
          * and the run never ends.  A file is only accepted with a footer,
-         * so end_cycles is meaningful here. */
-        if(h.end_cycles > 0)
-            assert(replay_last_event_cycle() <= h.end_cycles);
+         * so end_cycles is meaningful here, and a cycle stamp needs one
+         * that is not 0. */
+        if(replay_last_event_cycle() > 0)
+            assert(h.end_cycles > 0 &&
+                   replay_last_event_cycle() <= h.end_cycles);
     }
     replay_abort();
 }
@@ -193,6 +195,9 @@ typedef struct { const char *name; int want; int strict; const char *body; } Cas
     "trainer_off: 1\n" \
     extra \
     "events:\n"
+#define X10   "xxxxxxxxxx"
+#define X100  X10 X10 X10 X10 X10 X10 X10 X10 X10 X10
+#define X1000 X100 X100 X100 X100 X100 X100 X100 X100 X100 X100
 #define CANON_OFF "61da2dea96515ac2"
 #define CANON_ON2 "90a24b3867a30a13"
 #define BASE_FOOT \
@@ -207,6 +212,17 @@ static const Case cases[] = {
  /* The hang that started this.  Parses fine; would never stop. */
  { "event past the footer", 0, 0,
    BASE_HEAD "1000 0.000167 1e 1\n9223372036854775807 0.1 1e 0\n" BASE_FOOT },
+ /* The same through the gap the check above left: with a count of 0 the
+  * stamp was never compared with anything (security audit, finding 11). */
+ { "event past end_emu, end_cycles: 0", 0, 0,
+   BASE_HEAD "1000 0.000167 1e 1\n999999999999 0.1 1e 0\n"
+   "end_emu: 1.000000\nend_cycles: 0\nfile_hash: 0000000000000000\n" },
+ { "cycle stamps, end_cycles: 0", 0, 0,
+   BASE_HEAD "1000 0.000167 1e 1\n" "end_emu: 1.000000\nend_cycles: 0\n"
+   "file_hash: 0000000000000000\n" },
+ { "legacy events, end_cycles: 0", 1, 0,
+   BASE_HEAD "0.000167 1e 1\n" "end_emu: 1.000000\nend_cycles: 0\n"
+   "file_hash: 0000000000000000\n" },
 
  /* The other hang: NaN defeats every `<= 0.0` clamp downstream. */
  { "ips: nan", 0, 0,
@@ -244,6 +260,15 @@ static const Case cases[] = {
  { "no release", 0, 0, "PFEMU-REPLAY 1\nevents:\n" BASE_FOOT },
  { "no footer", 0, 0, BASE_HEAD "1000 0.000167 1e 1\n" },
  { "empty", 0, 0, "" },
+ /* 1023 bytes and then a header line of pfemu-service's choosing, on one
+  * line: pfemu used to read the rest as a line of its own (security audit,
+  * finding 7).  Just under the buffer is still fine. */
+ { "header line over the buffer", 0, 0,
+   "PFEMU-REPLAY 1\nrelease: deluxe\nsummary: " X1000 X10 "xxxx"
+   "program: PINBALL.EXE\n" "events:\n" "1000 0.000167 1e 1\n" BASE_FOOT },
+ { "header line of 1009 bytes", 1, 0,
+   "PFEMU-REPLAY 1\nrelease: deluxe\nsummary: " X1000 "\n"
+   "events:\n" "1000 0.000167 1e 1\n" BASE_FOOT },
  { "magic only", 0, 0, "PFEMU-REPLAY 1\n" },
 
  /* Legacy tolerance: allowed in play, refused by a verifier. */
@@ -297,8 +322,9 @@ static int selftest(void){
         /* An accepted file must also satisfy the run-loop invariant. */
         if(got && cases[i].want){
             ReplayHeader h;
-            if(replay_read_header(tmp_path, &h) == 0 && h.end_cycles > 0 &&
-               replay_last_event_cycle() > h.end_cycles){
+            if(replay_read_header(tmp_path, &h) == 0 &&
+               replay_last_event_cycle() > 0 &&
+               (h.end_cycles == 0 || replay_last_event_cycle() > h.end_cycles)){
                 fprintf(stderr, "  %-32s ACCEPTED WITH UNREACHABLE EVENT\n",
                         cases[i].name);
                 fails++;

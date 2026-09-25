@@ -102,7 +102,7 @@ static void one(const char *name, int el, uint32_t cnt, uint32_t soff, uint32_t 
 }
 
 int main(void){
-    ram = (uint8_t*)calloc(RAM_SIZE, 1);
+    ram = (uint8_t*)calloc(RAM_ALLOC, 1);
     if(!ram) return 2;
 
     puts("non-overlapping (the fast path must still be taken):");

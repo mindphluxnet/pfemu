@@ -75,7 +75,8 @@ nothing proves nothing while still printing a clean summary.
 
 ## What `-selftest` covers
 
-22 cases, each a complete file with an expected verdict. Fourteen of them are
+32 cases now, each a complete file with an expected verdict; this was
+written when there were 22. Fourteen of them are
 accepted by the parser as it stood before the validation pass - that was
 checked by building this same suite against the previous `src/replay.c`, which
 is the only reason to believe the suite has teeth:
@@ -92,6 +93,11 @@ is the only reason to believe the suite has teeth:
 | mixed cycle-stamped and legacy events | two clocks in one file |
 | bad magic, no release, no footer, empty, magic only | pre-existing refusals, here so an edit cannot quietly drop them |
 | legacy events / no integrity line | accepted by default, refused under `-strict` |
+| cycle-stamped events with `end_cycles: 0` | the same hang by another door: the footer check compared stamps with `end_cycles` only when it was not 0 (security audit, 2026-09-25, finding 11). Legacy events with a 0 count are still accepted: they are checked against `end_emu` |
+| a header line over the 1024-byte buffer | `fgets` handed back the rest as a line of its own, so the header pfemu played could differ from the one pfemu-service stored (finding 7). Now refused; a line of 1009 bytes still passes |
+
+The audit's three were checked the same way: accepted by `src/replay.c` as
+it stood before, refused after.
 
 ## What it does not cover
 

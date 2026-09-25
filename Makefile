@@ -38,6 +38,7 @@
 #
 # Targets:
 #   make              the headless binary
+#   make HARDEN=1     the same, with the verifier's hardening (below)
 #   make gui          pfemu, the same emulator in an SDL2 window (see above)
 #   make app          macOS only: pfemu.app, for Intel and Apple Silicon in
 #                     one, with SDL2.framework inside and signed ad hoc
@@ -89,6 +90,19 @@ CFLAGS  ?= -O2
 CFLAGS  += $(CSTD) $(WARN) $(DETERM) $(PLATDEF)
 CFLAGS  += -MMD -MP        # header dependencies, so editing pfemu.h rebuilds
 LDLIBS  += -lm
+
+# make HARDEN=1: the verifier's build (pfemu-service's Dockerfile).  A stack
+# canary, glibc's checked memcpy/sprintf family, and a read-only GOT, so
+# that a memory bug reached through a .pfr is harder to turn into code of
+# its own - which could write verdict.json itself (security audit, finding
+# 2).  None of it touches arithmetic, so a run replays the same; the golden
+# gate is how that is shown for a build.  gcc/ELF only: the linker options
+# are not the Mac's.  A switch rather than CFLAGS=... because a CFLAGS on
+# the command line would replace DETERM above, not add to it.
+ifeq ($(HARDEN),1)
+CFLAGS  += -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
+LDLIBS  += -Wl,-z,relro,-z,now
+endif
 
 # The emulation core is platform-free; run.c is the session driver; posix.c
 # answers the few Win32 calls the rest makes.  launch.c (the Win32 picker)

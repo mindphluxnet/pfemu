@@ -716,6 +716,15 @@ static int validate_events(const char *path){
     if(ncyc && nold)
         VFAIL("[replay] '%s': mixes cycle-stamped (%d) and legacy (%d)"
               " events", path, ncyc, nold);
+    /* The hang's other door.  The check in the loop compares cycle stamps
+     * with end_cycles only when it is non-zero, so `end_cycles: 0` let an
+     * event at any cycle through, and the run went on to the verifier's
+     * timeout.  The recorder writes cpu.cycles there, which is past every
+     * event it stamped, so a file with cycle stamps and no count was not
+     * written by this program. */
+    if(ncyc && end_cycles == 0)
+        VFAIL("[replay] '%s': %d cycle-stamped events but end_cycles is 0"
+              " - the last one might never come due", path, ncyc);
     if(strict_mode && nold)
         VFAIL("[replay] '%s': -strict refuses legacy events, which replay"
               " on emu_time rather than cpu.cycles", path);
@@ -748,6 +757,15 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
     while(fgets(line, sizeof(line), f)){
         char *s;
         lineno++;
+        /* A line longer than the buffer used to come back in pieces, each
+         * read as a line of its own - so pfemu and pfemu-service, which
+         * splits on newlines only, could read different headers from the
+         * same file (security audit, finding 7).  Nothing this program
+         * writes comes near it: the longest is dir_hint, at most 520.  A
+         * NUL byte ends the string early and lands here too. */
+        if(!strchr(line, '\n') && !feof(f))
+            PARSE_FAIL("[replay] '%s' line %d: longer than %d bytes, or"
+                       " has a NUL byte", path, lineno, (int)sizeof(line) - 2);
         rstrip(line);
         s = lstrip(line);
         if(!*s) continue;

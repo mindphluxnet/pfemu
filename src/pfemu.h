@@ -22,6 +22,12 @@
 #endif
 
 #define RAM_SIZE 0x1000000u          /* 16 MB linear space (we only use <1MB) */
+/* What is allocated for ram[]: RAM_SIZE plus 3 bytes, because the 16- and
+ * 32-bit accessors (cpu.c, vga.c) mask the address to RAM_SIZE-1 and then
+ * touch up to a+3.  An access at 0xFFFFFD-0xFFFFFF used to read or write
+ * past the buffer; now it lands in the spare bytes.  The game never goes
+ * there, so no run changes; it only takes away a heap overflow. */
+#define RAM_ALLOC (RAM_SIZE + 4u)
 
 /* ---------------------------------------------------------------- CPU ---- */
 enum { R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI };

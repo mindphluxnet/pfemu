@@ -786,8 +786,8 @@ int emu_main(int argc, char **argv){
      * the one failure here that really is fatal, so it does end the process -
      * but through fail_msg, so a launcher run sees why rather than
      * vanishing. */
-    if(!ram) ram = (uint8_t*)calloc(RAM_SIZE,1);
-    else memset(ram, 0, RAM_SIZE);
+    if(!ram) ram = (uint8_t*)calloc(RAM_ALLOC,1);
+    else memset(ram, 0, RAM_ALLOC);
     if(!ram){ fail_msg("out of memory"); return 1; }
 
     cpu_reset();
