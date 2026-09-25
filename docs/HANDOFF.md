@@ -401,7 +401,8 @@ built (next steps, item 7).
    changed. Not tried yet: the downloaded zip and Gatekeeper's Open
    Anyway (the user cannot log in to GitHub on the MacBook, so artifacts
    are out of reach there; the first release will show it) and Apple
-   Silicon by hand. Next: a release, which attaches `pfemu-macos.zip`.
+   Silicon by hand. v1.8 (2026-09-25) is the first release with
+   `pfemu-macos.zip`; v1.8.1 adds the GOG offer below.
    **The GOG offer on the Mac (2026-09-25):** GOG's Mac edition is a
    `.dmg` whose `Pinball Gold Fantasies.app` is dragged to Applications;
    it holds the same `game.gog` in a Boxer bundle (RELEASES.md, "The macOS
