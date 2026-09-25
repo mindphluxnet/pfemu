@@ -10,7 +10,7 @@
 
 #include <stddef.h>
 
-#define ONLINE_DEFAULT_SERVER "https://pf.dark-secrets.eu"
+#define ONLINE_DEFAULT_SERVER "https://pfemu.com"
 
 /* pfemu-online.cfg, next to the program.  On Windows the token is stored
  * in it encrypted with DPAPI, so the file is useless on another machine or

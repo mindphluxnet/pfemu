@@ -169,7 +169,9 @@ built (next steps, item 7).
      against the client passed 22 checks, including live calls against
      `https://pf.dark-secrets.eu`: GET, 401 on a bad token, a POST with a
      body, and an unreachable host. The windows themselves, and a real
-     upload, are still to be tried by hand.
+     upload, are still to be tried by hand. The default server is
+     `https://pfemu.com` since 2026-09-25, the site's final domain; a
+     `pfemu-online.cfg` written before keeps its `server=` line.
    - **Submit asks when an upload would change nothing** (2026-09-23,
      not tried by hand yet). A recording session turns the score hooks on
      and writes `<file>.pfr.games` at exit; Submit holds it against

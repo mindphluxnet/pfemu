@@ -278,7 +278,7 @@ and the launcher picks up the new result when you come back to it.
 
 The login is kept in `pfemu-online.cfg` next to `pfemu.exe`, encrypted for
 your Windows account. The file also holds the server address (`server=`,
-default `https://pf.dark-secrets.eu`).
+default `https://pfemu.com`).
 
 
 ### Starting at a table
