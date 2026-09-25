@@ -1,10 +1,10 @@
 # pfemu
 
 pfemu is a small PC emulator with one job: running the original DOS version of
-**Pinball Fantasies** on 64-bit Windows. It does not use DOSBox, NTVDM, or code
+**Pinball Fantasies** on 64-bit Windows, Linux and macOS. It does not use DOSBox, NTVDM, or code
 from another emulator.
 
-Four releases of the game are supported. pfemu tells them apart by hashing the
+Three releases of the game are supported. pfemu tells them apart by hashing the
 game files, so you never have to identify your copy yourself:
 
 | Release | Boot program | Programs |
@@ -28,7 +28,10 @@ Roughly who did what:
   emulator. Later, release detection by file hash, the mode-0 PIT counter fix
   that got the engine running at its real frame rate, the table-select palette
   and ball-flicker fixes, volume and quality controls,
-  savestates, direct-to-table, and replay verification hashes.
+  savestates, direct-to-table, and replay verification hashes. Then the
+  groundwork for verifying scores: finding the score and each attempt in a
+  session, the headless Linux build, the golden-vector test suite, sanitizer
+  and fuzz testing, CI, `-unthrottle`, and `-verify`.
 - **Claude Sonnet 5** (Anthropic): Deluxe (CD-ROM) support, fullscreen, the
   first trainer hotkeys (infinite balls, ball control), game options in the
   launcher, and PNG screenshots.
@@ -39,6 +42,13 @@ Roughly who did what:
 - **Muse Spark 1.3** (Meta AI): the original Win32 launcher, Pinball Dreams
   support (since dropped), performance benchmarking, and the ball-flicker,
   scrolling and dot-matrix cadence investigations.
+- **Claude Opus 5.5** (Anthropic): most of the work since 2026-09-22, and the
+  largest share of the commits. Ranked recordings and `-strict`, the
+  leaderboard in the launcher (login, submissions, the Replays window), the
+  GOG import on all three systems, the Linux edition (SDL2 game window, GTK
+  launcher, release tarball), the macOS edition (game window, AppKit
+  launcher, `pfemu.app`), `-video`, the security audit, and most of the
+  documentation since.
 
 The original source code, published at
 https://github.com/historicalsource/pinballfantasies, was used as reference
@@ -154,7 +164,8 @@ finds.
   of GOG's `game.gog` CD image into `GOG\`. The GOG installation is not
   changed. If you said No, delete `pfemu-gog.cfg` next to `pfemu.exe` to be
   asked again. On Linux the same offer finds GOG's own installer, Heroic and
-  Minigalaxy installs, and on a Mac Heroic's. For anything else, such as a Wine prefix, run
+  Minigalaxy installs, and on a Mac the app from GOG's disk image in
+  Applications, and Heroic's. For anything else, such as a Wine prefix, run
   `pfemu -import path/to/game.gog GOG`.
 - **Deluxe CD-ROM:** copy the files yourself. The 1995 release installed in
   two halves. `PINBALL.EXE`, `SETSOUND.EXE`, and the
