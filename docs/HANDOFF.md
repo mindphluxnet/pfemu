@@ -339,12 +339,12 @@ built (next steps, item 7).
    `sessions/GOG_20260925_071526.pfr` (84 s pause, not in the suite):
    verdict and `-wav` unchanged, stream deterministic, 81.902 s cut,
    510.3 s of video down to 428.4 s. The user's condition for publishing
-   cut videos: **the site must say that pauses were removed.** So next,
-   pfemu-service's `render._describe()` should read the
-   `[video] pause cut: X s at V s of the video (R s of the replay)` lines
-   into `video` (a count, the total and the list), and pfemu-web should
-   show that on the entry page. Until the service reads them, a cut is
-   silent there.
+   cut videos: **the site must say that pauses were removed.** Both sides
+   are built (tested with their fakes only): pfemu-service `73dd91f` reads
+   the `[video] pause cut:` lines into `video.cuts`, and pfemu-web
+   `b453219` keeps them, moves the jump marks by them and says "A pause
+   left out" under the player. The validator cuts only once its
+   `PFEMU_REF` is `33d40f6` or later.
 
 ## Running the gate
 
