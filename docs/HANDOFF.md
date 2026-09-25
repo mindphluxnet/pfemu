@@ -353,7 +353,10 @@ built (next steps, item 7).
    launcher is AppKit in plain Objective-C (`src/launch_mac.m`), built by
    the Command Line Tools' clang with no project, nib or storyboard, on the
    rules in `launchcore.c`, in two steps like the GTK one. **Step 1, built
-   by CI on Intel and Apple Silicon at `7e57989`, not yet tried by hand:**
+   by CI on Intel and Apple Silicon at `7e57989`, and tried by hand on the
+   user's Intel MacBook (built there with `make app`, 2026-09-25): the
+   window looks right, Record and Replay work, Details shows the right
+   report, Cmd+Q ends the game and the launcher comes back.** It has:
    the Game group with Show Folder, Sound, Audio enhancement, Game options,
    Extras, Session (Play / Record / Replay, Ranked, a File field whose
    button picks a target or a recording with the system's panels), Details,
@@ -376,9 +379,10 @@ built (next steps, item 7).
    used by `beside_exe()` and a `chdir()` in `plat_early_init()`), because
    a signed bundle must not be written to and an unmoved download runs
    from a read-only copy (App Translocation). Outside a bundle nothing
-   changed. To try next: the zip from the artifact on the user's MacBook
-   (Gatekeeper, Show Folder, a game copied in, Play, Record, Replay,
-   Details), then step 2.
+   changed. Not tried yet: the downloaded zip and Gatekeeper's Open
+   Anyway (the user cannot log in to GitHub on the MacBook, so artifacts
+   are out of reach there; the first release will show it), and the
+   Keychain.
 
 ## Running the gate
 
