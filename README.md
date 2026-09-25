@@ -103,6 +103,25 @@ GOG import once and starts the installation you played last with its saved
 settings. Those settings live in each installation's `PFEMU-STATE/pfemu.cfg`,
 a text file, on both platforms.
 
+### macOS
+
+pfemu builds on macOS with the same Makefile, and plays the same game:
+recordings made on Windows and Linux replay there byte for byte. There is no
+launcher yet, so `pfemu` starts like the `NOGTK=1` build above, including
+the Start at table and fullscreen saved in the installation's
+`PFEMU-STATE/pfemu.cfg`. To build it you need Apple's Command Line Tools
+(`xcode-select --install`, not Xcode itself) and SDL2. Copy `SDL2.framework`
+from SDL's `SDL2-2.x.dmg` ([releases](https://github.com/libsdl-org/SDL/releases))
+into `~/Library/Frameworks`, where the Makefile finds it. Homebrew's
+`brew install sdl2` works too, but Homebrew no longer supports Intel Macs.
+
+```sh
+make gui
+./pfemu
+```
+
+The Mac keys are listed under [Controls](#controls).
+
 ## Where to put the game files
 
 Put one installation's files directly in a folder. `GAME\` is the convention,
@@ -161,7 +180,7 @@ controls:
 | Key | Action |
 |---|---|
 | `F1`-`F4` | Choose a table from the selector |
-| `F1` | Add a player at a table |
+| `Enter` or `F1`-`F8` | Add a player at a table (not `F6` / `F8`, which pfemu takes for snapshots) |
 | `Down Arrow` | Pull and release the plunger |
 | `Shift`, `Alt`, or `Ctrl` | Flippers (either side) |
 | `Space` | Nudge |
@@ -176,6 +195,28 @@ controls:
 
 Print Screen never reaches pfemu, because Windows 11 intercepts it for Snipping
 Tool. Use `F11` for screenshots instead.
+
+On a Mac, `Option` is `Alt`, and `Cmd` does what a Mac keyboard has no key
+for: no Scroll Lock, no keypad on a MacBook, and F keys only behind `fn`.
+The keys above keep working next to these:
+
+| Mac | Action | Instead of |
+|---|---|---|
+| `Cmd+Q` | Quit | `Scroll Lock` |
+| `Option+Enter` or `Ctrl+Cmd+F` | Fullscreen | `Alt+Enter` |
+| `Cmd+P` | Screenshot | `F11` |
+| `Cmd+S` / `Cmd+L` | Save / load the snapshot slot | `F6` / `F8` |
+| `Cmd+0` | Mute / restore | `Keypad *` |
+| `Cmd+E` | Enhancement bypass on/off | `Keypad /` |
+| `Cmd+1`-`Cmd+4` | `F1`-`F4`, for the game | |
+| `Cmd+,` | `F5`, the game options menu | |
+
+macOS takes `Ctrl+Down` and `Ctrl+Up` for its window overview and Mission
+Control, and `Down` is the plunger, so flip with `Shift` or `Option` there,
+or turn those shortcuts off in System Settings > Keyboard > Keyboard
+Shortcuts > Mission Control. On a Touch Bar, System Settings > Keyboard >
+Keyboard Shortcuts > Function Keys can show F1-F12 for pfemu (or Terminal)
+all the time.
 
 ### Sound
 

@@ -251,12 +251,85 @@ static void vol_key(int kind){
     fprintf(stderr, "[snd] volume %d%%\n", audio_volume);
 }
 
+static void enh_toggle(void){
+    char msg[32];
+    audio_enh_bypass = !audio_enh_bypass;
+    snprintf(msg, sizeof(msg), "ENHANCEMENT: %s", audio_enh_bypass ? "OFF" : "ON");
+    osd_show(msg);
+    fprintf(stderr, "[snd] enhancement bypass %s\n", audio_enh_bypass ? "on" : "off");
+}
+
+#ifdef __APPLE__
+/* ------------------------------------------------------------ Mac keys --
+ * A Mac keyboard has no Scroll Lock (a PC keyboard's arrives as F14), a
+ * MacBook no keypad, and the F keys sit behind fn or on a Touch Bar.  Cmd
+ * is the one modifier the game never used, so the host keys get Cmd
+ * equivalents here, beside the PC keys, which keep working:
+ *
+ *   Cmd+Q  quit             SDL's own menu item; it arrives as SDL_QUIT
+ *   Cmd+P  screenshot (F11)     Cmd+S / Cmd+L  snapshot save / load (F6/F8)
+ *   Cmd+0  mute (keypad *)      Cmd+E  enhancement bypass (keypad /)
+ *   Cmd+1..4  F1..F4, Cmd+,  F5: game keys, sent to the game as those
+ *
+ * Ctrl+Cmd+F is SDL's "Toggle Full Screen" menu item, so it is not taken
+ * here; Option+Enter is Alt+Enter as everywhere.
+ *
+ * Nothing with Cmd held reaches the game, and neither does Cmd itself: it
+ * used to arrive as the Windows key, which the game never knew.  A game key
+ * made here is broken when the key that made it comes up, whether or not
+ * Cmd still is, and a swallowed key's release is swallowed too, so the
+ * guest never sees a break without its make.  A recording holds F1 or F5,
+ * exactly as if that had been pressed. */
+#define CMD_SWALLOWED 0xFFFFu
+static unsigned short cmd_made[SDL_NUM_SCANCODES];
+
+static void cmd_key_down(SDL_Scancode sc, int rep){
+    unsigned short game = 0;
+    if(sc < 0 || sc >= SDL_NUM_SCANCODES) return;
+    switch(sc){
+    case SDL_SCANCODE_P:
+        if(!rep && !replay_is_replaying()) screenshot_pending = 1;
+        break;
+    case SDL_SCANCODE_S: if(!rep) snap_save_pending = 1; break;
+    case SDL_SCANCODE_L: if(!rep) snap_load_pending = 1; break;
+    case SDL_SCANCODE_0: if(!rep) vol_key('*'); break;
+    case SDL_SCANCODE_E: if(!rep) enh_toggle(); break;
+    case SDL_SCANCODE_1: game = 0x3B; break;             /* F1 */
+    case SDL_SCANCODE_2: game = 0x3C; break;
+    case SDL_SCANCODE_3: game = 0x3D; break;
+    case SDL_SCANCODE_4: game = 0x3E; break;             /* F4 */
+    case SDL_SCANCODE_COMMA: game = 0x3F; break;         /* F5 */
+    default: break;
+    }
+    /* Key-repeat makes go through, as for the F keys themselves. */
+    if(game && !replay_is_replaying()){
+        kbd_key(game, 1);
+        cmd_made[sc] = game;
+    } else if(!cmd_made[sc]) cmd_made[sc] = CMD_SWALLOWED;
+}
+
+/* 1 when this release belongs to a Cmd combination, and is dealt with. */
+static int cmd_key_up(SDL_Scancode sc){
+    unsigned short game;
+    if(sc == SDL_SCANCODE_LGUI || sc == SDL_SCANCODE_RGUI) return 1;
+    if(sc < 0 || sc >= SDL_NUM_SCANCODES || !cmd_made[sc]) return 0;
+    game = cmd_made[sc];
+    cmd_made[sc] = 0;
+    if(game != CMD_SWALLOWED && !replay_is_replaying()) kbd_key(game, 0);
+    return 1;
+}
+#endif
+
 static void key_down(const SDL_KeyboardEvent *e){
     SDL_Scancode sc = e->keysym.scancode;
     SDL_Keycode sym = e->keysym.sym;
     int alt = (e->keysym.mod & KMOD_ALT) != 0;
     int rep = e->repeat != 0;
     int pc = pc_code(sc);
+#ifdef __APPLE__
+    if(sc == SDL_SCANCODE_LGUI || sc == SDL_SCANCODE_RGUI) return;
+    if(e->keysym.mod & KMOD_GUI){ cmd_key_down(sc, rep); return; }
+#endif
     /* Scroll Lock quits: F12 belongs to the game. */
     if(sc == SDL_SCANCODE_SCROLLLOCK){ running = 0; return; }
     /* Alt+Enter toggles fullscreen, not on replay. */
@@ -277,15 +350,7 @@ static void key_down(const SDL_KeyboardEvent *e){
         }
         if(sc == SDL_SCANCODE_KP_MINUS || sym == SDLK_MINUS){ vol_key('-'); return; }
         if(sc == SDL_SCANCODE_KP_DIVIDE){
-            if(!rep){
-                char msg[32];
-                audio_enh_bypass = !audio_enh_bypass;
-                snprintf(msg, sizeof(msg), "ENHANCEMENT: %s",
-                         audio_enh_bypass ? "OFF" : "ON");
-                osd_show(msg);
-                fprintf(stderr, "[snd] enhancement bypass %s\n",
-                        audio_enh_bypass ? "on" : "off");
-            }
+            if(!rep) enh_toggle();
             return;
         }
         if(sc == SDL_SCANCODE_F6 || sc == SDL_SCANCODE_F8){
@@ -458,6 +523,10 @@ int plat_pump(void){
              * the guest. */
             case SDL_WINDOWEVENT_FOCUS_LOST:
                 if(!replay_is_replaying()) kbd_release_all();
+#ifdef __APPLE__
+                /* Everything is released now; no stale break later. */
+                memset(cmd_made, 0, sizeof(cmd_made));
+#endif
                 break;
             /* Windows saves when a drag ends (WM_EXITSIZEMOVE).  SDL has no
              * such event, only a stream of moves, so save once they stop. */
@@ -471,6 +540,9 @@ int plat_pump(void){
             break;
         case SDL_KEYUP: {
             int pc = pc_code(e.key.keysym.scancode);
+#ifdef __APPLE__
+            if(cmd_key_up(e.key.keysym.scancode)) break;
+#endif
             if(pc && !replay_is_replaying()) kbd_key(pc, 0);
             break; }
         }
