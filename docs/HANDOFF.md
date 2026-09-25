@@ -23,10 +23,10 @@ covers the emulator side.
 
 The work done before it is finished:
 
-- **Determinism holds.** Two compilers (MSVC, gcc 14.2), two operating
-  systems (Windows, Debian), two optimisation levels (`-O2`, `-O1` + ubsan).
-  All three golden vectors reproduce a human-played Windows session byte for
-  byte: capture hash, every frame and the footer cycle count.
+- **Determinism holds.** Three compilers (MSVC, gcc 14.2, Apple clang),
+  three operating systems (Windows, Debian, macOS), two optimisation levels
+  (`-O2`, `-O1` + ubsan). The golden vectors reproduce human-played sessions
+  byte for byte: capture hash, every frame and the footer cycle count.
 - **The score holds across platforms.** Two complete Party Land games
   recorded on Windows replay under WSL/Debian to the same score, and the
   suite pins both: `deluxe-table1-partyon-295s` at 20,652,570, and the
@@ -103,6 +103,7 @@ built (next steps, item 7).
 | Claim | Status |
 | --- | --- |
 | MSVC and gcc 14.2 agree byte-for-byte | **Verified**, on all three vectors |
+| macOS agrees byte-for-byte | **Verified** on Intel only (2026-09-25): the user's MacBook Pro, macOS 15.7.3 x86_64, Apple clang from the Command Line Tools, SDL2.framework from SDL's .dmg, a clone at `9458060`. `run.sh`: all five vectors matched, wav, footer, frames, score, verdict (the three ranked ones under `-strict`) and balls. Apple Silicon is built by CI (`macos-latest`) but not run: a new architecture, not measured. The build: `make` and `make gui` (no launcher on macOS; the Makefile sets `NOGTK=1` there). Homebrew is Tier 3 on Intel since 7.0, so the Makefile finds `SDL2.framework` in `~/Library/Frameworks` first. The wav hash is taken upstream of the EQ (`plat_audio_push()`), so the host libm's `powf`/`cosf` in the shelving filters never reach a verdict |
 | Two platforms agree on a **score** | **Verified**, on two vectors. `deluxe-table1-ranked-644s`: recorded on Windows/MSVC, replayed under WSL/Debian gcc, 33,415,380 at 3,866,538,359 cycles, same capture hash. `deluxe-table1-partyon-295s`: recorded on Windows/MSVC, replayed on Debian/gcc 14.2, same capture hash, all 15 frames, same 1,773,389,028 cycles, same 20,652,570. This is the claim the whole service rests on |
 | A recording **made on Linux** verifies on both | **Verified, 2026-09-24, one game.** Recorded with the SDL2 build under WSLg, `-ranked`, Party Land, 422.5 s, 478 events, 27,531,690 `rankable`. The host fell behind (`fell_behind=26`, 6.8 s over 429 s of wall time) and the sound was poor, which the guest never sees. `-strict -unthrottle -verify` came back `verified` with the same cycles, wav hash and score from `pfemu-headless` (gcc, WSL) and from `pfemu.exe` (MSVC). Pinned as the golden vector `deluxe-table1-linux-ranked-422s`, the first recorded on Linux. A second, from the **Ubuntu desktop** (2026-09-24, launched from the GTK launcher): Party Land, 614.0 s, 605 events, 39,282,110 `rankable`, four launches. It reproduces the footer and wav hash under `pfemu-headless` and is pinned as `deluxe-table1-ubuntu-ranked-614s` |
 | The suite catches a wrong score **and a wrong eligibility verdict** | **Verified**, on two vectors. The attempt lines pin `20652570 ... attract yes` and `33415380 ... attract yes`, and `run.sh` runs the verdict replay of a ranked vector under `-strict`. `run.sh` fails the vector if a replay disagrees, or if the ball-counter watchdog fires |
