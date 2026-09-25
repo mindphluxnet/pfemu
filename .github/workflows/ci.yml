@@ -124,6 +124,18 @@ jobs:
             echo "pfemu.app still looks for SDL on this runner"; exit 1
           fi
           codesign --verify --strict --verbose=2 pfemu.app
+          mkdir pfemu-macos
+          ditto pfemu.app pfemu-macos/pfemu.app
+          cp res/mac/README.txt pfemu-macos/
+          ditto -c -k --keepParent pfemu-macos pfemu-macos.zip
+      # The zip the release job attaches, from every push, so a Mac can try
+      # the download itself, Gatekeeper included, before there is a release.
+      - uses: actions/upload-artifact@v4
+        if: matrix.sdl == 'framework'
+        with:
+          name: pfemu-macos
+          path: pfemu-macos.zip
+          retention-days: 14
       - name: Parser regression suite
         run: |
           make fuzz

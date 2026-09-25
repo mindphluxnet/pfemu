@@ -103,8 +103,8 @@ built (next steps, item 7).
 | Claim | Status |
 | --- | --- |
 | MSVC and gcc 14.2 agree byte-for-byte | **Verified**, on all three vectors |
-| macOS agrees byte-for-byte | **Verified** on Intel only (2026-09-25): the user's MacBook Pro, macOS 15.7.3 x86_64, Apple clang from the Command Line Tools, SDL2.framework from SDL's .dmg, a clone at `9458060`. `run.sh`: all five vectors matched, wav, footer, frames, score, verdict (the three ranked ones under `-strict`) and balls. Apple Silicon is built by CI (`macos-latest`) but not run: a new architecture, not measured. The build: `make` and `make gui` (no launcher on macOS; the Makefile sets `NOGTK=1` there). Homebrew is Tier 3 on Intel since 7.0, so the Makefile finds `SDL2.framework` in `~/Library/Frameworks` first. The wav hash is taken upstream of the EQ (`plat_audio_push()`), so the host libm's `powf`/`cosf` in the shelving filters never reach a verdict |
-| The macOS game window plays | **Verified** by the user on the same MacBook (2026-09-25), `make gui` at `116a296`: sound fine, play fine, Option+Enter and Ctrl+Cmd+F toggle fullscreen correctly, the Cmd hotkeys work (Q, P, S, L, 0, E; README, Controls). Metal tore while scrolling, in a window and fullscreen, even with `SDL_RENDER_VSYNC=1`; OpenGL does not and the ball does not flicker, so `plat_early_init()` asks for OpenGL on macOS. The user found OpenGL "maybe not quite as smooth, but playable": not measured. The green window button and a Mac launcher are open: the user wants a native launcher (AppKit proposed, not started) |
+| macOS agrees byte-for-byte | **Verified** on Intel only (2026-09-25): the user's MacBook Pro, macOS 15.7.3 x86_64, Apple clang from the Command Line Tools, SDL2.framework from SDL's .dmg, a clone at `9458060`. `run.sh`: all five vectors matched, wav, footer, frames, score, verdict (the three ranked ones under `-strict`) and balls. Apple Silicon is built by CI (`macos-latest`) but not run: a new architecture, not measured. The build: `make` and `make gui` (at the time without a launcher; item 9 has the one since). Homebrew is Tier 3 on Intel since 7.0, so the Makefile finds `SDL2.framework` in `~/Library/Frameworks` first. The wav hash is taken upstream of the EQ (`plat_audio_push()`), so the host libm's `powf`/`cosf` in the shelving filters never reach a verdict |
+| The macOS game window plays | **Verified** by the user on the same MacBook (2026-09-25), `make gui` at `116a296`: sound fine, play fine, Option+Enter and Ctrl+Cmd+F toggle fullscreen correctly, the Cmd hotkeys work (Q, P, S, L, 0, E; README, Controls). Metal tore while scrolling, in a window and fullscreen, even with `SDL_RENDER_VSYNC=1`; OpenGL does not and the ball does not flicker, so `plat_early_init()` asks for OpenGL on macOS. The user found OpenGL "maybe not quite as smooth, but playable": not measured. The green window button is untried; the Mac launcher is item 9 |
 | Two platforms agree on a **score** | **Verified**, on two vectors. `deluxe-table1-ranked-644s`: recorded on Windows/MSVC, replayed under WSL/Debian gcc, 33,415,380 at 3,866,538,359 cycles, same capture hash. `deluxe-table1-partyon-295s`: recorded on Windows/MSVC, replayed on Debian/gcc 14.2, same capture hash, all 15 frames, same 1,773,389,028 cycles, same 20,652,570. This is the claim the whole service rests on |
 | A recording **made on Linux** verifies on both | **Verified, 2026-09-24, one game.** Recorded with the SDL2 build under WSLg, `-ranked`, Party Land, 422.5 s, 478 events, 27,531,690 `rankable`. The host fell behind (`fell_behind=26`, 6.8 s over 429 s of wall time) and the sound was poor, which the guest never sees. `-strict -unthrottle -verify` came back `verified` with the same cycles, wav hash and score from `pfemu-headless` (gcc, WSL) and from `pfemu.exe` (MSVC). Pinned as the golden vector `deluxe-table1-linux-ranked-422s`, the first recorded on Linux. A second, from the **Ubuntu desktop** (2026-09-24, launched from the GTK launcher): Party Land, 614.0 s, 605 events, 39,282,110 `rankable`, four launches. It reproduces the footer and wav hash under `pfemu-headless` and is pinned as `deluxe-table1-ubuntu-ranked-614s` |
 | The suite catches a wrong score **and a wrong eligibility verdict** | **Verified**, on two vectors. The attempt lines pin `20652570 ... attract yes` and `33415380 ... attract yes`, and `run.sh` runs the verdict replay of a ranked vector under `-strict`. `run.sh` fails the vector if a replay disagrees, or if the ball-counter watchdog fires |
@@ -347,6 +347,38 @@ built (next steps, item 7).
    `b453219` keeps them, moves the jump marks by them and says "A pause
    left out" under the player. The validator cuts only once its
    `PFEMU_REF` is `33d40f6` or later.
+
+9. **The macOS build: a launcher of its own and `pfemu.app` (started
+   2026-09-25).** The user's conditions: no fees and no Xcode. So the
+   launcher is AppKit in plain Objective-C (`src/launch_mac.m`), built by
+   the Command Line Tools' clang with no project, nib or storyboard, on the
+   rules in `launchcore.c`, in two steps like the GTK one. **Step 1, built
+   by CI on Intel and Apple Silicon at `7e57989`, not yet tried by hand:**
+   the Game group with Show Folder, Sound, Audio enhancement, Game options,
+   Extras, Session (Play / Record / Replay, Ranked, a File field whose
+   button picks a target or a recording with the system's panels), Details,
+   the GOG offer, the game as a child process, Quit asking while a game
+   runs. **Step 2, open:** the Leaderboard group, the login, Submissions
+   and the Replays window. `online.c` already links there: libcurl is the
+   system's, and the token is a generic password in the login Keychain
+   (service `org.pfemu.LeaderboardLogin`, the server as account). Ad-hoc
+   signing means the Keychain asks once after every update whether the new
+   pfemu may read it; not seen yet. `make app` (`res/mac/build-app.sh`)
+   builds `pfemu.app`: x86_64 and arm64 lipo'd, macOS 11 and newer,
+   `SDL2.framework` from SDL's .dmg inside, the build machine's rpath
+   removed, signed ad hoc; CI checks all of that and uploads the zip as
+   the `pfemu-macos` artifact, and the release job attaches
+   `pfemu-macos.zip`. Not notarized, which needs the paid programme: a
+   download opens only after Privacy & Security > Open Anyway, once
+   (`res/mac/README.txt`). **Where the files go (the user's choice,
+   2026-09-25):** run from a bundle, pfemu works in
+   `~/Library/Application Support/pfemu` (`mac_app_home()` in `posix.c`,
+   used by `beside_exe()` and a `chdir()` in `plat_early_init()`), because
+   a signed bundle must not be written to and an unmoved download runs
+   from a read-only copy (App Translocation). Outside a bundle nothing
+   changed. To try next: the zip from the artifact on the user's MacBook
+   (Gatekeeper, Show Folder, a game copied in, Play, Record, Replay,
+   Details), then step 2.
 
 ## Running the gate
 

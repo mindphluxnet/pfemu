@@ -105,21 +105,34 @@ a text file, on both platforms.
 
 ### macOS
 
-pfemu builds on macOS with the same Makefile, and plays the same game:
-recordings made on Windows and Linux replay there byte for byte. There is no
-launcher yet, so `pfemu` starts like the `NOGTK=1` build above, including
-the Start at table and fullscreen saved in the installation's
-`PFEMU-STATE/pfemu.cfg`. To build it you need Apple's Command Line Tools
+pfemu runs on Intel and Apple Silicon Macs with macOS 11 or newer, and plays
+the same game: recordings made on Windows and Linux replay there byte for
+byte. Starting it opens the launcher, a native Mac window with the same
+groups as on Linux: installation, sound, audio enhancement, game options,
+trainer, fullscreen, Start at, and Play / Record / Replay. The Leaderboard
+group and the Replays window are not there yet.
+
+Releases after v1.7 carry `pfemu-macos.zip` with `pfemu.app` in it,
+built for both kinds of Mac and with SDL inside. pfemu is not registered
+with Apple, which costs a yearly fee, so macOS refuses to open it the first
+time. Open System Settings > Privacy & Security once, and click **Open
+Anyway** next to "pfemu was blocked". `pfemu.app` keeps the installations,
+`sessions/` and its settings in `~/Library/Application Support/pfemu`, which
+the Finder hides; the launcher's **Show Folder** opens it.
+
+To build it yourself you need Apple's Command Line Tools
 (`xcode-select --install`, not Xcode itself) and SDL2. Copy `SDL2.framework`
 from SDL's `SDL2-2.x.dmg` ([releases](https://github.com/libsdl-org/SDL/releases))
 into `~/Library/Frameworks`, where the Makefile finds it. Homebrew's
-`brew install sdl2` works too, but Homebrew no longer supports Intel Macs.
+`brew install sdl2` works for `make gui` too, but Homebrew no longer supports
+Intel Macs, and its SDL cannot go into `pfemu.app`.
 
 ```sh
-make gui
-./pfemu
+make gui      # ./pfemu, working in the folder it is started from
+make app      # pfemu.app, for both kinds of Mac, signed ad hoc
 ```
 
+`make gui NOMAC=1` builds it without the launcher, like `NOGTK=1` on Linux.
 The Mac keys are listed under [Controls](#controls). pfemu draws with
 OpenGL there, because SDL's default, Metal, tore while the table scrolled;
 `SDL_RENDER_DRIVER=metal ./pfemu` brings Metal back.
@@ -140,7 +153,7 @@ finds.
   of GOG's `game.gog` CD image into `GOG\`. The GOG installation is not
   changed. If you said No, delete `pfemu-gog.cfg` next to `pfemu.exe` to be
   asked again. On Linux the same offer finds GOG's own installer, Heroic and
-  Minigalaxy installs. For anything else, such as a Wine prefix, run
+  Minigalaxy installs, and on a Mac Heroic's. For anything else, such as a Wine prefix, run
   `pfemu -import path/to/game.gog GOG`.
 - **Deluxe CD-ROM:** copy the files yourself. The 1995 release installed in
   two halves. `PINBALL.EXE`, `SETSOUND.EXE`, and the
