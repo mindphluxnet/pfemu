@@ -270,9 +270,10 @@ static void enh_toggle(void){
  *   Cmd+P  screenshot (F11)     Cmd+S / Cmd+L  snapshot save / load (F6/F8)
  *   Cmd+0  mute (keypad *)      Cmd+E  enhancement bypass (keypad /)
  *   Cmd+1..4  F1..F4, Cmd+,  F5: game keys, sent to the game as those
- *
- * Ctrl+Cmd+F is SDL's "Toggle Full Screen" menu item, so it is not taken
- * here; Option+Enter is Alt+Enter as everywhere.
+ *   Ctrl+Cmd+F  fullscreen, the Mac's own key for it (Option+Enter is
+ *               Alt+Enter, as everywhere).  SDL's menu has the item, but
+ *               pressing it did nothing (macOS 15.7.3, SDL 2.32.10), so
+ *               it is done here, the same way as Alt+Enter.
  *
  * Nothing with Cmd held reaches the game, and neither does Cmd itself: it
  * used to arrive as the Windows key, which the game never knew.  A game key
@@ -283,10 +284,13 @@ static void enh_toggle(void){
 #define CMD_SWALLOWED 0xFFFFu
 static unsigned short cmd_made[SDL_NUM_SCANCODES];
 
-static void cmd_key_down(SDL_Scancode sc, int rep){
+static void cmd_key_down(SDL_Scancode sc, int rep, int ctrl){
     unsigned short game = 0;
     if(sc < 0 || sc >= SDL_NUM_SCANCODES) return;
     switch(sc){
+    case SDL_SCANCODE_F:
+        if(ctrl && !rep && !replay_is_replaying()) set_fullscreen(!fullscreen);
+        break;
     case SDL_SCANCODE_P:
         if(!rep && !replay_is_replaying()) screenshot_pending = 1;
         break;
@@ -328,7 +332,10 @@ static void key_down(const SDL_KeyboardEvent *e){
     int pc = pc_code(sc);
 #ifdef __APPLE__
     if(sc == SDL_SCANCODE_LGUI || sc == SDL_SCANCODE_RGUI) return;
-    if(e->keysym.mod & KMOD_GUI){ cmd_key_down(sc, rep); return; }
+    if(e->keysym.mod & KMOD_GUI){
+        cmd_key_down(sc, rep, (e->keysym.mod & KMOD_CTRL) != 0);
+        return;
+    }
 #endif
     /* Scroll Lock quits: F12 belongs to the game. */
     if(sc == SDL_SCANCODE_SCROLLLOCK){ running = 0; return; }
@@ -412,6 +419,16 @@ void plat_early_init(void){
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     /* Leave the compositor on: this is a windowed game first. */
     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+#ifdef __APPLE__
+    /* OpenGL, not Metal, SDL's first choice on a Mac.  Measured on an Intel
+     * MacBook Pro, macOS 15.7.3, SDL 2.32.10: Metal tore while the table
+     * scrolled, in a window and in fullscreen, and still did with
+     * SDL_RENDER_VSYNC=1; OpenGL showed no tearing, the ball did not
+     * flicker, and it played fine.  Presentation only - nothing here reaches
+     * the guest.  A hint, so SDL_RENDER_DRIVER=metal in the environment
+     * still wins. */
+    SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+#endif
     if(!getenv("SDL_VIDEODRIVER") && st && !strcmp(st, "wayland") &&
        getenv("WAYLAND_DISPLAY")){
         setenv("SDL_VIDEODRIVER", "wayland", 1);

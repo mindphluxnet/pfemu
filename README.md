@@ -120,7 +120,9 @@ make gui
 ./pfemu
 ```
 
-The Mac keys are listed under [Controls](#controls).
+The Mac keys are listed under [Controls](#controls). pfemu draws with
+OpenGL there, because SDL's default, Metal, tore while the table scrolled;
+`SDL_RENDER_DRIVER=metal ./pfemu` brings Metal back.
 
 ## Where to put the game files
 
