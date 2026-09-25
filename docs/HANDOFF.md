@@ -362,7 +362,13 @@ built (next steps, item 7).
    button picks a target or a recording with the system's panels), Details,
    the GOG offer, the game as a child process, Quit asking while a game
    runs (Replay then picked its file with the Open panel). **Step 2, built
-   by CI at `8667d4a`, not yet tried by hand:** the Leaderboard group, the
+   by CI at `8667d4a` (the login window opens since `4b55b25`: two
+   constraints were activated before their views shared a window, which
+   throws, and AppKit swallowed it), and tried by hand on the MacBook
+   (2026-09-25): the login stays across a restart with no Keychain
+   question, a ranked recording was submitted and followed to its result,
+   and Replays (double-click Replay, Move to Trash, the Leaderboard
+   column) and Submissions work (user). It has:** the Leaderboard group, the
    login window, Submissions (Copy, Open on the Website), and the Replays
    window (best games, the Leaderboard column matched by SHA-256, details,
    Submit, Move to Trash with the Delete key too, Replay, Other File...),
@@ -389,9 +395,10 @@ built (next steps, item 7).
    from a read-only copy (App Translocation). Outside a bundle nothing
    changed. Not tried yet: the downloaded zip and Gatekeeper's Open
    Anyway (the user cannot log in to GitHub on the MacBook, so artifacts
-   are out of reach there; the first release will show it). To try next:
-   step 2 by hand (login, a ranked recording submitted and followed to its
-   result, Replays, Move to Trash, a restart that keeps the login).
+   are out of reach there; the first release will show it), the Keychain
+   question after an update (a rebuild signs ad hoc anew, so one is
+   expected once; none came on a restart of the same build), and Apple
+   Silicon by hand. Next: a release, which attaches `pfemu-macos.zip`.
 
 ## Running the gate
 
