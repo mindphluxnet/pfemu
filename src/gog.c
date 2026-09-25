@@ -14,7 +14,7 @@
  * message box on Linux (src/host_sdl.c).  Both say the same thing, from
  * gog_offer_text().
  *
- * The Windows and Linux editions ship the same image, byte for byte
+ * The Windows, Linux and macOS editions ship the same image, byte for byte
  * (docs/RELEASES.md), so only the search differs:
  *
  *   Windows  the "path" value GOG's installer writes under
@@ -26,9 +26,17 @@
  *            Heroic records its installs in gog_store/installed.json.  Both
  *            layouts are tried in every candidate, because Heroic can just
  *            as well have installed the Windows edition under Wine.
- *   macOS    Heroic's installed.json under ~/Library/Application Support,
- *            which is where Heroic keeps its config there.  GOG Galaxy's
- *            own Mac install is not searched: its layout is not known yet.
+ *   macOS    GOG ships a .dmg with an app bundle ("Pinball Gold Fantasies.app")
+ *            that is dragged to /Applications.  It is known by
+ *            Contents/Resources/.goggame-1207664103.info, not by its name;
+ *            the image sits deep inside, in a Boxer bundle within a second
+ *            app (Contents/Resources/game/<name>.app/Contents/Resources/
+ *            <name>.boxer/C Fantasies.harddisk/game.gog), and is the same
+ *            file again.  /Applications and ~/Applications are searched, then
+ *            Heroic's installed.json under ~/Library/Application Support.
+ *            /Volumes (the .dmg still mounted) is not: USB drives are
+ *            mounted there too, and reading one makes macOS ask for
+ *            permission.
  */
 #include "compat.h"
 #include "pfemu.h"
@@ -60,8 +68,69 @@ int gog_find_image(char *out, size_t n){
 
 #define GOG_NAME "Pinball Fantasies Deluxe"
 
+#ifdef __APPLE__
+#include <dirent.h>
+
+/* game.gog anywhere below dir, depth levels deep at most.  Symlinks are not
+ * followed (Boxer's frameworks have them, and a loop must not hang the
+ * launcher). */
+static int gog_find_below(const char *dir, int depth, char *out, size_t n){
+    DIR *d;
+    struct dirent *e;
+    struct stat st;
+    char path[1024];
+    int found = 0;
+    if(depth < 0 || !(d = opendir(dir))) return 0;
+    while(!found && (e = readdir(d)) != NULL){
+        if(e->d_name[0] == '.') continue;
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        if(lstat(path, &st) != 0) continue;
+        if(S_ISREG(st.st_mode) && !strcmp(e->d_name, "game.gog")){
+            snprintf(out, n, "%s", path);
+            found = 1;
+        } else if(S_ISDIR(st.st_mode)){
+            found = gog_find_below(path, depth - 1, out, n);
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* The image in GOG's app bundle, when app is ours.  Depth 6 reaches
+ * game/<name>.app/Contents/Resources/<name>.boxer/C Fantasies.harddisk/. */
+static int gog_try_bundle(const char *app, char *out, size_t n){
+    char path[1024];
+    struct stat st;
+    snprintf(path, sizeof(path), "%s/Contents/Resources/.goggame-" GOG_GAME_ID ".info", app);
+    if(stat(path, &st) != 0) return 0;
+    snprintf(path, sizeof(path), "%s/Contents/Resources", app);
+    if(!gog_find_below(path, 6, out, n)) return 0;
+    fprintf(stderr, "[gog] found %s\n", out);
+    return 1;
+}
+
+/* Every *.app directly in dir. */
+static int gog_scan_apps(const char *dir, char *out, size_t n){
+    DIR *d;
+    struct dirent *e;
+    char app[1024];
+    size_t len;
+    int found = 0;
+    if(!(d = opendir(dir))) return 0;
+    while(!found && (e = readdir(d)) != NULL){
+        len = strlen(e->d_name);
+        if(len < 5 || strcmp(e->d_name + len - 4, ".app")) continue;
+        snprintf(app, sizeof(app), "%s/%s", dir, e->d_name);
+        found = gog_try_bundle(app, out, n);
+    }
+    closedir(d);
+    return found;
+}
+#endif
+
 /* The image in one candidate directory: data/game.gog is the Linux
- * edition's layout, game.gog the Windows one. */
+ * edition's layout, game.gog the Windows one.  On macOS the directory may
+ * also be GOG's app bundle, or hold it (Heroic's install_path). */
 static int gog_try_dir(const char *dir, char *out, size_t n){
     static const char *const rel[] = { "data/game.gog", "game.gog" };
     struct stat st;
@@ -74,6 +143,9 @@ static int gog_try_dir(const char *dir, char *out, size_t n){
             return 1;
         }
     }
+#ifdef __APPLE__
+    if(gog_try_bundle(dir, out, n) || gog_scan_apps(dir, out, n)) return 1;
+#endif
     return 0;
 }
 
@@ -140,6 +212,14 @@ int gog_find_image(char *out, size_t n){
     const char *home = getenv("HOME");
     const char *xdg = getenv("XDG_CONFIG_HOME");
     char path[1024];
+#ifdef __APPLE__
+    /* GOG's .dmg, dragged to Applications (GOG Galaxy installs there too). */
+    if(gog_scan_apps("/Applications", out, n)) return 1;
+    if(home && *home){
+        snprintf(path, sizeof(path), "%s/Applications", home);
+        if(gog_scan_apps(path, out, n)) return 1;
+    }
+#endif
     if(xdg && *xdg){
         snprintf(path, sizeof(path), "%s/heroic/gog_store/installed.json", xdg);
         if(gog_heroic(path, out, n)) return 1;

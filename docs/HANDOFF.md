@@ -401,6 +401,13 @@ built (next steps, item 7).
    question after an update (a rebuild signs ad hoc anew, so one is
    expected once; none came on a restart of the same build), and Apple
    Silicon by hand. Next: a release, which attaches `pfemu-macos.zip`.
+   **The GOG offer on the Mac (2026-09-25):** GOG's Mac edition is a
+   `.dmg` whose `Pinball Gold Fantasies.app` is dragged to Applications;
+   it holds the same `game.gog` in a Boxer bundle (RELEASES.md, "The macOS
+   edition", from the user's listing). `src/gog.c` now finds it in
+   `/Applications` and `~/Applications` by its `.goggame-1207664103.info`.
+   Tested under WSL on a copy of the layout; not yet by the launcher on the
+   MacBook.
 
 ## Running the gate
 

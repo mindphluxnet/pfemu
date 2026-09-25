@@ -264,6 +264,35 @@ installer's own layout was checked against a real file. The Heroic and
 Minigalaxy paths are from their defaults and have not been checked against
 an installation.
 
+### The macOS edition
+
+Examined 2026-09-25 on the user's MacBook, after the `.dmg` was opened and
+its app dragged to `/Applications`. GOG ships no installer on the Mac: the
+`.dmg` holds `Pinball Gold Fantasies.app` (that name, not "Deluxe"), bundle
+identifier `com.gog.1207664103`, the same product id as on Windows.
+
+- **`game.gog` is the same image again**: 8,805,888 bytes, SHA-256
+  `7c31793b5fa2dce2a3145731152b4532770be51d1a91693818cfca6a61ae63c5`,
+  file dates 2014-11-28.
+- The outer app is GOG's wrapper (`Contents/MacOS/GOGLauncher`,
+  `script.sh`, `script_alt.sh`, `Contents/Resources/.goggame-1207664103.info`,
+  a Rebellion EULA). The game is a second app inside it, a Boxer bundle:
+  `Contents/Resources/game/Pinball Gold Fantasies.app/Contents/Resources/Pinball Gold Fantasies.boxer/C Fantasies.harddisk/`
+  holds `game.gog` and `game.inst` (338 bytes), next to Boxer's
+  `DOSBox Preferences.conf`, a `DummyCD.iso` (51,200 bytes) and Boxer's
+  stock `Configurations/*.conf` for other games.
+
+The macOS build (`src/gog.c`) looks at every `*.app` directly in
+`/Applications` and `~/Applications`, takes the one that has
+`Contents/Resources/.goggame-1207664103.info` (so neither the name nor
+another GOG DOS game's `game.gog` matters), and searches its
+`Contents/Resources` for `game.gog`, six levels deep, without following
+symlinks. A Heroic `install_path` gets the same treatment. `/Volumes` is
+not searched, so a `.dmg` that is only mounted is not found: USB drives are
+mounted there too, and reading one makes macOS ask for permission. The layout was checked
+against the listing from the MacBook and a copy of it under WSL, not yet by
+the launcher on the Mac.
+
 The disc also holds the menu (`PFD.EXE`) and Pinball Mania. Our `deluxe`
 collection has neither, so this is the first copy of them we have. pfemu does
 not run either one.
