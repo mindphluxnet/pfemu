@@ -68,3 +68,38 @@ jobs:
       - run: gh release upload "${{ github.ref_name }}" pfemu-linux-x86_64.tar.gz --repo "${{ github.repository }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # pfemu.app (make app, res/mac/build-app.sh): Intel and Apple Silicon in
+  # one program, SDL2.framework inside, signed ad hoc, zipped with its
+  # README by ditto, which keeps the framework's symlinks.  Onto the release
+  # the Windows job created; the Mac runner has gh itself.
+  macos:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: SDL2.framework from SDL's release .dmg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download release-2.32.10 -R libsdl-org/SDL -p 'SDL2-2.32.10.dmg'
+          hdiutil attach -nobrowse -mountpoint /tmp/sdl2 SDL2-2.32.10.dmg
+          mkdir -p ~/Library/Frameworks
+          cp -R /tmp/sdl2/SDL2.framework ~/Library/Frameworks/
+          hdiutil detach /tmp/sdl2
+      - name: pfemu.app
+        env:
+          PFEMU_VERSION: ${{ github.ref_name }}
+        run: |
+          export PFEMU_VERSION="${PFEMU_VERSION#v}"
+          make app
+      - name: Package
+        run: |
+          d=pfemu-macos
+          mkdir "$d"
+          ditto pfemu.app "$d/pfemu.app"
+          cp res/mac/README.txt "$d/"
+          ditto -c -k --keepParent "$d" "$d.zip"
+      - run: gh release upload "${{ github.ref_name }}" pfemu-macos.zip --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

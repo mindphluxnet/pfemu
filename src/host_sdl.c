@@ -428,6 +428,12 @@ void plat_early_init(void){
      * the guest.  A hint, so SDL_RENDER_DRIVER=metal in the environment
      * still wins. */
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+    /* pfemu.app starts in "/"; its folder is in Application Support
+     * (mac_app_home(), src/posix.c).  Before the arguments are read, so a
+     * game the launcher starts sees the same folder it does. */
+    { const char *home = mac_app_home();
+      if(home && chdir(home) != 0)
+          fprintf(stderr, "[pfemu] cannot enter %s: %s\n", home, strerror(errno)); }
 #endif
     if(!getenv("SDL_VIDEODRIVER") && st && !strcmp(st, "wayland") &&
        getenv("WAYLAND_DISPLAY")){
@@ -879,10 +885,11 @@ UINT waveOutClose(HWAVEOUT h){
     return 0;
 }
 
-#ifndef PFEMU_GTK
+#if !defined(PFEMU_GTK) && !defined(PFEMU_MAC)
 /* ------------------------------------------------------------- starter --
- * Only in a build without GTK (make gui NOGTK=1); the launcher is
- * src/launch_gtk.c.  Without it, what the launcher does before
+ * Only in a build without a launcher (make gui NOGTK=1, or NOMAC=1 on a
+ * Mac); the launchers are src/launch_gtk.c and src/launch_mac.m.  Without
+ * one, what the launcher does before
  * a game besides showing a dialog is done here, without one, and then this
  * process becomes the game, the way the launcher's child does:
  *
@@ -1001,7 +1008,7 @@ int run_launcher(void){
     fprintf(stderr, "[pfemu] cannot start %s: %s\n", exe, strerror(errno));
     return 1;
 }
-#endif /* !PFEMU_GTK */
+#endif /* !PFEMU_GTK && !PFEMU_MAC */
 
 int main(int argc, char **argv){
     plat_early_init();

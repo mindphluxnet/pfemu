@@ -10,7 +10,8 @@
  * On Windows, WinHTTP rather than a library: it ships with Windows, does
  * TLS with the system's certificate store and proxy settings, and the whole
  * client is a handful of calls; the token is kept with DPAPI.  On Linux,
- * libcurl and the desktop's keyring (libsecret) do the same two jobs.  The
+ * libcurl and the desktop's keyring (libsecret) do the same two jobs, and on
+ * a Mac the system's own libcurl and the Keychain.  The
  * configuration, the JSON and the texts are shared.  The launchers run the
  * requests on worker threads, so a slow or absent server never freezes a
  * window.
@@ -22,7 +23,11 @@
 #include <wincrypt.h>
 #else
 #include <curl/curl.h>
+#ifdef __APPLE__
+#include <Security/Security.h>
+#else
 #include <libsecret/secret.h>
+#endif
 #include "compat.h"
 #endif
 #include <stdio.h>
@@ -41,17 +46,9 @@
  * submission list; a megabyte is thousands of them. */
 #define RESP_MAX (1u << 20)
 
+/* beside_exe() (src/cfg.c) knows where that is, pfemu.app included. */
 static void cfg_path(char *out, size_t n){
-    char exe[1024];
-    DWORD len = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
-    char *sep, *sep2;
-    if(len == 0 || len >= sizeof(exe)){ snprintf(out, n, "%s", ONLINE_FILE); return; }
-    sep = strrchr(exe, '\\');
-    sep2 = strrchr(exe, '/');
-    if(sep2 && (!sep || sep2 > sep)) sep = sep2;
-    if(!sep){ snprintf(out, n, "%s", ONLINE_FILE); return; }
-    sep[1] = 0;
-    snprintf(out, n, "%s%s", exe, ONLINE_FILE);
+    beside_exe(out, n, ONLINE_FILE);
 }
 
 static int hexval(int c){
@@ -286,15 +283,97 @@ done:
 
 /* ------------------------------------------------------------ token store
  *
- * The desktop's keyring (the Secret Service: GNOME Keyring, KWallet), which
- * is what DPAPI is on Windows: the token is tied to this login, and it is
- * not in the pfemu folder, so a copied or shared folder carries no usable
- * login.  One item per server, holding "username\ntoken".  Without a
- * keyring the login lasts until the launcher closes.
+ * The desktop's keyring (the Secret Service: GNOME Keyring, KWallet), or a
+ * Mac's Keychain, which is what DPAPI is on Windows: the token is tied to
+ * this login, and it is not in the pfemu folder, so a copied or shared
+ * folder carries no usable login.  One item per server, holding
+ * "username\ntoken".  Without a keyring the login lasts until the launcher
+ * closes.
  *
  * pfemu-online.cfg keeps only server= and ranked= here.  A folder shared
  * with the Windows build (WSL) also holds that build's username= and
  * token= lines, which mean nothing here and are kept as they are. */
+
+/* The saved "username\ntoken" into c, when it fits. */
+static void token_parse(OnlineCfg *c, const char *pw){
+    const char *nl = strchr(pw, '\n');
+    if(nl && (size_t)(nl - pw) < sizeof(c->username) && strlen(nl + 1) < sizeof(c->token)){
+        snprintf(c->username, sizeof(c->username), "%.*s", (int)(nl - pw), pw);
+        snprintf(c->token, sizeof(c->token), "%s", nl + 1);
+    }
+}
+
+#ifdef __APPLE__
+/* A generic password in the login Keychain: service
+ * org.pfemu.LeaderboardLogin, the server as its account.  pfemu.app is
+ * signed ad hoc, not by a developer, so the Keychain knows it by its code
+ * alone: after an update it asks once whether the new pfemu may read the
+ * login ("Always Allow" ends that). */
+static CFMutableDictionaryRef kc_query(const char *server){
+    CFMutableDictionaryRef q = CFDictionaryCreateMutable(NULL, 0,
+                                   &kCFTypeDictionaryKeyCallBacks,
+                                   &kCFTypeDictionaryValueCallBacks);
+    CFStringRef acct = CFStringCreateWithCString(NULL, server, kCFStringEncodingUTF8);
+    CFDictionarySetValue(q, kSecClass, kSecClassGenericPassword);
+    CFDictionarySetValue(q, kSecAttrService, CFSTR("org.pfemu.LeaderboardLogin"));
+    if(acct){
+        CFDictionarySetValue(q, kSecAttrAccount, acct);
+        CFRelease(acct);
+    }
+    return q;
+}
+
+static void token_lookup(OnlineCfg *c){
+    CFMutableDictionaryRef q = kc_query(c->server);
+    CFTypeRef data = NULL;
+    OSStatus s;
+    CFDictionarySetValue(q, kSecReturnData, kCFBooleanTrue);
+    CFDictionarySetValue(q, kSecMatchLimit, kSecMatchLimitOne);
+    s = SecItemCopyMatching(q, &data);
+    CFRelease(q);
+    if(s != errSecSuccess && s != errSecItemNotFound)
+        fprintf(stderr, "[online] no saved login: Keychain error %d\n", (int)s);
+    if(s == errSecSuccess && data && CFGetTypeID(data) == CFDataGetTypeID()){
+        char pw[240];
+        CFIndex len = CFDataGetLength((CFDataRef)data);
+        if(len > 0 && (size_t)len < sizeof(pw)){
+            memcpy(pw, CFDataGetBytePtr((CFDataRef)data), (size_t)len);
+            pw[len] = 0;
+            token_parse(c, pw);
+            secure_wipe(pw, sizeof(pw));
+        }
+    }
+    if(data) CFRelease(data);
+}
+
+/* Replace the item, or remove it when c has no login.  1 on success. */
+static int keyring_put(const OnlineCfg *c){
+    CFMutableDictionaryRef q = kc_query(c->server);
+    OSStatus s = SecItemDelete(q);
+    int ok = (s == errSecSuccess || s == errSecItemNotFound);
+    if(ok && c->token[0]){
+        char label[300], secret[240];
+        CFDataRef d;
+        snprintf(label, sizeof(label), "pfemu leaderboard login (%s)", c->server);
+        snprintf(secret, sizeof(secret), "%s\n%s", c->username, c->token);
+        d = CFDataCreate(NULL, (const UInt8*)secret, (CFIndex)strlen(secret));
+        secure_wipe(secret, sizeof(secret));
+        { CFStringRef l = CFStringCreateWithCString(NULL, label, kCFStringEncodingUTF8);
+          if(l){ CFDictionarySetValue(q, kSecAttrLabel, l); CFRelease(l); } }
+        if(d){
+            CFDictionarySetValue(q, kSecValueData, d);
+            CFRelease(d);
+            s = SecItemAdd(q, NULL);
+        } else s = errSecAllocate;
+        ok = s == errSecSuccess;
+    }
+    if(!ok) fprintf(stderr, "[online] Keychain error %d\n", (int)s);
+    CFRelease(q);
+    return ok;
+}
+
+#else /* the Secret Service */
+
 static const SecretSchema *token_schema(void){
     static const SecretSchema s = {
         .name = "org.pfemu.LeaderboardLogin",
@@ -308,34 +387,19 @@ static void token_lookup(OnlineCfg *c){
     GError *err = NULL;
     gchar *pw = secret_password_lookup_sync(token_schema(), NULL, &err,
                                             "server", c->server, NULL);
-    const char *nl;
     if(err){
         fprintf(stderr, "[online] no keyring, so no saved login: %s\n", err->message);
         g_error_free(err);
     }
     if(!pw) return;
-    nl = strchr(pw, '\n');
-    if(nl && (size_t)(nl - pw) < sizeof(c->username) && strlen(nl + 1) < sizeof(c->token)){
-        snprintf(c->username, sizeof(c->username), "%.*s", (int)(nl - pw), pw);
-        snprintf(c->token, sizeof(c->token), "%s", nl + 1);
-    }
+    token_parse(c, pw);
     secret_password_free(pw);
 }
 
-/* 1 when the keyring holds what c says (the login, or no login). */
-static int token_store(const OnlineCfg *c){
-    /* What the keyring was last given, so that saving the Ranked checkbox
-     * does not write the same login again. */
-    static char last[512];
-    static int last_ok;
-    char want[512];
+/* Replace the item, or remove it when c has no login.  1 on success. */
+static int keyring_put(const OnlineCfg *c){
     GError *err = NULL;
     int ok;
-    snprintf(want, sizeof(want), "%s\n%s\n%s", c->server, c->username, c->token);
-    if(!strcmp(want, last)){
-        secure_wipe(want, sizeof(want));
-        return last_ok;
-    }
     if(c->token[0]){
         char label[300], secret[240];
         snprintf(label, sizeof(label), "pfemu leaderboard login (%s)", c->server);
@@ -353,6 +417,24 @@ static int token_store(const OnlineCfg *c){
         fprintf(stderr, "[online] keyring: %s\n", err->message);
         g_error_free(err);
     }
+    return ok;
+}
+#endif /* __APPLE__ */
+
+/* 1 when the keyring holds what c says (the login, or no login). */
+static int token_store(const OnlineCfg *c){
+    /* What the keyring was last given, so that saving the Ranked checkbox
+     * does not write the same login again. */
+    static char last[512];
+    static int last_ok;
+    char want[512];
+    int ok;
+    snprintf(want, sizeof(want), "%s\n%s\n%s", c->server, c->username, c->token);
+    if(!strcmp(want, last)){
+        secure_wipe(want, sizeof(want));
+        return last_ok;
+    }
+    ok = keyring_put(c);
     secure_wipe(last, sizeof(last));
     memcpy(last, want, sizeof(last));
     secure_wipe(want, sizeof(want));
@@ -419,7 +501,11 @@ int online_save(const OnlineCfg *c){
     if(out){
         in = fopen(path, "r");
         if(!in) fprintf(out, "# pfemu launcher: leaderboard account and settings.\n"
+#ifdef __APPLE__
+                             "# On a Mac the login is in the Keychain.\n");
+#else
                              "# On Linux the login is in the desktop's keyring.\n");
+#endif
         while(in && fgets(line, sizeof(line), in)){
             if(line_is(line, "server")){
                 if(!have_server) fprintf(out, "server=%s\n", c->server);

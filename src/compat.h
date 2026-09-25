@@ -93,6 +93,11 @@ DWORD  GetCurrentProcessId(void);
 /* The running program's path, for the files kept beside it (beside_exe(),
  * src/cfg.c).  Only a NULL module is supported. */
 DWORD  GetModuleFileNameA(void *module, char *out, DWORD n);
+#ifdef __APPLE__
+/* ~/Library/Application Support/pfemu when this program is the one inside
+ * pfemu.app, created on first use; NULL otherwise (src/posix.c). */
+const char *mac_app_home(void);
+#endif
 
 /* Resolve the last component of a host path against the directory, ignoring
  * case, when the exact name does not exist.  Rewrites in place; a

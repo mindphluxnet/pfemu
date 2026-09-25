@@ -411,10 +411,20 @@ void write_sound_cfg(const char *dir, int on, int quality){
  * found again on launch (or vice versa).  The exe's own directory never
  * moves under a running process.  The separator is the one the path already
  * uses, so this is right on both hosts (src/posix.c answers
- * GetModuleFileNameA from /proc/self/exe, or from dyld on macOS). */
+ * GetModuleFileNameA from /proc/self/exe, or from dyld on macOS).
+ * pfemu.app is the exception: nothing may be written inside the bundle, so
+ * these files go to its folder in Application Support (mac_app_home()). */
 void beside_exe(char *out, size_t n, const char *name){
     char exe[1024];
-    DWORD len = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
+    DWORD len;
+#ifdef __APPLE__
+    const char *home = mac_app_home();
+    if(home){
+        snprintf(out, n, "%s/%s", home, name);
+        return;
+    }
+#endif
+    len = GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe));
     if(len > 0 && len < sizeof(exe)){
         char *sep = strrchr(exe, '\\');
         char *sep2 = strrchr(exe, '/');

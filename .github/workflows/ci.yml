@@ -68,11 +68,10 @@ jobs:
       - name: Instrumented build compiles
         run: make ubsan
 
-  # macOS, with Apple's clang and Homebrew's SDL2, and no launcher (the
-  # Makefile sets NOGTK=1 there: libsecret has no Secret Service on a Mac).
-  # Intel first, because that is the Mac the golden suite runs on;
-  # GitHub keeps macos-15-intel until August 2027, and it is the last
-  # x86_64 image it offers.  Apple Silicon beside it, since that is every
+  # macOS, with Apple's clang, and the AppKit launcher (src/launch_mac.m)
+  # in place of GTK's.  Intel first, because that is the Mac the golden
+  # suite runs on; GitHub keeps macos-15-intel until August 2027, and it is
+  # the last x86_64 image it offers.  Apple Silicon beside it, since that is every
   # Mac sold now, and a new architecture for the determinism claims.
   # Compiles and the stub suites only, as above: no game files here.
   #
@@ -106,10 +105,25 @@ jobs:
           mkdir -p ~/Library/Frameworks
           cp -R /tmp/sdl2/SDL2.framework ~/Library/Frameworks/
           hdiutil detach /tmp/sdl2
-      - name: Build the SDL2 game window
+      - name: Build the SDL2 game window and the AppKit launcher
         run: |
           make gui
-          otool -L pfemu | grep -i sdl
+          otool -L pfemu | grep -i -e sdl -e cocoa
+      # pfemu.app as the release builds it: both architectures, SDL inside,
+      # signed ad hoc (res/mac/build-app.sh), from the framework SDL ships,
+      # which is the only one that holds both.  The bundle's program must
+      # find SDL in the bundle and look nowhere on this runner.
+      - name: pfemu.app
+        if: matrix.sdl == 'framework'
+        run: |
+          make app
+          lipo -archs pfemu.app/Contents/MacOS/pfemu
+          otool -L pfemu.app/Contents/MacOS/pfemu | grep -i sdl
+          otool -l pfemu.app/Contents/MacOS/pfemu | grep -A2 LC_RPATH
+          if otool -l pfemu.app/Contents/MacOS/pfemu | grep -A2 LC_RPATH | grep "$HOME"; then
+            echo "pfemu.app still looks for SDL on this runner"; exit 1
+          fi
+          codesign --verify --strict --verbose=2 pfemu.app
       - name: Parser regression suite
         run: |
           make fuzz

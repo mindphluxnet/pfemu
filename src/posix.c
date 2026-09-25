@@ -30,6 +30,8 @@
 #include <limits.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>   /* _NSGetExecutablePath */
+#include <errno.h>
+#include <pwd.h>
 #endif
 
 /* --------------------------------------------------------------- glob --- */
@@ -290,6 +292,43 @@ DWORD GetModuleFileNameA(void *module, char *out, DWORD n){
     return (DWORD)len;
 #endif
 }
+
+#ifdef __APPLE__
+/* pfemu.app keeps nothing inside itself.  A bundle is sealed by its
+ * signature, and one that was downloaded and not yet moved in the Finder
+ * runs from a read-only copy (App Translocation), so "beside the program"
+ * is no place for the installations, sessions/ or pfemu-last.cfg.  When
+ * this program is the one inside a bundle they live in
+ * ~/Library/Application Support/pfemu instead: beside_exe() (src/cfg.c)
+ * names files there, and the SDL host starts there (plat_early_init()),
+ * which makes it the folder release_scan() looks in.  Outside a bundle -
+ * `make gui` in a source tree - nothing changes: the program works in the
+ * folder it is started from, as on Linux. */
+const char *mac_app_home(void){
+    static char home[PATH_MAX];
+    static int done;
+    char exe[PATH_MAX];
+    const char *h;
+    if(done) return home[0] ? home : NULL;
+    done = 1;
+    if(!GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe)) ||
+       !strstr(exe, ".app/Contents/MacOS/"))
+        return NULL;
+    h = getenv("HOME");
+    if(!h || !h[0]){
+        struct passwd *pw = getpwuid(getuid());
+        h = pw ? pw->pw_dir : NULL;
+    }
+    if(!h || strlen(h) + 40 >= sizeof(home)) return NULL;
+    snprintf(home, sizeof(home), "%s/Library/Application Support/pfemu", h);
+    if(mkdir(home, 0755) != 0 && errno != EEXIST){
+        fprintf(stderr, "[pfemu] cannot create %s: %s\n", home, strerror(errno));
+        home[0] = 0;
+        return NULL;
+    }
+    return home;
+}
+#endif
 
 /* ---------------------------------------------------------------- time --- */
 /* Host wall clock.  Never guest-visible: the only host-clock reads the guest

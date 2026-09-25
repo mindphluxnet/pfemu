@@ -1,7 +1,8 @@
 /* online.h - the launchers' client for pfemu-web (src/online.c).
  *
  * Both launchers use it: WinHTTP and DPAPI on Windows, libcurl and the
- * desktop's keyring on Linux.  The contract is pfemu-web/docs/API.md;
+ * desktop's keyring on Linux, libcurl and the Keychain on a Mac.  The
+ * contract is pfemu-web/docs/API.md;
  * nothing here is part of the emulator, and nothing the emulator does
  * depends on it.
  */
@@ -15,7 +16,8 @@
 /* pfemu-online.cfg, next to the program.  On Windows the token is stored
  * in it encrypted with DPAPI, so the file is useless on another machine or
  * to another Windows account; everything else in it is plain text.  On
- * Linux the username and token are in the desktop's keyring instead, and
+ * Linux the username and token are in the desktop's keyring instead (on
+ * a Mac in the Keychain), and
  * the file holds only the server and Ranked. */
 typedef struct {
     char server[256];

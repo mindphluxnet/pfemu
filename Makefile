@@ -15,7 +15,8 @@
 # macOS builds the same way with the Command Line Tools
 # (xcode-select --install) and SDL2: SDL2.framework from SDL's release .dmg
 # in ~/Library/Frameworks, or Homebrew's (brew install sdl2).  `make gui`
-# there has no launcher, see PLATDEF below.
+# there builds the Mac's own launcher (src/launch_mac.m, AppKit) in place of
+# GTK's, and `make app` packs the result into pfemu.app.
 #
 # The flags are not preference.  docs/VERIFY.md's determinism section names
 # the first two as the things most likely to make this build disagree with the
@@ -38,6 +39,11 @@
 # Targets:
 #   make              the headless binary
 #   make gui          pfemu, the same emulator in an SDL2 window (see above)
+#   make app          macOS only: pfemu.app, for Intel and Apple Silicon in
+#                     one, with SDL2.framework inside and signed ad hoc
+#                     (res/mac/build-app.sh).  It builds each architecture
+#                     from clean, and leaves this Mac's own in src/ and
+#                     ./pfemu.
 #   make ubsan        pfemu-headless-ubsan, instrumented.  Drive it with
 #                     tests/golden/ubsan.sh, which keeps its logs.  The
 #                     first pass found 32 unaligned guest-RAM accesses in
@@ -69,10 +75,10 @@ PLATDEF := -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 
 # macOS.  Its headers take _POSIX_C_SOURCE literally and hide everything
 # newer, clock_gettime() and CLOCK_MONOTONIC included; _DARWIN_C_SOURCE
-# (glibc's _DEFAULT_SOURCE, more or less) brings them back.  The launcher
-# is off by default there: libsecret needs the Secret Service over D-Bus,
-# which a Mac does not have, so `make gui` is the NOGTK=1 build.  Pass
-# NOGTK= to try GTK anyway.
+# (glibc's _DEFAULT_SOURCE, more or less) brings them back.  The GTK
+# launcher is off by default there: libsecret needs the Secret Service over
+# D-Bus, which a Mac does not have.  The Mac has a launcher of its own
+# (MAC_LIBS below).
 UNAME_S := $(shell uname -s 2>/dev/null)
 ifeq ($(UNAME_S),Darwin)
 PLATDEF += -D_DARWIN_C_SOURCE
@@ -123,17 +129,19 @@ GUIOBJ     := $(COMMON:.c=.o) src/host_sdl.o
 # On macOS, SDL2.framework from SDL's own release .dmg, when it is in one of
 # the two places its ReadMe says to copy it.  Homebrew builds for Intel Macs
 # only from source since Homebrew 7.0, so the framework is the way there.
-# The framework's install name is @rpath/..., hence the rpath.  -I for our
-# <SDL.h>, -F for the framework's own headers, which include each other as
-# <SDL2/...>.  Found before pkg-config: an installed framework was put
-# there on purpose.
+# The framework's install name is @rpath/..., hence the rpaths: the copy
+# inside pfemu.app first (Contents/Frameworks), then this one, which `make
+# app` takes out of the bundle's program again.  -I for our <SDL.h>, -F for
+# the framework's own headers, which include each other as <SDL2/...>.
+# Found before pkg-config: an installed framework was put there on purpose.
 ifeq ($(UNAME_S),Darwin)
 SDL_FW := $(firstword $(wildcard $(HOME)/Library/Frameworks/SDL2.framework \
                                  /Library/Frameworks/SDL2.framework))
 ifneq ($(SDL_FW),)
 SDL_FWDIR  := $(patsubst %/,%,$(dir $(SDL_FW)))
 SDL_CFLAGS ?= -F$(SDL_FWDIR) -I$(SDL_FW)/Headers
-SDL_LIBS   ?= -F$(SDL_FWDIR) -framework SDL2 -Wl,-rpath,$(SDL_FWDIR)
+SDL_LIBS   ?= -F$(SDL_FWDIR) -framework SDL2 \
+              -Wl,-rpath,@executable_path/../Frameworks -Wl,-rpath,$(SDL_FWDIR)
 endif
 endif
 
@@ -163,15 +171,44 @@ src/online.o:     CFLAGS += $(NET_CFLAGS)
 src/online.o:     src/build.h
 endif
 
+# The Mac launcher is AppKit (src/launch_mac.m), which every Mac has, built
+# by the same clang: no Xcode.  Its leaderboard client is src/online.c on
+# the system's own libcurl and the Keychain.  `make gui NOMAC=1` leaves it
+# out, for the starter in src/host_sdl.c, as NOGTK=1 does on Linux.  The
+# Objective-C file gets flags of its own: -fobjc-arc lets the compiler do
+# the reference counting, gnu11 because AppKit's headers are not written for
+# strict C99, and no feature macros, which only hide parts of them.  The
+# emulator's flags do not matter to it - nothing there reaches the guest.
+ifeq ($(UNAME_S),Darwin)
+ifneq ($(NOGTK),)
+ifeq ($(NOMAC),)
+MAC_LIBS   ?= -framework Cocoa -framework UniformTypeIdentifiers \
+              -framework Security -lcurl
+GUIOBJ     += src/launch_mac.o src/launchcore.o src/online.o
+src/host_sdl.o:   CFLAGS += -DPFEMU_MAC
+src/launch_mac.o: src/build.h
+src/online.o:     src/build.h
+endif
+endif
+endif
+OBJCFLAGS ?= -O2 -std=gnu11 $(WARN) -fobjc-arc -MMD -MP
+
 gui: $(GUIBIN)
 
 $(GUIBIN): $(GUIOBJ)
-	$(CC) $(CFLAGS) -o $@ $(GUIOBJ) $(LDLIBS) $(SDL_LIBS) $(GTK_LIBS) $(NET_LIBS)
+	$(CC) $(CFLAGS) -o $@ $(GUIOBJ) $(LDLIBS) $(SDL_LIBS) $(GTK_LIBS) $(NET_LIBS) $(MAC_LIBS)
+
+# pfemu.app (res/mac/build-app.sh).
+app:
+	sh res/mac/build-app.sh
 
 src/host_sdl.o: CFLAGS += $(SDL_CFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+%.o: %.m
+	$(CC) $(OBJCFLAGS) -c -o $@ $<
 
 src/build.h: FORCE
 	@printf '#define PFEMU_BUILD "%s"\n' '$(BUILD_ID)' > $@.tmp
@@ -244,10 +281,13 @@ fuzz-clang:
 clean:
 	rm -f $(OBJ) $(DEP) $(BIN) $(BIN)-ubsan $(FUZZBIN) $(FUZZBIN)-libfuzzer $(VERBIN) src/build.h
 	rm -f src/host_sdl.o src/host_sdl.d src/launch_gtk.o src/launch_gtk.d \
-	      src/launchcore.o src/launchcore.d src/online.o src/online.d $(GUIBIN)
+	      src/launchcore.o src/launchcore.d src/online.o src/online.d $(GUIBIN) \
+	      src/launch_mac.o src/launch_mac.d
+	rm -rf pfemu.app
 
--include $(DEP) src/host_sdl.d src/launch_gtk.d src/launchcore.d src/online.d
+-include $(DEP) src/host_sdl.d src/launch_gtk.d src/launchcore.d src/online.d \
+         src/launch_mac.d
 
 FORCE:
 
-.PHONY: all gui clean ubsan fuzz fuzz-clang verify-test FORCE
+.PHONY: all gui app clean ubsan fuzz fuzz-clang verify-test FORCE
