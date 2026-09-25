@@ -109,8 +109,9 @@ pfemu runs on Intel and Apple Silicon Macs with macOS 11 or newer, and plays
 the same game: recordings made on Windows and Linux replay there byte for
 byte. Starting it opens the launcher, a native Mac window with the same
 groups as on Linux: installation, sound, audio enhancement, game options,
-trainer, fullscreen, Start at, and Play / Record / Replay. The Leaderboard
-group and the Replays window are not there yet.
+trainer, fullscreen, Start at, Play / Record / Replay with the Replays
+window, and the Leaderboard group for logging in and submitting. The login
+is kept in the Keychain.
 
 Releases after v1.7 carry `pfemu-macos.zip` with `pfemu.app` in it,
 built for both kinds of Mac and with SDL inside. pfemu is not registered

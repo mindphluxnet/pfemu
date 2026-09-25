@@ -356,13 +356,21 @@ built (next steps, item 7).
    by CI on Intel and Apple Silicon at `7e57989`, and tried by hand on the
    user's Intel MacBook (built there with `make app`, 2026-09-25): the
    window looks right, Record and Replay work, Details shows the right
-   report, Cmd+Q ends the game and the launcher comes back.** It has:
+   report, Cmd+Q ends the game and the launcher comes back.** Step 1 has:
    the Game group with Show Folder, Sound, Audio enhancement, Game options,
    Extras, Session (Play / Record / Replay, Ranked, a File field whose
    button picks a target or a recording with the system's panels), Details,
    the GOG offer, the game as a child process, Quit asking while a game
-   runs. **Step 2, open:** the Leaderboard group, the login, Submissions
-   and the Replays window. `online.c` already links there: libcurl is the
+   runs (Replay then picked its file with the Open panel). **Step 2, built
+   by CI at `8667d4a`, not yet tried by hand:** the Leaderboard group, the
+   login window, Submissions (Copy, Open on the Website), and the Replays
+   window (best games, the Leaderboard column matched by SHA-256, details,
+   Submit, Move to Trash with the Delete key too, Replay, Other File...),
+   which the File row's button opens again. Requests run on a GCD queue
+   and come back through `CFRunLoopPerformBlock()` in the common modes, and
+   the 10 s poll is an `NSTimer` in the common modes, so both reach a modal
+   window; a result that arrives in the background bounces the Dock icon.
+   `online.c` there: libcurl is the
    system's, and the token is a generic password in the login Keychain
    (service `org.pfemu.LeaderboardLogin`, the server as account). Ad-hoc
    signing means the Keychain asks once after every update whether the new
@@ -381,8 +389,9 @@ built (next steps, item 7).
    from a read-only copy (App Translocation). Outside a bundle nothing
    changed. Not tried yet: the downloaded zip and Gatekeeper's Open
    Anyway (the user cannot log in to GitHub on the MacBook, so artifacts
-   are out of reach there; the first release will show it), and the
-   Keychain.
+   are out of reach there; the first release will show it). To try next:
+   step 2 by hand (login, a ranked recording submitted and followed to its
+   result, Replays, Move to Trash, a restart that keeps the login).
 
 ## Running the gate
 

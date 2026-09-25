@@ -69,9 +69,14 @@ fullscreen and where the game starts, for each installation. They are kept
 in the installation's PFEMU-STATE/pfemu.cfg, a text file.
 
 Session: Play, Record (Ranked records what the leaderboard accepts) or
-Replay. Recordings go to the sessions folder; Open... in the launcher picks
-one to replay.
+Replay. Recordings go to the sessions folder; Replays... lists them, shows
+what each one holds, replays one, and moves the ones you delete to the
+Trash.
 
-The leaderboard (log in, submit) is not in the Mac launcher yet.
+Leaderboard: log in (or register) in the launcher, then Submit sends the
+last ranked recording, or the one picked in Replays. The launcher follows
+it until the server has verified it. The login is kept in your Keychain;
+after an update to pfemu, macOS may ask once whether pfemu may use it
+(Always Allow).
 
 Everything else: https://github.com/mindphluxnet/pfemu
