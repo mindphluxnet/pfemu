@@ -60,7 +60,7 @@ CPU cpu;
 double emu_time = 0.0;
 double emu_ips = 6000000.0;
 double emu_inv_ips = 1.0 / 6000000.0;
-int dos_no_patch = 0, dos_no_lzexe = 0;
+int dos_no_patch = 0;
 const uint8_t cfg_option_defaults[6] = { 0, 0, 0, 0, 0, 0 };
 
 double emu_now(void){ return emu_time; }

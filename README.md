@@ -12,12 +12,9 @@ game files, so you never have to identify your copy yourself:
 | Original floppy release | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
 | Deluxe CD-ROM (1995) | `PINBALL.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
 | Power Pack (1996) | `PF.EXE` | `INTRO.PRG`, `TABLE1-4.PRG` |
-| 5 Min Demo (1993) | `PFDEMO.EXE` | `DEMO.PRG`, `PLAND.PRG` |
 
 The intro, the table selector, all four tables, keyboard controls, and Sound
-Blaster music all work. The 1993 demo is a partial exception: it boots and
-plays music but stops at its title screen. The reason is documented in
-[Releases](docs/RELEASES.md).
+Blaster music all work.
 
 A built-in launcher takes care of game options, multiple installations, and
 fullscreen. pfemu also fixes a few bugs in the original game while it runs,
@@ -30,7 +27,7 @@ Roughly who did what:
 - **Claude Opus 5** (Anthropic): initial reverse engineering and the MVP
   emulator. Later, release detection by file hash, the mode-0 PIT counter fix
   that got the engine running at its real frame rate, the table-select palette
-  and ball-flicker fixes, volume and quality controls, 1993 demo support,
+  and ball-flicker fixes, volume and quality controls,
   savestates, direct-to-table, and replay verification hashes.
 - **Claude Sonnet 5** (Anthropic): Deluxe (CD-ROM) support, fullscreen, the
   first trainer hotkeys (infinite balls, ball control), game options in the
@@ -112,9 +109,8 @@ Put one installation's files directly in a folder. `GAME\` is the convention,
 and any other top-level folder works the same way. Do not nest them an extra
 level down: `GAME\FANTASY\INTRO.PRG` will not be found.
 
-Every folder that holds an `INTRO.PRG` (or a `DEMO.PRG`, for the demo) shows up
-in the launcher, so several releases can sit side by side. The folder name is
-only a place to look. The release is always decided by the files inside it.
+Every folder that holds an `INTRO.PRG` shows up in the launcher, so several
+releases can sit side by side. The folder name is only a place to look. The release is always decided by the files inside it.
 `pfemu.exe -releases` prints the detection report for each installation it
 finds.
 
@@ -132,9 +128,6 @@ finds.
   combine both halves into one flat folder.
 - **Power Pack:** copy the directory as it is. pfemu runs its `PF.EXE`
   directly and ignores the bundled `PINBALL.BAT` wrapper.
-- **Demo:** run its `INSTALL.BAT` or copy the directory as it is. Its two
-  programs are LZEXE-compressed, and pfemu unpacks them while loading so the
-  usual fixes apply. `-nolzexe` turns that off for comparison.
 
 [Releases](docs/RELEASES.md) lists the exact files and hashes for every
 release.
@@ -307,11 +300,10 @@ development.
 | `-d DIR` | Use a specific game directory (default: first found) |
 | `-releases` | Print the detection report, then exit |
 | `-import IMAGE DIR` | Copy the game out of a Deluxe CD image (GOG's `game.gog`, or an ISO) into the new folder DIR, then exit |
-| `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`, `demo`) |
+| `-release ID` | Force a release (`floppy`, `power_pack`, `deluxe`) |
 | `-p PROGRAM` | Run a specific DOS program instead of the boot program |
 | `-setup` | Run `SETSOUND.EXE` |
 | `-nopatch` | Disable the game-specific fixes |
-| `-nolzexe` | Don't unpack LZEXE programs at load |
 | `-speed X` | Run at X times normal speed |
 | `-unthrottle` | Drop the wall-clock pacer entirely; host pacing only, so it overrides nothing a replay carries |
 | `-ranked` | With `-record`: record against the canonical state the leaderboard verifies, instead of this install's `PFEMU-STATE/` |
@@ -356,8 +348,7 @@ Do not use it to force an unknown build to start.
 
 - [Emulator](docs/EMULATOR.md): how pfemu works, the game-specific fixes, and
   the debug flags.
-- [Releases](docs/RELEASES.md): supported versions, detection, and the demo's
-  title-screen stop.
+- [Releases](docs/RELEASES.md): supported versions and detection.
 - [Archive format](docs/ARCHIVE.md): the floppy installer format and the
   extractor.
 - [Replay](docs/REPLAY.md): session recording, accuracy, and validation.

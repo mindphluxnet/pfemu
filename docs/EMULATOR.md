@@ -15,7 +15,6 @@ binary, no runtime dependencies beyond Windows and the game data.
 | `src/sound.c` | DMA, Sound Blaster DSP, Windows audio, WAV capture |
 | `src/fantasies.c` | Game-specific fixes and trainer |
 | `src/release.c` | Release detection by SHA-256 (`src/reltable.h` generated) |
-| `src/lzexe.c` | LZEXE 0.91 unpacking at load |
 | `src/launch.c` | Native launcher and saved options |
 | `src/launchcore.c` | The launcher's rules and texts, shared with the Linux one |
 | `src/launch_gtk.c` | The launcher on Linux (GTK 3) |
@@ -32,7 +31,7 @@ output still works from a terminal.
 `.PRG` files are ordinary MZ executables with a renamed extension. They can't
 start on their own - they depend on services the launcher installs.
 
-**`PINBALL.EXE` / `PF.EXE` / `PFDEMO.EXE`** ( ~1.7 KB, fully disassembled)
+**`PINBALL.EXE` / `PF.EXE`** ( ~1.7 KB, fully disassembled)
 shrinks its own memory block, hooks INT 9 (keyboard) and INT 24h (critical
 error), installs an API on INT 65h, EXECs the intro, then loops EXECing
 `Table<n>.Prg` (0 = quit). Filenames live in a 12-byte-stride table where each
@@ -395,8 +394,8 @@ Same guest semantics, less host work. Measured ~36-43% faster (e.g. 33 ->
   checks; `REP MOVS/STOS` has a bulk `memmove`/`memset` path for plain-RAM,
   forward, >=16-count copies - except the overlapping forward case, which must
   stay on the per-element loop (`REP MOVS` propagates written bytes;
-  `memmove` doesn't; that one case is how LZ unpackers expand runs - found
-  via the demo's PKLITE drivers, regression-tested in `tools/reptest.c`).
+  `memmove` doesn't; that one case is how LZ unpackers expand runs -
+  regression-tested in `tools/reptest.c`).
 - Main-loop batch 64 -> 256 with the timer-deadline clamp unchanged; build
   with `/GL /LTCG`.
 

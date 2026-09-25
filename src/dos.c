@@ -480,30 +480,11 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         uint16_t ip = ld16u(&hdr[20]), cs = ld16u(&hdr[22]);
         uint16_t lfarlc = ld16u(&hdr[24]);
         uint32_t need;
-        LzexeImage lz;
-        int unpacked = 0;
         int i;
         hdrsize = (uint32_t)cparhdr*16;
         imgend = cblp ? ((uint32_t)(cp-1)*512 + cblp) : ((uint32_t)cp*512);
         if(imgend > (uint32_t)fsize) imgend = (uint32_t)fsize;
         imglen = imgend - hdrsize;
-
-        /* A self-extracting LZEXE image is unpacked here rather than by its
-         * own stub, so that the signature scans further down see the program
-         * and not the compressed stream (src/lzexe.c explains the trade).
-         * Everything the header contributes below - size, memory demand,
-         * entry point, relocations - then comes from the unpacked image
-         * instead; if the unpack fails for any reason nothing changes and
-         * the stub runs after all. */
-        if(!dos_no_lzexe && lzexe_detect(hdr) &&
-           lzexe_load(f, fsize, &lz) == 0){
-            unpacked = 1;
-            imglen   = lz.imglen;
-            minalloc = lz.minalloc;
-            maxalloc = lz.maxalloc;
-            cs = lz.cs; ip = lz.ip; ss = lz.ss; sp = lz.sp;
-        }
-
         need = (imglen + 15)/16 + 16 + minalloc;
         if(maxalloc > minalloc){
             uint32_t want = (imglen + 15)/16 + 16 + maxalloc;
@@ -523,30 +504,16 @@ static int load_mz(const char *host, uint16_t *out_cs, uint16_t *out_ip,
         st16u(&ram[(uint32_t)(seg-1)*16 + 1], psp);
         make_psp(psp, (uint16_t)(psp + paras), cur_psp ? cur_psp : psp, env, tail);
 
-        if(unpacked){
-            uint32_t k;
-            if((uint32_t)load*16 + imglen > RAM_SIZE){
-                lzexe_free(&lz); fclose(f); return 8;
-            }
-            memcpy(&ram[(uint32_t)load*16], lz.image, imglen);
-            for(k=0;k<lz.nrel;k++){
-                uint32_t a = (uint32_t)(load + (lz.rel[k] >> 16))*16 +
-                             (lz.rel[k] & 0xFFFFu);
-                st16u(&ram[a], (uint16_t)(ld16u(&ram[a]) + load));
-            }
-            lzexe_free(&lz);
-        } else {
-            fseek(f, (long)hdrsize, SEEK_SET);
-            if(fread(&ram[(uint32_t)load*16], 1, imglen, f) != imglen){ }
+        fseek(f, (long)hdrsize, SEEK_SET);
+        if(fread(&ram[(uint32_t)load*16], 1, imglen, f) != imglen){ }
 
-            fseek(f, lfarlc, SEEK_SET);
-            for(i=0;i<crlc;i++){
-                uint8_t rb[4]; uint16_t ro, rs; uint32_t a;
-                if(fread(rb,1,4,f)!=4) break;
-                ro = (uint16_t)(rb[0]|(rb[1]<<8)); rs = (uint16_t)(rb[2]|(rb[3]<<8));
-                a = (uint32_t)(load + rs)*16 + ro;
-                st16u(&ram[a], (uint16_t)(ld16u(&ram[a]) + load));
-            }
+        fseek(f, lfarlc, SEEK_SET);
+        for(i=0;i<crlc;i++){
+            uint8_t rb[4]; uint16_t ro, rs; uint32_t a;
+            if(fread(rb,1,4,f)!=4) break;
+            ro = (uint16_t)(rb[0]|(rb[1]<<8)); rs = (uint16_t)(rb[2]|(rb[3]<<8));
+            a = (uint32_t)(load + rs)*16 + ro;
+            st16u(&ram[a], (uint16_t)(ld16u(&ram[a]) + load));
         }
         fclose(f);
 

@@ -20,9 +20,8 @@
  *
  * Session gating: the fix must only engage when the user actually booted
  * Pinball Fantasies.  Matching on the EXEC'd filename alone (TABLE1.PRG) is
- * not enough - a sibling game could ship a same-named file, and the 1993
- * demo ships this game's own table under a different name (PLAND.PRG).
- * The detected release's program layout resolves both.  So main() arms
+ * not enough - a sibling game could ship a same-named file - so the name only
+ * counts once release detection has recognised the installation.  main() arms
  * this session from the launcher choice (or its CLI equivalent: -d/-p), and
  * fantasies_on_exec() then narrows it to the table programs.  Driver/data
  * children (.SDR/.BIN/.MOD) leave the state unchanged so a table keeps the
@@ -55,14 +54,12 @@ static void base_up(const char *path, char *out, size_t n){
 }
 
 /* Which of the release's programs this is: 0 = the intro, 1..4 = that table,
- * -1 = something else.  The names are not a constant - the 1993 demo ships
- * DEMO.PRG and PLAND.PRG in place of INTRO.PRG and TABLE1.PRG - so the
- * detected release's own layout answers it (src/release.c).  Every caller
- * below has already checked session_armed, which is what guarantees `rel`;
- * asking without one is answered "not a program of this release" rather than
- * by falling back to a guess. */
+ * -1 = something else (src/release.c).  Every caller below has already
+ * checked session_armed, which is what guarantees `rel`; asking without one
+ * is answered "not a program of this release" rather than by falling back to
+ * a guess. */
 static int prog_slot(const char *base){
-    return release_prog_slot(rel, base);
+    return rel ? release_prog_slot(base) : -1;
 }
 
 static int is_table_prog(const char *base){
@@ -590,20 +587,7 @@ static void derive_cfg_buf(uint32_t base, uint32_t len){
         return;
     }
     if(!n){
-        /* Expected in a build that has no options menu at all - the demo's
-         * intro carries neither the F5 menu nor the PINBALL.CFG behind it. */
-        if(rel && !rel->cfg_buf)
-            trc("[fantasies] release '%s' has no intro options buffer, as "
-                "expected; nothing to poke\n", rel->id);
-        else
-            trc("[fantasies] intro options buffer not found; not poking\n");
-        return;
-    }
-    /* A recorded 0 means "this build has none", so a match there is a
-     * contradiction just as much as a match at the wrong address is. */
-    if(rel && !rel->cfg_buf){
-        trc("[fantasies] intro options buffer DS:%04X found, but release '%s' "
-            "is recorded as having none; not poking\n", buf, rel->id);
+        trc("[fantasies] intro options buffer not found; not poking\n");
         return;
     }
     if(rel && rel->cfg_buf != buf){
@@ -1117,7 +1101,7 @@ static uint32_t jump_vel_addr[5] = {0,0,0,0,0};
  * two, which is the vertical channel the kick needs, so the first match
  * is taken here too.  Confirmed by static byte-scan (both matches, same
  * spacing) against every shipped TABLE1-4.PRG of the floppy, Deluxe and
- * Power Pack releases, plus the unpacked demo's PLAND.PRG.
+ * Power Pack releases.
  * DATA's runtime segment is recovered the same majority-vote way
  * fantasies_patch_spring() recovers it; the velocity offset comes
  * straight out of the first matched immediate.
@@ -1909,8 +1893,7 @@ void fantasies_matrix_report(void){
  * the way the rest of this file locates its targets, and every signature here
  * was confirmed to match exactly once in all twelve TABLE1-4.PRG of the
  * floppy, Power Pack and Deluxe releases by static byte-scan before any of
- * this was written.  (The 1993 demo matches none of them - its programs are
- * LZEXE-packed on disk - and it is excluded from verification anyway.)
+ * this was written.
  *
  * The map is historicalsource/pinballfantasies (see this file's header for
  * what that is worth): FANTASIE.ASM for the shared engine, PLAND.ASM for the
@@ -2969,10 +2952,10 @@ int fantasies_exec_skip(const char *dospath){
     uint32_t a;
     int i;
     if(!start_table || start_done || !session_armed || dos_no_patch) return 0;
-    if(!rel || !rel->layout) return 0;
+    if(!rel) return 0;
     base_up(dospath, b, sizeof(b));
     if(prog_slot(b) != 0) return 0;             /* not the intro */
-    if(start_table >= rel->layout->n) return 0;
+    if(start_table >= REL_NPROGS) return 0;
     if(!boot_locs){
         /* Refused rather than approximated: without the blob the table would
          * run on its built-in defaults and silently ignore every launcher

@@ -1,6 +1,6 @@
 # Supported releases and detection
 
-pfemu supports four releases of Pinball Fantasies and tells them apart by file
+pfemu supports three releases of Pinball Fantasies and tells them apart by file
 hashes. It never trusts the directory name, the boot filename, timestamps, or
 sizes alone.
 
@@ -11,14 +11,13 @@ sizes alone.
   diagnostic and stays disabled. One release's memory layout is never applied
   to another release's code.
 
-## The four releases
+## The three releases
 
 | ID | Label | Boot file | Files | Bytes |
 |---|---|---|---:|---:|
 | `floppy` | Original floppy release | `PINBALL.EXE` | 25 | 3,716,060 |
 | `power_pack` | Pinball Power Pack (1996) | `PF.EXE` | 26 | 3,737,012 |
 | `deluxe` | Deluxe CD-ROM (1995) | `PINBALL.EXE` | 24 | 3,710,787 |
-| `demo` | 5 Min Demo (1993) | `PFDEMO.EXE` | 22 | 1,333,785 |
 
 The Power Pack year comes from the archive's external `21STINFO.DAT`, which
 is packaging metadata - no runtime file references it.
@@ -28,27 +27,23 @@ byte-identical to the floppy `PINBALL.EXE`; its Table 3/4 programs, table
 music, `MOD2.MOD`, and most drivers are the floppy files too. It has its own
 intro, its own Table 1/2, its own PAS16/SB16 drivers, and the newer
 `SETSOUND.EXE` shared with Deluxe. Deluxe has its own launcher, intro, and
-all four tables. The demo is the earliest artifact here (file dates November
-1993) and a branch of its own - see below.
+all four tables.
 
 ## How detection works
 
 1. Scan the top level of each candidate directory (case-insensitive,
    `PFEMU-STATE/` and subdirectories ignored).
-2. Decide the layout by anchor program: `INTRO.PRG` means `full`,
-   `DEMO.PRG` means `demo`. Both anchors in one directory is `ambiguous`.
-3. Hash the anchor with SHA-256 (+ exact size check) and look it up among
-   releases using that layout.
-4. Hash the remaining programs in the layout and compare against the
-   candidate record. A conflicting vector is `mixed`, not a best-fit match.
-5. Validate the boot program and runtime payload; report missing or corrupt
+2. Hash the anchor program, `INTRO.PRG`, with SHA-256 (+ exact size check)
+   and look it up among the releases.
+3. Hash the four table programs and compare against the candidate record.
+   A conflicting vector is `mixed`, not a best-fit match.
+4. Validate the boot program and runtime payload; report missing or corrupt
    files separately from identity.
 
 Result states: `recognized`, `incomplete` (known intro, file missing),
 `modified` (known intro, hash differs), `mixed` (files point at different
 releases), `unknown` (anchor not in the database - the report lists sizes
-and hashes for collection), `ambiguous` (two layouts, or names differing
-only by case). Only `recognized` enables Launch.
+and hashes for collection), `ambiguous` (names differing only by case). Only `recognized` enables Launch.
 
 ## Unmodified files required
 
@@ -77,7 +72,7 @@ builds.
 
 | Artifact | Value | Why |
 |---|---|---|
-| `INTRO.PRG` / `DEMO.PRG` | Primary key | Unique hash in every release; also selects the intro memory layout |
+| `INTRO.PRG` | Primary key | Unique hash in every release; also selects the intro memory layout |
 | `TABLE1/2.PRG` | Confirmation | Differ in all full releases |
 | `TABLE3/4.PRG` | Coherence check | Floppy and Power Pack share them; Deluxe differs |
 | Boot file contents | Secondary | Separates Deluxe; floppy and Power Pack share bytes under different names |
@@ -87,25 +82,22 @@ builds.
 `INTRO.MOD` needs special handling: all copies are 252,870 bytes with
 identical first 252,868 bytes (SHA-256
 `0051a695...48009`) and differing only in the last two bytes (`2B 3F` floppy,
-`2D F9` the other three). The game overwrites those two bytes once the
+`2D F9` the other two). The game overwrites those two bytes once the
 manual check is passed, so identity uses the prefix hash, never the full-file
 hash. See [Emulator](EMULATOR.md#copy-protection).
 
 Per-release runtime data:
 
-| ID | Layout | Boot file | Options buffer |
-|---|---|---|---:|
-| `floppy` | `full` | `PINBALL.EXE` | `DS:49A3` |
-| `power_pack` | `full` | `PF.EXE` | `DS:4846` |
-| `deluxe` | `full` | `PINBALL.EXE` | `DS:48D7` |
-| `demo` | `demo` | `PFDEMO.EXE` | none - no options menu or `PINBALL.CFG` |
+| ID | Boot file | Options buffer |
+|---|---|---:|
+| `floppy` | `PINBALL.EXE` | `DS:49A3` |
+| `power_pack` | `PF.EXE` | `DS:4846` |
+| `deluxe` | `PINBALL.EXE` | `DS:48D7` |
 
 The floppy intro defaults only the Scrolling byte when no config is found;
 Power Pack and Deluxe validate all six fields and default all six. pfemu NOPs
 the relevant default so launcher choices survive (a one-field NOP on floppy,
-a leading-`JC` NOP on the other two). The demo has neither the F5 menu labels
-nor either six-byte signature, so its descriptor records no buffer and the
-launcher greys the options out.
+a leading-`JC` NOP on the other two).
 
 ## Code fingerprints (SHA-256, sizes in bytes)
 
@@ -149,35 +141,7 @@ TABLE4.PRG  522422  805953261e89b3e22360e7e9867c41f6a73dec4902700e723f919fc14267
 PINBALL.EXE   2595  1e8c77504828eebad8452e89e8ea41142a192ca908e5600bde2ea9ce10ad1f6c
 ```
 
-### demo
-
-```text
-DEMO.PRG    105826  434ed39e78bf9cf1025cbf1ab107bd88832a0284c6e95a8703785d1c3420e541
-PLAND.PRG   196594  582467262ba26f1d58ae71e62dc00494fd42c2d420c5fd85a8f0449d784601c4
-PFDEMO.EXE    1740  162db89a771e7bc9987943db21fb974c83fae5b1296b1e4a041980677510975a
-```
-
-Both demo programs are LZEXE 0.91 containers; these are the packed hashes, as
-distributed. pfemu unpacks them at load (`src/lzexe.c`, verified byte-equal
-against an independent implementation, including relocation lists). Unpacked,
-`PLAND.PRG` matches all six table signatures at offsets within ~40 bytes of
-floppy `TABLE1.PRG`, so it gets every table fix. `-nolzexe` keeps the packed
-path for comparison. The demo's `.SDR` drivers are PKLITE-packed and left to
-run their own stubs - nothing needs patching inside them.
-
-The demo's drivers still expose the Quality setting: every `.SDR` ends with
-an uncompressed `SP` descriptor past the load image that `SETSOUND.EXE` reads
-for its menu. The demo `SBLASTER.SDR` offers base port, IRQ, and quality like
-the full game's. Its `SETSOUND.EXE` writes a 14-byte name + 3 bytes per
-parameter + 2-byte tail (pfemu writes `00 00` for the tail; the game accepts
-it).
-
-The four `.PCX` files on the demo disk are distribution artwork - its own
-`INSTALL.BAT` doesn't copy them and no program reads them. Recorded and
-ignored.
-
-Shared immutable payload (identical in all three full releases; the demo
-shares only `TABLE1.MOD`, `INTRO.MOD`, and `TIMER.BIN`):
+Shared immutable payload (identical in all three releases):
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
@@ -208,42 +172,7 @@ power_pack:  INTRO.MOD 252870 f36bea...a9ec66613 | PAS16 10728 0fa603...dedaa558
              PINBALL.BAT 82 1d5d8e...f50e4 | SOUND.CFG 20 9a85e5...65155d4
 deluxe:      INTRO.MOD 252870 f36bea...a9ec66613 | PAS16 10712 e863cb...352fd2
              SB16 11349 81a7c4...be7bab17 | SETSOUND 27347 344831...1d847d94
-demo:        INTRO.MOD 252870 f36bea...a9ec66613 | TABLE1.MOD as above
-             TIMER.BIN as floppy | SETSOUND 41264 89ca84...63b4ad0ca7b
-             SOUND.CFG 16 99d5d1...870d56f16a55 | ADLIB 8179 / GUS 6904 /
-             INTERNAL 7986 / NOSOUND 2066 / SB20 8295 / SBLASTER 8086 /
-             SBPRO 8296 / SM2 7966 / THING 7602 (all earlier PKLITE builds)
-             INSTALL.BAT 1379 | four .PCX artwork files
 ```
-
-(Full hashes for the demo drivers and artwork are in `src/reltable.h` via
-`tools/mkreltable.py`.)
-
-## Where the demo stops
-
-The demo is detected and runs - both programs unpack, the driver calibrates,
-music plays, publisher and developer screens draw - then the title screen
-stays black and the program waits. Scroll Lock still exits. Nothing about
-this affects the other releases.
-
-The title code clears 64 KB of video memory with interrupts disabled, then
-switches the sound driver off, then waits for frame flag `0040:0076` - a byte
-set only by a callback registered with the sound driver, which can no longer
-fire once the driver is off. So exactly one callback has to land between the
-last consume of the flag and the disable, and it doesn't:
-
-- At 6 MIPS the stall outlasts the ~9.3 ms inter-event gap, the driver's
-  latency compensation underflows, and the next one-shot is scheduled ~44 ms
-  out - after the disable.
-- At 14-24 MIPS the stall is shorter but the pending event lands after the
-  disable's service calls have already cleared the driver's gate.
-
-No emulated CPU speed lands reliably inside the few-millisecond window, and a
-fix that depended on landing in it wouldn't be a fix. Ruled out by
-measurement: PKLITE decompression (unpacked image matches the floppy driver's
-code), `REP MOVS` overlap (regression-tested both directions in
-`tools/reptest.c`), interrupt scheduling (the guest holds IF off; pfemu
-delivers on time), retrace-pulse fraction, and CPU starvation / quality notch.
 
 ## GOG.com edition (2013): the Deluxe CD, not a new release
 
@@ -342,10 +271,8 @@ not run either one.
 ## Adding a new release
 
 Keep the unmodified files and record: archive name and source, full
-filename/size/SHA-256 manifest, the code vector and its layout (a new program
-set needs a new `CodeLayout` in `release.c`/`mkreltable.py` first), boot file
-and hash, `INTRO.MOD` full hash + tail + prefix hash, the options-buffer
+filename/size/SHA-256 manifest, the code vector, boot file and hash, `INTRO.MOD` full hash + tail + prefix hash, the options-buffer
 signature result (or a positive finding that there is none), every table
-patch signature scan against the unpacked image, and a temporary-copy boot
+patch signature scan against the loaded image, and a temporary-copy boot
 trace. Add it as a new descriptor; never widen existing hashes with fuzzy
 matching to make an unknown build launch.

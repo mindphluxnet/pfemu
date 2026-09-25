@@ -1,6 +1,6 @@
 /* Platform compatibility: one include in place of <windows.h>.
  *
- * The emulation core (cpu, vga, dev, bios, fantasies, lzexe, png) contains no
+ * The emulation core (cpu, vga, dev, bios, fantasies, png) contains no
  * Win32 at all and does not need this.  Six files do, and only for small
  * things - directory enumeration, a few path and file operations, and the
  * waveOut types in sound.c.  On Windows this header is just the real headers

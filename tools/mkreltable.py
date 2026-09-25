@@ -7,16 +7,11 @@ detector in src/release.c can also report completeness and list the files it
 is deliberately ignoring.  See docs/RELEASES.md for what each release is and
 why the directory name is never used as identity.
 
-Which programs a distribution ships is itself part of its shape: the full
-game has INTRO.PRG and TABLE1-4.PRG, the 1993 demo has DEMO.PRG and PLAND.PRG.
-That is the LAYOUTS table below, and src/release.c carries the same two.
-
 Adding a newly collected release:
   1. put its files directly in a directory of their own;
-  2. add a (stable_id, directory, boot_basename, layout) row to RELEASES
-     below, and a new layout if its programs are named differently again;
+  2. add a (stable_id, directory, boot_basename) row to RELEASES below;
   3. run this from the repo root:  python tools/mkreltable.py > src/reltable.h
-  4. add the matching descriptor (label, layout, options-buffer offset, which
+  4. add the matching descriptor (label, options-buffer offset, which
      intro fallback it uses, cd.nfo check) to `releases[]` in src/release.c.
 
 Never broaden an existing hash to make an unknown build launch.
@@ -25,39 +20,29 @@ import hashlib
 import os
 import sys
 
-# The program filenames a distribution ships, anchor (the intro) first.
-LAYOUTS = {
-    "full": ["INTRO.PRG", "TABLE1.PRG", "TABLE2.PRG", "TABLE3.PRG", "TABLE4.PRG"],
-    "demo": ["DEMO.PRG", "PLAND.PRG"],
-}
+# The program files every release ships: the identity vector, intro first.
+PROGRAMS = ["INTRO.PRG", "TABLE1.PRG", "TABLE2.PRG", "TABLE3.PRG", "TABLE4.PRG"]
 
-# stable id, directory holding one unmodified installation, boot program, layout
+# stable id, directory holding one unmodified installation, boot program
 RELEASES = [
-    ("floppy",     "FANTASY",   "PINBALL.EXE", "full"),
-    ("power_pack", "FANTASYA",  "PF.EXE",      "full"),
-    ("deluxe",     "FANTASYDX", "PINBALL.EXE", "full"),
-    ("demo",       "FANTDEMO",  "PFDEMO.EXE",  "demo"),
+    ("floppy",     "FANTASY",   "PINBALL.EXE"),
+    ("power_pack", "FANTASYA",  "PF.EXE"),
+    ("deluxe",     "FANTASYDX", "PINBALL.EXE"),
 ]
 
 # Needed for an ordinary launch, beyond the programs and the boot file.  The
 # sound drivers listed are only the two pfemu itself selects (SoundBlaster, or
 # silence); the rest ship with the game but are never chosen, so a copy
-# missing them still plays.  The demo has one table's music and no MOD2.MOD.
-EXTRA_REQUIRED = {
-    "full": {"INTRO.MOD", "MOD2.MOD",
-             "TABLE1.MOD", "TABLE2.MOD", "TABLE3.MOD", "TABLE4.MOD",
-             "SBLASTER.SDR", "NOSOUND.SDR"},
-    "demo": {"INTRO.MOD", "TABLE1.MOD", "SBLASTER.SDR", "NOSOUND.SDR"},
-}
+# missing them still plays.
+EXTRA_REQUIRED = {"INTRO.MOD", "MOD2.MOD",
+                  "TABLE1.MOD", "TABLE2.MOD", "TABLE3.MOD", "TABLE4.MOD",
+                  "SBLASTER.SDR", "NOSOUND.SDR"}
 
 # Written by the game or an installer: recorded, never part of identity.
 MUTABLE = {"SOUND.CFG"}
 
-# Packaging/wrapper files: recorded, never required.  The demo's four .PCX
-# screens belong here - its own INSTALL.BAT copies *.sdr/*.mod/*.prg/*.exe/
-# *.bin and not them, and no program in the release names one.
-META = {"PINBALL.BAT", "21STINFO.DAT", "INSTALL.BAT",
-        "BILLION.PCX", "PARTY.PCX", "SPEED.PCX", "STONE.PCX"}
+# Packaging/wrapper files: recorded, never required.
+META = {"PINBALL.BAT", "21STINFO.DAT"}
 
 # INTRO.MOD's last two bytes are the game's own manual-check sentinel, so a
 # played installation legitimately differs there.  Hash the rest.
@@ -78,9 +63,9 @@ HEADER = """\
 """
 
 
-def emit(out, rid, directory, boot, layout):
-    code = set(LAYOUTS[layout])
-    required = code | EXTRA_REQUIRED[layout]
+def emit(out, rid, directory, boot):
+    code = set(PROGRAMS)
+    required = code | EXTRA_REQUIRED
     names = sorted(n for n in os.listdir(directory)
                    if os.path.isfile(os.path.join(directory, n)))
     out.write("\nstatic const RelFile files_%s[] = {\n" % rid)
@@ -113,11 +98,11 @@ def emit(out, rid, directory, boot, layout):
 def main():
     out = sys.stdout
     out.write(HEADER)
-    for rid, directory, boot, layout in RELEASES:
+    for rid, directory, boot in RELEASES:
         if not os.path.isdir(directory):
             sys.stderr.write("missing installation directory: %s\n" % directory)
             return 1
-        emit(out, rid, directory, boot, layout)
+        emit(out, rid, directory, boot)
     return 0
 
 

@@ -297,9 +297,9 @@ static void show_detection(LaunchState *st){
         gtk_widget_set_sensitive(st->details, r != NULL);
     }
     set_detected(st, line);
-    /* The six game options are the intro's own PINBALL.CFG structure, and
-     * the 1993 demo's intro has none: greyed rather than offered in vain. */
-    has_opts = r && release_runnable(r) && r->rel && r->rel->cfg_buf != 0;
+    /* The six game options are the intro's own PINBALL.CFG structure, which
+     * only a recognised release has a known address for: greyed otherwise. */
+    has_opts = r && release_runnable(r);
     for(i=0;i<6;i++) gtk_widget_set_sensitive(st->w_opt[i], has_opts);
     /* One game at a time: it owns the audio device and the install's
      * PFEMU-STATE/ while it runs. */

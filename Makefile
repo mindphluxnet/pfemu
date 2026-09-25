@@ -72,7 +72,7 @@ LDLIBS  += -lm
 # gui` (plus launch_gtk.c and launchcore.c, the launcher).  Everything else
 # is the same objects in both.
 COMMON := src/cpu.c src/vga.c src/dev.c src/bios.c src/dos.c src/sound.c \
-       src/cfg.c src/fantasies.c src/release.c src/lzexe.c src/png.c \
+       src/cfg.c src/fantasies.c src/release.c src/png.c \
        src/replay.c src/snapshot.c src/verify.c src/run.c src/vgafont.c \
        src/cdimage.c src/gog.c src/posix.c src/video.c
 SRC := $(COMMON) src/host_null.c

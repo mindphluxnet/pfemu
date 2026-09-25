@@ -320,11 +320,10 @@ int emu_main(int argc, char **argv){
             else { fail_msg("-res takes normal|high"); return 1; } }
         else if(!strcmp(argv[i],"-dmairq")){ extern int sb_dmairq; sb_dmairq = 1; }
         else if(!strcmp(argv[i],"-nopatch")){ extern int dos_no_patch; dos_no_patch = 1; }
-        else if(!strcmp(argv[i],"-nolzexe")){ dos_no_lzexe = 1; }
         /* -undefdump: on the first instruction the CPU cannot decode, write
-         * that whole code segment to pfemu_cs_<SEG>.bin.  For programs that
-         * arrive compressed (PKLITE .SDR, LZEXE .PRG) the guest's memory is
-         * the only disassemblable copy of what is running. */
+         * that whole code segment to pfemu_cs_<SEG>.bin.  For a program that
+         * unpacks itself the guest's memory is the only disassemblable copy
+         * of what is running. */
         else if(!strcmp(argv[i],"-undefdump")){ extern int undef_dump; undef_dump = 1; }
         /* -vgastate: at exit, print the mode, the registers that select the
          * picture, the DAC entries it can reach, and what is in the memory the
@@ -746,7 +745,7 @@ int emu_main(int argc, char **argv){
         if(fantasies_res_override == 0 || fantasies_res_override == 1)
             opts[4] = (uint8_t)fantasies_res_override;
         if(replay_begin_record(record_path, &rel, prog, emu_ips,
-                               dos_no_patch, dos_no_lzexe, sound, quality, opts,
+                               dos_no_patch, sound, quality, opts,
                                start_fullscreen, start_table) != 0){
             fail_msg("[record] cannot write '%s'", record_path);
                 return 1;

@@ -9,7 +9,7 @@
  *   code: INTRO.PRG 123456 abc.. # ... plus this hash vector (release.c)
  *   summary: ...                 # display only, never matched on
  *   dir_hint: GAME               # hint only, never identity
- *   boot: / program: / layout: / ips: / speed: / nopatch: / nolzexe:
+ *   boot: / program: / ips: / speed: / nopatch:
  *   sound: / quality: / options: / fullscreen:  # the recorded session setup
  *   trainer_off: 1               # the invariant, not a setting
  *   date: / time:                # the frozen guest epoch (dos.c)
@@ -376,7 +376,7 @@ static char rec_path[512] = "";
 static int rec_events = 0;
 
 int replay_begin_record(const char *path, const RelResult *rel, const char *prog,
-                        double ips, int nopatch, int nolzexe,
+                        double ips, int nopatch,
                         int sound, int quality, const uint8_t options[6],
                         int fullscreen, int start_table){
     char ov[32];
@@ -418,7 +418,6 @@ int replay_begin_record(const char *path, const RelResult *rel, const char *prog
     fprintf(rec_fp, "summary: %s\n", rel->summary);
     fprintf(rec_fp, "boot: %s\n", rel->boot[0] ? rel->boot : prog);
     fprintf(rec_fp, "program: %s\n", prog);
-    fprintf(rec_fp, "layout: %s\n", rel->rel->layout ? rel->rel->layout->id : "full");
     /* Direct-to-table: 0 is a normal boot through the intro.  This has to
      * travel, because the guest event stream depends on it - a session
      * recorded at a table would replay from the menu and desync on the
@@ -440,7 +439,6 @@ int replay_begin_record(const char *path, const RelResult *rel, const char *prog
      * is what replay enforces, so a future speed is a file edit away. */
     fprintf(rec_fp, "speed: 1\n");
     fprintf(rec_fp, "nopatch: %d\n", nopatch ? 1 : 0);
-    fprintf(rec_fp, "nolzexe: %d\n", nolzexe ? 1 : 0);
     fprintf(rec_fp, "sound: %d\n", sound ? 1 : 0);
     fprintf(rec_fp, "quality: %d\n", quality);
     fprintf(rec_fp, "options: %02X %02X %02X %02X %02X %02X\n",
@@ -760,7 +758,6 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
             else if(!strncmp(s, "boot:", 5)) snprintf(h->boot, sizeof(h->boot), "%s", lstrip(s+5));
             else if(!strncmp(s, "program:", 8)) snprintf(h->program, sizeof(h->program), "%s", lstrip(s+8));
             else if(!strncmp(s, "start_table:", 12)) h->start_table = atoi(lstrip(s+12));
-            else if(!strncmp(s, "layout:", 7)) snprintf(h->layout, sizeof(h->layout), "%s", lstrip(s+7));
             else if(!strncmp(s, "code:", 5)){
                 char nm[16], rest[128];
                 if(h->ncode < 5 && sscanf(lstrip(s+5), "%15s %127[^\n]", nm, rest) == 2){
@@ -784,7 +781,6 @@ static int parse_file(const char *path, ReplayHeader *h, int load_events){
             else if(!strncmp(s, "ips:", 4)) h->ips = atof(lstrip(s+4));
             else if(!strncmp(s, "speed:", 6)) h->speed = atof(lstrip(s+6));
             else if(!strncmp(s, "nopatch:", 8)) h->nopatch = atoi(lstrip(s+8)) != 0;
-            else if(!strncmp(s, "nolzexe:", 8)) h->nolzexe = atoi(lstrip(s+8)) != 0;
             else if(!strncmp(s, "sound:", 6)) h->sound = atoi(lstrip(s+6)) != 0;
             else if(!strncmp(s, "quality:", 8)) h->quality = atoi(lstrip(s+8));
             else if(!strncmp(s, "options:", 8)){
@@ -1071,11 +1067,10 @@ void replay_apply_recorded_env(void){
         emu_inv_ips = 1.0 / emu_ips;
     }
     dos_no_patch = rh.nopatch ? 1 : 0;
-    dos_no_lzexe = rh.nolzexe ? 1 : 0;
     dos_set_time_frozen(1);
-    fprintf(stderr, "[replay] environment: ips=%.0f speed=%g nopatch=%d nolzexe=%d"
+    fprintf(stderr, "[replay] environment: ips=%.0f speed=%g nopatch=%d"
                     " quality=%d options=%02X%02X%02X%02X%02X%02X time frozen\n",
-            emu_ips, rh.speed, dos_no_patch, dos_no_lzexe, rh.quality,
+            emu_ips, rh.speed, dos_no_patch, rh.quality,
             rh.options[0], rh.options[1], rh.options[2],
             rh.options[3], rh.options[4], rh.options[5]);
 }

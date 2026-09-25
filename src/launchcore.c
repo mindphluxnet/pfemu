@@ -372,7 +372,6 @@ void details_report(char *dst, size_t n, LaunchMode mode, const char *replay_pat
             det_kv(dst, n, "Display", "%s", h->fullscreen ? "fullscreen" : "windowed");
             snprintf(buf, sizeof(buf), "%.0f ips, speed %g", h->ips, h->speed);
             if(h->nopatch) snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf), ", nopatch");
-            if(h->nolzexe) snprintf(buf+strlen(buf), sizeof(buf)-strlen(buf), ", nolzexe");
             det_kv(dst, n, "Emulation", "%s", buf);
             /* Only worth a line when it is the reason the file is refused:
              * a playable replay always recorded with the trainer off. */
@@ -385,9 +384,7 @@ void details_report(char *dst, size_t n, LaunchMode mode, const char *replay_pat
                 det_kv(dst, n, "Capture", "%s, %lu samples",
                        h->wav_hash, h->wav_samples);
             if(h->dir_hint[0]) det_kv(dst, n, "Recorded in", "%s", h->dir_hint);
-            snprintf(buf, sizeof(buf), "Programs - recorded (%s layout)"
-                     " vs. this install", h->layout);
-            det_sect(dst, n, buf);
+            det_sect(dst, n, "Programs - recorded vs. this install");
             det_vector(dst, n, h, r);
         }
     }

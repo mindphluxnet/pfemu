@@ -662,16 +662,14 @@ void dev_state_dump(void){
      * runs deliberately fast so that spin is short - a fraction of a
      * millisecond.  An IRQ0 that arrives later than that margin lands after
      * the retrace pulse instead of before it, and the spin then costs a whole
-     * frame: a dropped frame in the full game, and in the 1993 demo a dropped
-     * frame-flag callback that can strand its title-screen wait forever.  So
-     * the interesting number is not the mean but the tail, and which half of
-     * the latency it came from: `overshoot` is how far the instruction batch
-     * ran past the deadline before dev_tick() looked, which is pfemu's to
-     * fix; `guest wait` is how much longer the guest took to accept the
-     * interrupt, which is the guest's own masking and is not.
+     * frame.  So the interesting number is not the mean but the tail, and
+     * which half of the latency it came from: `overshoot` is how far the
+     * instruction batch ran past the deadline before dev_tick() looked, which
+     * is pfemu's to fix; `guest wait` is how much longer the guest took to
+     * accept the interrupt, which is the guest's own masking and is not.
      *
      * This used to print from the dot-matrix report in fantasies.c, which
-     * meant it was unavailable on any release that never loads a table. */
+     * meant it was unavailable before a table had loaded. */
     if(pit0_lat_n){
         double secs = emu_now() > 0.0 ? emu_now() : 1.0;
         printf("[pit] ch0 one-shots %lu (%.1f/s; the driver schedules 2 per frame),"

@@ -417,12 +417,12 @@ static void show_detection(HWND h, LaunchState *st){
         if(btn) EnableWindow(btn, r && release_runnable(r));
         if(st->hDetails) EnableWindow(st->hDetails, r != NULL);
     }
-    /* The six game options are the intro's own PINBALL.CFG structure, and the
-     * 1993 demo's intro simply has none - no F5 menu, no config file, nothing
-     * for fantasies.c to poke (see its cfg_buf).  Offering combo boxes that
-     * could not reach the game would be worse than showing them greyed. */
+    /* The six game options are the intro's own PINBALL.CFG structure, which
+     * only a recognised release has a known address for.  Offering combo
+     * boxes that could not reach the game would be worse than showing them
+     * greyed. */
     {
-        int has_opts = r && release_runnable(r) && r->rel && r->rel->cfg_buf != 0;
+        int has_opts = r && release_runnable(r);
         int i;
         for(i=0;i<6;i++)
             if(st->hOpt[i]) EnableWindow(st->hOpt[i], has_opts);

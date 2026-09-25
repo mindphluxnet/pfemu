@@ -154,26 +154,6 @@ int  dos_exec(const char *path, uint16_t psp_env, uint32_t cmdtail_ptr, uint32_t
 extern int dos_done;
 extern int dos_no_patch;        /* -nopatch : leave manual checks in place */
 
-/* ---------------------------------------------------------------- LZEXE -- */
-/* Self-extracting programs, unpacked by the loader instead of by the guest so
- * that the image patches in src/fantasies.c have something to match.  Only
- * LZEXE 0.91 is handled, and only as an optimisation of the boot: every
- * failure here falls back to loading the packed file and letting its own stub
- * run.  See src/lzexe.c for why, and for why PKLITE is left alone. */
-typedef struct {
-    uint8_t *image;       /* the unpacked load image (malloc'd) */
-    uint32_t imglen;
-    uint16_t cs, ip, ss, sp;   /* the original entry point and stack */
-    uint16_t minalloc, maxalloc;
-    uint32_t *rel;        /* relocations, (segment << 16) | offset (malloc'd) */
-    uint32_t nrel;
-} LzexeImage;
-
-int  lzexe_detect(const uint8_t *hdr32);
-int  lzexe_load(FILE *f, long fsize, LzexeImage *out);
-void lzexe_free(LzexeImage *im);
-extern int dos_no_lzexe;        /* -nolzexe : never unpack, let the stub run */
-
 /* ------------------------------------------------------------ releases --- */
 /* Checksum-based release identity (src/release.c).  An installation is
  * identified by the SHA-256 of its program files, never by its directory name
@@ -195,25 +175,15 @@ typedef struct {
     uint8_t  sha[32];
 } RelFile;
 
-/* Which programs a distribution ships, and under which names.  The full game
- * ships an intro and four tables; the 1993 five-minute demo ships an intro
- * and one table, both renamed - so the identity vector is a property of the
- * distribution's shape, not a constant.  names[0] is the anchor: the program
- * whose presence says which shape a directory holds, and whose hash decides
- * which release it is.  The rest are the tables, in table order. */
-typedef struct {
-    const char *id;           /* "full", "demo" - for the detection report */
-    const char *names[5];
-    int n;
-} CodeLayout;
+/* Every release ships the same five programs: INTRO.PRG, then TABLE1-4.PRG
+ * in table order (src/release.c). */
+#define REL_NPROGS 5
 
 typedef struct {
     const char *id;       /* stable id: "floppy", "power_pack", "deluxe" */
     const char *label;    /* user-facing: "Pinball Power Pack (1996)" */
     const char *boot;     /* boot program basename for this release */
-    const CodeLayout *layout;  /* the programs this release ships */
-    uint16_t cfg_buf;     /* intro's six-byte options structure, DS offset;
-                           * 0 = this build has no options structure at all */
+    uint16_t cfg_buf;     /* intro's six-byte options structure, DS offset */
     uint8_t scroll_clobber; /* intro defaults Scrolling alone after a failed load */
     uint8_t opt_validate;   /* intro re-defaults all six after a failed load */
     uint8_t cd_marker;      /* boot program checks for cd.nfo (Deluxe CD-ROM) */
@@ -229,7 +199,7 @@ typedef enum {
     REL_MIXED,        /* programs independently match different releases */
     REL_UNKNOWN,      /* the anchor program is not in the database */
     REL_AMBIGUOUS,    /* names differing only by case */
-    REL_ABSENT        /* no program of any known layout here at all */
+    REL_ABSENT        /* no INTRO.PRG here at all */
 } RelState;
 
 typedef struct {
@@ -241,8 +211,8 @@ typedef struct {
     int  odd;             /* required data files present but not this release's */
     char summary[160];    /* one line, for the launcher */
     char detail[8192];    /* the copyable report */
-    /* The code identity vector behind the verdict above: the layout's
-     * programs in layout order, with the SHA-256/size release.c matched on.
+    /* The code identity vector behind the verdict above: the five
+     * programs in slot order, with the SHA-256/size release.c matched on.
      * Filled for every recognised-or-better verdict (and for unknown/mixed
      * as far as the files present allow); the replay header records this
      * vector verbatim so replay can refuse a different copy (docs/REPLAY.md
@@ -255,10 +225,9 @@ typedef struct {
     int  code_have[5];
 } RelResult;
 
-/* Where a release keeps its program: 0 = the intro, 1..4 = that table,
- * -1 = neither.  Resolves the renames in the demo's layout, so nothing
- * outside src/release.c has to know a program filename. */
-int  release_prog_slot(const Release *r, const char *base);
+/* Which program this is: 0 = the intro, 1..4 = that table, -1 = neither.
+ * Nothing outside src/release.c has to know a program filename. */
+int  release_prog_slot(const char *base);
 
 int  release_detect(const char *dir, RelResult *out);
 int  release_scan(RelResult *out, int max);   /* GAME first, then any install */
@@ -475,7 +444,6 @@ typedef struct {
     char summary[160];
     char boot[16];
     char program[16];
-    char layout[16];
     int  ncode;
     char names[5][16];
     uint8_t sha[5][32];
@@ -483,7 +451,7 @@ typedef struct {
     int  have[5];
     double ips;
     double speed;
-    int  nopatch, nolzexe;
+    int  nopatch;
     int  sound;
     int  quality;
     uint8_t options[6];
@@ -514,7 +482,7 @@ const char *replay_overlay_path(void);   /* isolated copy, NULL if none */
 /* Record side: open with the full session context, log every kbd_key entry
  * with emu_now() (dev.c calls in), close with the footer at exit. */
 int  replay_begin_record(const char *path, const RelResult *rel, const char *prog,
-                         double ips, int nopatch, int nolzexe,
+                         double ips, int nopatch,
                          int sound, int quality, const uint8_t options[6],
                          int fullscreen, int start_table);
 void replay_log_key(int scancode, int down);
@@ -528,7 +496,7 @@ int  replay_begin_replay(const char *path);
  * caller shows it - main() has no console in launcher flows). */
 int  replay_verify_install(const RelResult *rel, const char *prog,
                            char *why, size_t nwhy);
-void replay_apply_recorded_env(void);   /* ips/nopatch/nolzexe/time-freeze */
+void replay_apply_recorded_env(void);   /* ips/nopatch/time-freeze */
 /* The recorded session settings (valid once a replay header parsed).
  * Quality/options change guest execution, so replay runs these, not the
  * install's current values; fullscreen is host-only but travels too. */

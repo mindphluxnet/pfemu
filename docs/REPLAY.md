@@ -23,7 +23,7 @@ game sees. Implemented in `src/replay.c` (hooks in `main.c`, `dev.c`,
   the launcher (exact match preferred, same-release copy accepted, otherwise
   Launch stays disabled with a recorded-vs-found report).
 - **Environment travels with the file**: `ips`, `speed` (= 1 on record),
-  `nopatch`/`nolzexe`, sound on/off + quality notch, the 6-byte options blob,
+  `nopatch`, sound on/off + quality notch, the 6-byte options blob,
   boot/start program. These are forced on replay.
 - **Guest-visible time is frozen** (`INT 21h` date/time, file timestamps) and
   **writes are isolated** - the game runs against a throwaway overlay copy,
@@ -133,7 +133,7 @@ Text, one file per session:
 
 ```
 header:  magic + version, release_id, code hash vector, summary (display only),
-         boot + start program, ips, speed, nopatch/nolzexe, sound on/off +
+         boot + start program, ips, speed, nopatch, sound on/off +
          quality notch, 6-byte options blob, trainer_assert_off,
          overlay hash/snapshot ref, state (canonical-1 when ranked, absent
          for the player's own PFEMU-STATE/), source dir (hint only)

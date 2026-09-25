@@ -294,12 +294,11 @@ static void strop(int op, int sz){
          * every self-extracting executable uses it.  memmove is specified to
          * do the opposite - it copies as if through a temporary, so the
          * source is the *old* contents - and an earlier comment here claimed
-         * it "covers overlap", which is backwards.  Nothing in the game's own
-         * files noticed, because none of them is compressed; the 1993 demo's
-         * PKLITE sound drivers are, and a wrong run left the resident driver
-         * with `02 AC 01` where `EC A8 01` (in al,dx / test al,1) belonged -
-         * a calibration loop that could never see the port it was counting.
-         * The slow loop below is byte-exact, so overlap simply goes there. */
+         * it "covers overlap", which is backwards.  A PKLITE-packed driver
+         * unpacked through it came out subtly wrong: `02 AC 01` where
+         * `EC A8 01` (in al,dx / test al,1) belonged, a calibration loop
+         * that could never see the port it was counting.  The slow loop
+         * below is byte-exact, so overlap simply goes there. */
         if((op == 0 || op == 2) && !cpu.df && cnt >= 16){
             int el = sz / 8;
             uint64_t n = ((uint64_t)cnt - 1u) * (uint64_t)el;
@@ -511,8 +510,7 @@ static void op0f(void){
  * -undefdump goes further and writes the whole code segment out once, the
  * first time this fires.  Sixteen bytes tell you whether the decoder drifted;
  * they do not tell you where it left real code, and when the program that got
- * there arrived compressed on disk (PKLITE .SDR drivers, LZEXE .PRG programs)
- * there is no file to disassemble instead.  The guest's own memory is the
+ * there arrived compressed on disk there is no file to disassemble instead.  The guest's own memory is the
  * only copy of what is actually executing. */
 uint32_t insn_ip;   /* also read by -memwatch in vga.c, to name the writer */
 #define UNDEF_SITES 32
@@ -526,8 +524,7 @@ int undef_dump = 0;                     /* -undefdump */
  * calls it for CS at the first undecodable instruction) and -dumpseg (which
  * names a segment up front, for a program that misbehaves without ever
  * executing a bad opcode).  Both exist for the same reason: a program that
- * arrived compressed - a PKLITE .SDR, an LZEXE .PRG - has no file anywhere
- * that matches what is running. */
+ * arrived compressed has no file anywhere that matches what is running. */
 void cpu_dump_segment(uint16_t seg, const char *why){
     char path[64];
     uint32_t lin = (uint32_t)seg << 4;

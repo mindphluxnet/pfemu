@@ -88,7 +88,7 @@ free triage tier:
 
 | Constraint | Value | Why |
 | --- | --- | --- |
-| Release | `floppy`, `power_pack`, `deluxe` | The 1993 demo is excluded - nobody competing would use it, and it has no options structure at all (`cfg_buf = 0`). |
+| Release | `floppy`, `power_pack`, `deluxe` | Every supported release. |
 | Balls | 3 | Classic machines are 3-ball. A 5-ball game is a different game and is not comparable. |
 | Players | 1 | See [Player count](#player-count). Multi-player interleaves scores across alternating balls and is dropped entirely. |
 | Trainer | off | Already asserted by the format. |
@@ -406,10 +406,6 @@ The addresses
 themselves differ per table *and* per release (`DS:45B8` in floppy Table 1,
 `DS:4608` in the Deluxe one), which is the usual argument against hardcoding.
 
-The 1993 demo matches none of them, as expected: its programs are LZEXE-packed
-on disk. It is excluded from verification anyway, and nothing checked whether
-the signatures hold in the unpacked image.
-
 That scan is `tools/scorescan.py`, so the claim is re-runnable rather than
 historical - and it is what a newly identified release has to pass before it
 can be ranked:
@@ -522,7 +518,7 @@ is a regression net for the emulator itself.
 
 **Built.** `make` produces `pfemu-headless`. It was smaller than it looked:
 the emulation core - `cpu.c`, `vga.c`, `dev.c`, `bios.c`, `fantasies.c`,
-`lzexe.c`, `png.c` - contained no Win32 at all, exactly as this table
+`png.c` - contained no Win32 at all, exactly as this table
 predicted.
 
 | File | Win32 surface | Work | Done |
