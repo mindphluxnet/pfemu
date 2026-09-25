@@ -406,8 +406,8 @@ built (next steps, item 7).
    it holds the same `game.gog` in a Boxer bundle (RELEASES.md, "The macOS
    edition", from the user's listing). `src/gog.c` now finds it in
    `/Applications` and `~/Applications` by its `.goggame-1207664103.info`.
-   Tested under WSL on a copy of the layout; not yet by the launcher on the
-   MacBook.
+   Tried by hand on the MacBook (user, 2026-09-25, at `c4e4765`): the offer
+   came and the import worked.
 
 ## Running the gate
 

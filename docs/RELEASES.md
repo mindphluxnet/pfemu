@@ -289,9 +289,8 @@ another GOG DOS game's `game.gog` matters), and searches its
 `Contents/Resources` for `game.gog`, six levels deep, without following
 symlinks. A Heroic `install_path` gets the same treatment. `/Volumes` is
 not searched, so a `.dmg` that is only mounted is not found: USB drives are
-mounted there too, and reading one makes macOS ask for permission. The layout was checked
-against the listing from the MacBook and a copy of it under WSL, not yet by
-the launcher on the Mac.
+mounted there too, and reading one makes macOS ask for permission. The launcher found it
+on the user's MacBook and the import worked (2026-09-25).
 
 The disc also holds the menu (`PFD.EXE`) and Pinball Mania. Our `deluxe`
 collection has neither, so this is the first copy of them we have. pfemu does
