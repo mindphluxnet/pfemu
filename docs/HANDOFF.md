@@ -332,6 +332,19 @@ built (next steps, item 7).
    instead of 241.2 s for 126 MB instead of 70 MB, and the wait in
    `src/video.c` barely moved (40.1 s), so x264's preset is not the whole
    bottleneck. `veryfast` stays the default.
+   **Pauses are cut to 2 s (2026-09-25).** A paused table is a frozen
+   picture with no sound, so `-video` keeps the first two seconds of a
+   pause (GAME PAUSED on the dot matrix) and drops the rest; `-videokeeppause`
+   turns that off (REPLAY.md, Videos). Measured on
+   `sessions/GOG_20260925_071526.pfr` (84 s pause, not in the suite):
+   verdict and `-wav` unchanged, stream deterministic, 81.902 s cut,
+   510.3 s of video down to 428.4 s. The user's condition for publishing
+   cut videos: **the site must say that pauses were removed.** So next,
+   pfemu-service's `render._describe()` should read the
+   `[video] pause cut: X s at V s of the video (R s of the replay)` lines
+   into `video` (a count, the total and the list), and pfemu-web should
+   show that on the entry page. Until the service reads them, a cut is
+   silent there.
 
 ## Running the gate
 

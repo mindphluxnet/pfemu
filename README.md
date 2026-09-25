@@ -323,6 +323,7 @@ development.
 | `-keys "t:sc:state,..."` | Feed timed keyboard events to the guest |
 | `-wav FILE` | Capture audio to WAV |
 | `-video FIFO` / `-videowav FILE` / `-videoscale N` | Raw frames and a soundtrack for an encoder; `tools/render-video.sh` makes an MP4 from a replay ([Videos](docs/REPLAY.md#videos)) |
+| `-videokeeppause` | Keep pauses whole in that video; by default each is cut to 2 s |
 
 The tracing flags (`-t`, `-xring`, `-trap`, `-dosdbg`, `-iotrace`, `-pll`,
 `-snddbg`, `-flipdbg`, `-vscan`, `-dmd`, `-balldbg`, `-matdbg`, `-scoredbg`,

@@ -252,6 +252,7 @@ void fantasies_filter_read(const char *fname, long pos, uint8_t *buf, int len);
 void fantasies_patch_intro(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_patch_pause(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_pause_tick(void);
+int  fantasies_paused(void);
 void fantasies_spring_tick(void);
 void fantasies_patch_spring(const char *dospath, uint32_t load_base, uint32_t imglen);
 void fantasies_patch_balls(const char *dospath, uint32_t load_base, uint32_t imglen);
@@ -647,6 +648,7 @@ int save_png(const char *path, const uint32_t *pix, int w, int h); /* src/png.c 
 extern int video_on;
 void video_arm(const char *frames, const char *wav);
 void video_set_scale(int n);                 /* -videoscale N: 320N x 240N */
+void video_keep_pause(void);                 /* -videokeeppause: no pause cut */
 int  video_open(void);                       /* 0, or -1 with a message */
 void video_poll(void);                       /* after every main-loop batch */
 int  video_last_frame(uint32_t *dst, int *w, int *h);

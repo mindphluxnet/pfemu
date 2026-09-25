@@ -297,6 +297,26 @@ without video, for comparison.
   Right for a hash, useless next to a picture. `-videowav` places each
   sample on the emulated clock, fills gaps with silence, resamples to 48 kHz
   mono and pads to the video's length.
+- **A pause is cut to 2 s** (added 2026-09-25). While a table is paused the
+  picture is frozen and the card plays nothing: measured on an 84 s pause,
+  one frame hash and no samples throughout, with GAME PAUSED on the dot
+  matrix. So the video keeps the first two seconds, enough to read that,
+  and leaves out the rest, picture and sound together. The signal is the
+  game's own PAUSEFLAG, the byte the pause-race fix already finds
+  (`fantasies_paused()`). This edits the video, not the run: on the pause
+  replay the `-verify` object and `-wav` were the same with the cut, with
+  `-videokeeppause` and without `-video`, two runs with the cut wrote the
+  same frames and soundtrack, and the sound after the cut sits where it did
+  before it (4 samples at 48 kHz, the rounding of the reported length).
+  **The video's clock then runs behind the replay's** by what was cut, so
+  whoever publishes it has to say so. Each cut is reported on its own line,
+  and the summary line counts them:
+
+      [video] pause cut: 81.902 s at 376.736 s of the video (376.736 s of the replay)
+      [video] 25581 frames (428.399 s) ...; 1 pauses cut, 81.902 s; ...
+
+  The first time is where in the video the cut is, the second the same
+  moment on the replay's clock. `-videokeeppause` keeps pauses whole.
 
 ## Validation ("accurate" means)
 

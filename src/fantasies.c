@@ -815,6 +815,17 @@ void fantasies_pause_tick(void){
     pause_prev_flag[table_num] = cur;
 }
 
+/* PAUSEFLAG as the game sees it: 1 while the table is paused, 0 while it is
+ * not, -1 when there is no table or its flag was not found.  Only reads
+ * guest RAM, so -video can use it (src/video.c). */
+int fantasies_paused(void){
+    uint32_t a;
+    if(!session_armed || !table_num) return -1;
+    a = pause_addr_pauseflag[table_num];
+    if(!a) return -1;
+    return mem_r8(a) != 0;
+}
+
 /* Trainer hotkeys: '1'/'2' ported from trainer/PINTRN.COM (RAZOR DoX,
  * 1994); '3'/'Z' from trainer/TRAINER.EXE (MAT's "Tripper-Trainer",
  * Jan 1994 - PKLite-packed, unpacked and traced under pfemu itself).

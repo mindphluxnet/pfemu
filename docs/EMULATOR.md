@@ -427,6 +427,7 @@ Numeric addresses are hex; key scripts are `time:scancode:state` triples
 | `-keys "..."` | Scripted keyboard input at emulated times |
 | `-wav FILE` | Capture audio |
 | `-video F` / `-videowav F` / `-videoscale N` | Frames and soundtrack for an encoder ([REPLAY.md, Videos](REPLAY.md#videos)) |
+| `-videokeeppause` | Keep a pause whole in the video instead of cutting it to 2 s |
 | `-xring` | Last 8,192 executed addresses at exit (runs collapsed) - the fastest way to find where a guest went off into data |
 | `-trap LO HI` / `-trapexit` | Stop on entering an address range / on child exit |
 | `-mem LIN` | Dump 256 guest bytes at exit |

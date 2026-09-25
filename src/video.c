@@ -32,7 +32,19 @@
  * back, with no silence for the time it was not playing (between program
  * loads, for one) and no record of a rate change: right for a hash, useless
  * as a soundtrack.  This one is placed on the emulated clock, gaps filled
- * with silence, resampled to 48 kHz, and padded to the video's length. */
+ * with silence, resampled to 48 kHz, and padded to the video's length.
+ *
+ * A PAUSE is cut short.  While the table is paused the picture does not
+ * change and the card plays nothing (measured: one frame hash and no samples
+ * for all 84 s of a pause), and the dot matrix says GAME PAUSED.  So the
+ * first PAUSE_HOLD seconds of a pause stay in the video, enough to read
+ * that, and the rest is left out of picture and sound alike, by moving
+ * t_origin, which both hang on.  The signal is the game's own PAUSEFLAG
+ * (fantasies_paused()), a read of guest RAM, taken on the emulated clock
+ * like everything else here.  This is a deliberate edit of the video, not
+ * of the run: the verdict and -wav are unchanged, and each cut is reported
+ * on a line of its own, so whoever publishes the video can say so.
+ * -videokeeppause keeps pauses whole. */
 #include "pfemu.h"
 #ifndef _WIN32
 #include <signal.h>
@@ -41,6 +53,7 @@
 #define VID_PER   (421600.0 / 25175000.0)   /* 800 x 527 dots at 25.175 MHz */
 #define AUD_HZ    48000
 #define NAT_MAX   (1024 * 768)              /* run.c's framebuffer */
+#define PAUSE_HOLD 2.0                      /* seconds of a pause that stay */
 
 int video_on = 0;
 static const char *vid_path, *aud_path;
@@ -68,8 +81,16 @@ static double a_pos = -1.0;          /* resampler position in input samples */
 static int16_t a_prev;
 static unsigned long a_gaps;
 
+static int keep_pause = 0;           /* -videokeeppause */
+static double pause_t = -1.0;        /* emulated time the pause began, or -1 */
+static double pause_cut;             /* seconds of this pause left out so far */
+static double pause_at;              /* where in the video the cut is */
+static unsigned long n_pause;        /* pauses cut */
+static double cut_total;
+
 void video_arm(const char *frames, const char *wav){ vid_path = frames; aud_path = wav; }
 void video_set_scale(int n){ vid_scale = n; }
+void video_keep_pause(void){ keep_pause = 1; }
 int  video_failed(void){ return vid_failed; }
 
 static void put_le32(uint8_t *p, uint32_t v){
@@ -177,6 +198,36 @@ static void emit(void){
     k_out++;
 }
 
+/* A pause is over, or the run is: report its cut. */
+static void pause_end(void){
+    if(pause_cut > 0.0){
+        n_pause++; cut_total += pause_cut;
+        fprintf(stderr, "[video] pause cut: %.3f s at %.3f s of the video"
+                        " (%.3f s of the replay)\n",
+                pause_cut, pause_at, pause_t + PAUSE_HOLD);
+    }
+    pause_t = -1.0; pause_cut = 0.0;
+}
+
+/* Past PAUSE_HOLD into a pause, every emulated second is left out: t_origin
+ * moves with the clock, so no frame falls due and no sound is placed. */
+static void pause_track(double now){
+    double want;
+    if(keep_pause) return;
+    if(fantasies_paused() != 1){
+        if(pause_t >= 0.0) pause_end();
+        return;
+    }
+    if(pause_t < 0.0){ pause_t = now; pause_cut = 0.0; }
+    want = now - pause_t - PAUSE_HOLD;
+    if(want <= pause_cut) return;
+    if(pause_cut == 0.0) pause_at = pause_t + PAUSE_HOLD - t_origin;
+    t_origin += want - pause_cut;
+    pause_cut = want;
+    /* the frames sampled meanwhile are not skipped ones */
+    if(cap_since_emit > 1) cap_since_emit = 1;
+}
+
 /* Called after every batch of the main loop, before the present-phase test
  * that may end it. */
 void video_poll(void){
@@ -202,6 +253,7 @@ void video_poll(void){
             if(late) n_late++;
         }
     }
+    pause_track(now);
     while(now - t_origin >= ((double)k_out + 0.5) * VID_PER) emit();
     t_wall += plat_time() - t0;
 }
@@ -238,6 +290,8 @@ void video_audio_feed(const int16_t *s, int n, double rate, double t_first){
     int m = 0;
     double step, want;
     if(!aud_fp || !started || n <= 0 || rate <= 0.0) return;
+    /* nothing was measured playing in a pause; were it, it has no place */
+    if(pause_cut > 0.0) return;
     want = (t_first - t_origin) * AUD_HZ;
     if(want > (double)a_out + 0.020 * AUD_HZ){
         aud_pad_to((unsigned long long)want);
@@ -266,7 +320,9 @@ void video_close(void){
     if(!video_on) return;
     if(started){
         double now = emu_now();
+        pause_track(now);
         while(now - t_origin >= ((double)k_out + 0.5) * VID_PER) emit();
+        if(pause_t >= 0.0) pause_end();
     }
     if(vid_fp && fclose(vid_fp) != 0) fail("the frame pipe closed");
     vid_fp = NULL;
@@ -281,9 +337,10 @@ void video_close(void){
     t_wall += plat_time() - t0;
     fprintf(stderr, "[video] %llu frames (%.3f s) %dx%d: %lu guest frames"
                     " sampled, %lu late, %lu repeated, %lu skipped; sound"
-                    " %llu samples, %lu gaps; %.2f s of host time%s\n",
+                    " %llu samples, %lu gaps; %lu pauses cut, %.3f s;"
+                    " %.2f s of host time%s\n",
             k_out, (double)k_out * VID_PER, vid_w, vid_h, n_cap, n_late,
-            n_dup, n_drop, a_out, a_gaps, t_wall,
+            n_dup, n_drop, a_out, a_gaps, n_pause, cut_total, t_wall,
             vid_failed ? " - FAILED" : "");
     video_on = 0;
 }

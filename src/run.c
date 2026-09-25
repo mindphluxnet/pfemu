@@ -304,10 +304,12 @@ int emu_main(int argc, char **argv){
         else if(!strcmp(argv[i],"-wav") && i+1<argc){ extern const char *wav_path; wav_path = argv[++i]; }
         /* -video FRAMES: raw frames for an encoder, normally a FIFO that
          * ffmpeg reads (src/video.c, tools/render-video.sh).  -videowav is
-         * its soundtrack, which -wav is not. */
+         * its soundtrack, which -wav is not.  A pause is cut to two seconds
+         * unless -videokeeppause. */
         else if(!strcmp(argv[i],"-video") && i+1<argc) video_frames = argv[++i];
         else if(!strcmp(argv[i],"-videowav") && i+1<argc) video_wav = argv[++i];
         else if(!strcmp(argv[i],"-videoscale") && i+1<argc) video_set_scale(atoi(argv[++i]));
+        else if(!strcmp(argv[i],"-videokeeppause")) video_keep_pause();
         else if(!strcmp(argv[i],"-snddbg")){ extern int sound_debug; sound_debug = 1; }
         else if(!strcmp(argv[i],"-vol") && i+1<argc) vol_override = atoi(argv[++i]);
         /* -res normal|high: one-run resolution override without saving
