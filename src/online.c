@@ -807,12 +807,16 @@ void json_esc(const char *in, char *out, size_t n){
 
 /* ------------------------------------------------------------ reason text
  * The table in pfemu-web/docs/API.md, in the words it asks the launcher to
- * use. */
-const char *online_reason_text(const char *reason){
+ * use.  A reason this build does not know - one the server added since -
+ * is shown as itself, in buf: the player then has something to report, and
+ * "not ranked" is still true of every reason but `rankable`. */
+const char *online_reason_text(const char *reason, char *buf, size_t n){
     static const struct { const char *code, *text; } t[] = {
         { "rankable", "Verified and ranked." },
         { "no_rankable_attempt", "No finished one-player game. The recording has to run"
                                  " until the game is back in attract mode." },
+        { "game_cheat", "Cheat(s) active. The game was played with one of its own cheat"
+                        " codes, or with PgDn pressed before it started." },
         { "balls_not_3", "Only 3-ball games rank." },
         { "release_not_ranked", "This release has no leaderboard." },
         { "mismatch", "The replay did not reproduce the recording." },
@@ -824,6 +828,8 @@ const char *online_reason_text(const char *reason){
         { "untrusted_build", "Our fault: server configuration." },
         { "unexpected_build", "Our fault: server configuration." },
         { "not_strict", "Our fault: server configuration." },
+        { "implausible_verdict", "Our fault: a result the server cannot store."
+                                 " It will be looked at." },
     };
     size_t i;
     if(!reason || !reason[0]) return "";
@@ -831,5 +837,11 @@ const char *online_reason_text(const char *reason){
         if(!strcmp(reason, t[i].code)) return t[i].text;
     if(!strncmp(reason, "triage_refused", 14)) return "The file was not accepted for replay.";
     if(!strncmp(reason, "warning:", 8)) return "Held for a person to look at.";
-    return "It does not count.";
+    /* balls_not_3 is the rule today; the server's policy names the count. */
+    if(!strncmp(reason, "balls_not_", 10) && reason[10] >= '0' && reason[10] <= '9'){
+        snprintf(buf, n, "Only %s-ball games rank.", reason + 10);
+        return buf;
+    }
+    snprintf(buf, n, "Not ranked (reason: %s).", reason);
+    return buf;
 }

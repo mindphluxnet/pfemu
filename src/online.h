@@ -64,7 +64,8 @@ const char *json_next_obj(const char *p, const char *e, const char **oe);
 /* in as a JSON string body, without the quotes. */
 void json_esc(const char *in, char *out, size_t n);
 
-/* What to tell the player for a result's reason (the table in API.md). */
-const char *online_reason_text(const char *reason);
+/* What to tell the player for a result's reason (the table in API.md).
+ * An unknown reason is formatted into buf, which the result may point to. */
+const char *online_reason_text(const char *reason, char *buf, size_t n);
 
 #endif

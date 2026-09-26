@@ -49,7 +49,8 @@ The work done before it is finished:
   PgDn there is not. The five golden vectors keep their verdicts. **The
   validator has to build this commit before it applies**, and then `pfweb
   reverify` (a live cheated entry would have to be re-verified to drop).
-  pfemu-web shows the new token as it stands; it may want wording for it.
+  pfemu-web passes it up as the submission's reason and shows it as
+  "Cheat(s) active"; the launcher says the same (`online_reason_text()`).
 - **The verifier's output exists.** `-verify FILE` writes one JSON object:
   a status (`verified` / `mismatch` / `refused`), the recorded-vs-actual
   comparison, every attempt with a reason token, and `best`, the highest

@@ -502,7 +502,7 @@ void online_message(const HttpResp *r, char *out, size_t n){
  * tells an old answer from a current one. */
 void sub_describe(const char *s, const char *e, char *out, size_t n, int *pending){
     long long id = 0, score = 0, qp = 0;
-    char state[24] = "", reason[96] = "", sc[32], build[40] = "", where[48] = "";
+    char state[24] = "", reason[96] = "", why[128], sc[32], build[40] = "", where[48] = "";
     char games[160] = "";
     const char *rs, *re, *as, *ae, *o, *oe;
     int rankable = 0, have_result;
@@ -547,7 +547,7 @@ void sub_describe(const char *s, const char *e, char *out, size_t n, int *pendin
                  build[0] ? build : "?");
     } else {
         snprintf(out, n, "Submission #%lld: %s (build %s)", id,
-                 online_reason_text(reason), build[0] ? build : "?");
+                 online_reason_text(reason, why, sizeof(why)), build[0] ? build : "?");
     }
 }
 
@@ -580,7 +580,7 @@ static void sl_time(char *t){
 /* One submission object as the table's cells.  Returns the row's colour. */
 int sl_row(const char *p, const char *oe, char col[SL_COLS][SL_CELL]){
     long long id = 0, qp = 0, score = 0;
-    char state[24] = "", reason[96] = "", sc[32];
+    char state[24] = "", reason[96] = "", why[128], sc[32];
     const char *rs, *re, *as, *ae, *o, *ge;
     int rankable = 0, have_result, done, i;
     for(i = 0; i < SL_COLS; i++) col[i][0] = 0;
@@ -623,7 +623,7 @@ int sl_row(const char *p, const char *oe, char col[SL_COLS][SL_CELL]){
     /* Not done but with a result: the previous round's answer, shown as
      * such while the server verifies it again. */
     snprintf(col[4], SL_CELL, "%s%s", done ? "" : "previous: ",
-             online_reason_text(reason));
+             online_reason_text(reason, why, sizeof(why)));
     return !done ? SL_PENDING : rankable ? SL_COUNTS : SL_PLAIN;
 }
 
