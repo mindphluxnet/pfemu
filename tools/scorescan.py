@@ -58,6 +58,58 @@ INTEGRATOR = re.compile(rb'\xa1(..)\x99\x01\x06..\x11\x16..\xa1..\x8b\x16..'
                         rb'\xbb\x00\x04\xf7\xfb', re.S)
 # PUSH imm16 / POP DS - the DATA-segment majority vote
 DATASEG = re.compile(rb'\x68(..)\x1f', re.S)
+# FAIRPLAYRUT, which names all three variables the game's own cheats change:
+#   MOV [AFTER_CHEAT],TRUE / MOV BX,offset FairPlayTS / CALL DO_MATRIX /
+#   AND [SHIFTKEYS],0FBh / MOV [TILTDISABLED],FALSE / MOV [NO_OF_BALLS],3 / RETN
+FAIRPLAY = re.compile(rb'\xc6\x06..\xff\xbb..\xe8..\x80\x26(..)\xfb'
+                      rb'\xc6\x06(..)\x00\xc6\x06(..)\x03\xc3', re.S)
+
+
+def cheats(img, nballs):
+    """The cheat locators of fantasies_find_score(), and the census behind them.
+
+    Returns (shiftkeys, tiltdis, hi_res, s_balls, problems).  Every address is
+    confirmed by a second site, and the census checks the claim the verifier
+    rests on: bit 2 of SHIFTKEYS is written by exactly five instructions (the
+    hi-res init, PgDn, SNAIL setting it; PgUp, FAIR PLAY clearing it) and no
+    instruction writes the whole byte.  The census is a byte scan, so a
+    coincidental match in data would show up as a failure here, not hide one.
+    """
+    bad = []
+    fp = list(FAIRPLAY.finditer(img))
+    if len(fp) != 1:
+        return None, None, None, None, ["FAIR PLAY matched %d times, want 1" % len(fp)]
+    sk, td, nb = [u16(x) for x in fp[0].groups()]
+    if nballs is not None and nb != nballs:
+        bad.append("FAIR PLAY resets DS:%04X, ball site says NO_OF_BALLS DS:%04X"
+                   % (nb, nballs))
+    p = lambda v: re.escape(struct.pack('<H', v))
+    n_tilt = len(re.findall(rb'\x80\x3e' + p(td) + rb'\xff\x74.\x90\x90\x90', img, re.S))
+    if n_tilt != 1:
+        bad.append("tilt logic on DS:%04X matched %d times, want 1" % (td, n_tilt))
+    hr = re.findall(rb'\x80\x3e(..)\xff\x75\x08\x90\x90\x90\x80\x0e' + p(sk) + rb'\x04',
+                    img, re.S)
+    hires = u16(hr[0]) if len(hr) == 1 else None
+    if len(hr) != 1:
+        bad.append("hi-res init on DS:%04X matched %d times, want 1" % (sk, len(hr)))
+    sb = re.findall(rb'\xc6\x06' + p(nb) + rb'\x03\x80\x3e(..)\x00\x74\x08\x90\x90\x90'
+                    rb'\xc6\x06' + p(nb) + rb'\x05', img, re.S)
+    sballs = u16(sb[0]) if len(sb) == 1 else None
+    if len(sb) != 1:
+        bad.append("ball-count option matched %d times, want 1" % len(sb))
+    sets = sum(1 for m in re.finditer(rb'\x80\x0e' + p(sk) + rb'(.)', img, re.S)
+               if m.group(1)[0] & 4)
+    clears = sum(1 for m in re.finditer(rb'\x80\x26' + p(sk) + rb'(.)', img, re.S)
+                 if not m.group(1)[0] & 4)
+    # MOV [SK],imm / MOV [SK],AL / MOV|OR|AND|XOR [SK],r8 / XOR [SK],imm /
+    # NOT|NEG [SK] / INC|DEC [SK]
+    whole = len(re.findall(rb'(?:\xc6\x06|\xa2|[\x88\x08\x20\x30][\x06\x0e\x16\x1e'
+                           rb'\x26\x2e\x36\x3e]|\x80\x36|\xf6[\x16\x1e]|\xfe[\x06\x0e])'
+                           + p(sk), img))
+    if (sets, clears, whole) != (3, 2, 0):
+        bad.append("SHIFTKEYS bit 2: %d set, %d clear, %d whole-byte writes; want 3/2/0"
+                   % (sets, clears, whole))
+    return sk, td, hires, sballs, bad
 
 
 def transaction(img, sif):
@@ -185,16 +237,20 @@ def scan(path):
     elif players is not None and players2 != players:
         bad.append("add-player DS:%04X != ball site DS:%04X" % (players2, players))
 
+    sk, td, hires, sballs, cbad = cheats(img, nballs)
+    bad += cbad
+
     def h(v):
         return "%04X" % v if v is not None else "  ??"
 
     print("%-28s dseg=%s(x%-2d) score=%s(x%d,dmd x%d) demo=%s(x%d,start x%d) "
           "ball=%s nballs=%s players=%s(x%d) player=%s launch=%s(x%d) "
-          "txn=%d/%s  %s"
+          "txn=%d/%s tilt=%s shift=%s hires=%s sballs=%s  %s"
           % (path, h(seg), votes, h(score), n_zero, n_dmd, h(demo), n_demo,
              n_ggm, h(balls11), h(nballs), h(players), n_add, h(player),
              h(yhast), len(launch),
              n_clr, ("%dw" % n_rw) if n_rw else ("%db" % n_rb),
+             h(td), h(sk), h(hires), h(sballs),
              "OK" if not bad else "FAIL: " + "; ".join(bad)))
     return not bad
 

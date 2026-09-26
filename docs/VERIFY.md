@@ -289,13 +289,45 @@ That was the operator's call, and it matches what `-scoredbg` has always
 done, so nothing had to change to enforce it.
 
 The full condition is stricter than the two clauses this paragraph used to
-name. `sc_close()` (src/fantasies.c) requires all six: the attempt ended in
+name. `sc_close()` (src/fantasies.c) requires all seven: the attempt ended in
 attract mode on its own, its first launch was observed *in this session*,
-the trainer was off, the player count was exactly 1, no score digit was
-out of BCD range, and the score never decreased. A verifier should reject
-on the flag rather than re-deriving any of that, and the golden suite pins
-the flag for the same reason: `ended=attract` is necessary but not
-sufficient, so a change could leave it intact while flipping the verdict.
+the trainer was off, none of the game's own cheats was in force, the player
+count was exactly 1, no score digit was out of BCD range, and the score
+never decreased. A verifier should reject on the flag rather than
+re-deriving any of that, and the golden suite pins the flag for the same
+reason: `ended=attract` is necessary but not sufficient, so a change could
+leave it intact while flipping the verdict.
+
+**The game's own cheats.** The trainer is pfemu's, and it is refused before
+anything runs. The game also has cheats of its own, typed as words in attract
+mode (FANTASIE.ASM `cheats`, `checkcheat`), and those are only keys: they go
+into the recording like any other key and replay exactly, so a cheated game
+*verifies*. Thirteen words, the same in all twelve ranked programs. Nine
+only scroll a message. Three change the game: EARTHQUAKE sets
+`TILTDISABLED`, SNAIL sets bit 2 of `SHIFTKEYS` (the physics runs one step
+per interrupt instead of two: slow motion), EXTRA BALLS sets `NO_OF_BALLS`
+to 5. FAIR PLAY undoes all three. There is a fourth way in with no word:
+PgDn and PgUp in attract mode set and clear the same speed bit (KEYINT's
+`DOE0_DEMO`), and every shipped build kept that live.
+
+So the verifier checks the *state*, not the keys. At the start of every
+attempt, at every launch, and at its end, `sc_cheat_state()` compares the
+three variables with what the table set up for itself: `TILTDISABLED` must
+be false, the speed bit must match `HI_RES` (the 350-line mode sets it at
+start-up), and `NO_OF_BALLS` must match the table's own copy of the ball
+option (`TOGGLAREN.S_BALLS`). Any difference makes the attempt unrankable
+with reason `game_cheat`. A cheat taken back with FAIR PLAY before the game
+starts leaves nothing to see, which is correct: that game was played
+straight. The four new addresses come from the same locator as the rest,
+cross-checked: FAIRPLAYRUT names the three variables at once, and each is
+confirmed by an independent site (the ball site, TILTLOGIC's test, the
+hi-res init). `tools/scorescan.py` checks the shapes across all twelve
+programs, and shows that only those five instructions ever write the
+speed bit.
+
+EXTRA BALLS was already caught before this, but only by accident: pfemu-web
+ranks `balls == 3`, and it read as `balls_not_3`. EARTHQUAKE, SNAIL and PgDn
+were not caught at all.
 
 **The segmenter must be strictly read-only.** No poking guest state, ever, or
 a scoring run diverges from a normal one. Directly testable: replay the same
@@ -676,8 +708,9 @@ today moves.
 
 **`best` is the answer, not `score`.** It is the highest-scoring attempt
 satisfying every condition in `sc_close()` - attract-mode end, first launch
-seen, trainer off, exactly one player, no out-of-range BCD digit, score
-never decreased - and it is `null` when the run contains no such attempt,
+seen, trainer off, no game cheat in force, exactly one player, no
+out-of-range BCD digit, score never decreased - and it is `null` when the
+run contains no such attempt,
 most often because it ended mid-table. Deriving that here rather than in
 each caller is the point of the field: the rule lives next to the evidence
 for it, and a client that reimplements it can only get it wrong. `attempts`

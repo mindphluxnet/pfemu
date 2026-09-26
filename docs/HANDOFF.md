@@ -35,9 +35,21 @@ The work done before it is finished:
   against a fixed canonical state, and `-strict` accepts nothing else
   (REPLAY.md, Ranked recordings).
 - **Eligibility is decided and enforced.** An attempt counts only if it ends
-  in attract mode on its own, and it must meet the other five conditions in
+  in attract mode on its own, and it must meet the other six conditions in
   `sc_close()` as well. A run that stops mid-table does not count. The vector
   pins `rankable`, not just the number.
+- **The game's own cheats are unrankable (2026-09-26).** EARTHQUAKE, SNAIL
+  and EXTRA BALLS, typed in attract mode, are only keys, so a cheated game
+  replays and verifies like any other. PgDn in attract mode does what SNAIL
+  does without a word. The score tracker now compares `TILTDISABLED`, the
+  speed bit and `NO_OF_BALLS` with what the table set up for itself, and an
+  attempt played under any of them gets reason `game_cheat` (VERIFY.md, "The
+  game's own cheats"). Tested headless on Deluxe table 1: each of the four
+  flagged, FAIR PLAY taking them back is not, hi-res PgUp is flagged, and
+  PgDn there is not. The five golden vectors keep their verdicts. **The
+  validator has to build this commit before it applies**, and then `pfweb
+  reverify` (a live cheated entry would have to be re-verified to drop).
+  pfemu-web shows the new token as it stands; it may want wording for it.
 - **The verifier's output exists.** `-verify FILE` writes one JSON object:
   a status (`verified` / `mismatch` / `refused`), the recorded-vs-actual
   comparison, every attempt with a reason token, and `best`, the highest

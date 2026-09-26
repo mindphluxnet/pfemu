@@ -1990,6 +1990,10 @@ static uint32_t sc_end_site[5];           /* GO_DEMO_MODE's store */
 static uint32_t sc_launch_site[5];        /* SPRINGUP's velocity store */
 static uint32_t sc_clear_site[5];         /* RESET_VARS zeroes the score */
 static uint32_t sc_restore_site[5];       /* P_STRUC_2_VARS has put it back */
+static uint32_t sc_tiltdis[5];            /* TILTDISABLED (EARTHQUAKE) */
+static uint32_t sc_shiftkeys[5];          /* SHIFTKEYS, bit 2 the half-speed step */
+static uint32_t sc_hires[5];              /* HI_RES, which sets that bit at init */
+static uint32_t sc_sballs[5];             /* TOGGLAREN.S_BALLS, the configured 3/5 */
 
 /* The two addresses cpu_step() compares against, set from the arrays above
  * when a located table is running and zeroed the moment it is not.  Both stay
@@ -2004,6 +2008,7 @@ typedef struct {
     int launches, launches_after_last_ball, springflips, resets;
     int rankable, bad_digits, decreased;
     int locked, trainer;
+    int cheats;                           /* SC_CHEAT_* seen at any sample */
     unsigned long long start_cycles, end_cycles;
     double start_emu, end_emu;
     uint64_t score;
@@ -2187,6 +2192,7 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
     sc_score[tn] = sc_demomode[tn] = sc_ball[tn] = sc_nballs[tn] = 0;
     sc_players[tn] = sc_player[tn] = sc_begin_site[tn] = sc_end_site[tn] = 0;
     sc_launch_site[tn] = sc_clear_site[tn] = sc_restore_site[tn] = 0;
+    sc_tiltdis[tn] = sc_shiftkeys[tn] = sc_hires[tn] = sc_sballs[tn] = 0;
     if(load_base + imglen > RAM_SIZE) return;
 
     seg = data_seg_vote(load_base, imglen);
@@ -2306,6 +2312,100 @@ void fantasies_find_score(const char *dospath, uint32_t load_base, uint32_t imgl
       at_rst += nw ? sizeof(rsw) : sizeof(rsb);
     }
 
+    /* The game's own cheat codes (FANTASIE.ASM `cheats`).  CHECKCHEAT runs
+     * only in attract mode and matches what is typed against a table of
+     * thirteen names.  Nine only scroll a message, three change the game:
+     *
+     *   EARTHQUAKE   TILTDISABLED = TRUE       nudging never tilts
+     *   SNAIL        SHIFTKEYS |= 4            the half-speed physics step
+     *   EXTRA BALLS  NO_OF_BALLS = 5           whatever the options said
+     *
+     * and FAIR PLAY puts all three back.  A cheated game replays exactly like
+     * any other - the keys are in the recording - so the verifier has to look
+     * at the state rather than at the keys.  The state is also the only thing
+     * that catches the fourth way in, which has no name: PgDn and PgUp in
+     * attract mode (KEYINT's DOE0_DEMO) set and clear the same speed bit, and
+     * the shipped builds kept those two live.
+     *
+     * One routine names all three variables, FAIRPLAYRUT:
+     *
+     *   mov [AFTER_CHEAT],TRUE / mov bx,offset FairPlayTS / call DO_MATRIX /
+     *   and [SHIFTKEYS],0FBh / mov [TILTDISABLED],FALSE / mov [NO_OF_BALLS],3 /
+     *   retn
+     *
+     * and each one it names is confirmed by a site written for another reason:
+     * NO_OF_BALLS by the ball site above, TILTDISABLED by TILTLOGIC's test
+     * (cmp [TILTDISABLED],TRUE / je / nop*3), SHIFTKEYS by the init that sets
+     * the bit for the 350-line mode (cmp [HI_RES],TRUE / jne / nop*3 /
+     * or [SHIFTKEYS],4).  That last site is also what says the bit's honest
+     * value, and the options code beside `mov [NO_OF_BALLS],3` (cmp
+     * [S_BALLS],0 / je / nop*3 / mov [NO_OF_BALLS],5) says the honest ball
+     * count.  TOGGLAREN is the table's own copy of the options, written once
+     * at start-up; no cheat touches it or HI_RES.
+     *
+     * Only five instructions in each of the twelve ranked programs write bit
+     * 2 of SHIFTKEYS: the hi-res init, PgDn, SNAIL (set), PgUp, FAIR PLAY
+     * (clear) - tools/scorescan.py.  So the bit disagreeing with HI_RES means
+     * a key changed the game's speed, and nothing else does. */
+    { static const uint8_t fair[27] = {
+          0xC6,0x06,0,0,0xFF, 0xBB,0,0, 0xE8,0,0,
+          0x80,0x26,0,0,0xFB, 0xC6,0x06,0,0,0x00, 0xC6,0x06,0,0,0x03, 0xC3 };
+      static const uint8_t fairm[27] = {
+          1,1,0,0,1, 1,0,0, 1,0,0,
+          1,1,0,0,1, 1,1,0,0,1, 1,1,0,0,1, 1 };
+      uint8_t tlt[10]  = { 0x80,0x3E,0,0,0xFF, 0x74,0, 0x90,0x90,0x90 };
+      static const uint8_t tltm[10] = { 1,1,1,1,1, 1,0, 1,1,1 };
+      uint8_t hir[15]  = { 0x80,0x3E,0,0,0xFF, 0x75,0x08, 0x90,0x90,0x90,
+                           0x80,0x0E,0,0,0x04 };
+      static const uint8_t hirm[15] = { 1,1,0,0,1, 1,1, 1,1,1, 1,1,1,1,1 };
+      uint8_t sba[20]  = { 0xC6,0x06,0,0,0x03, 0x80,0x3E,0,0,0x00, 0x74,0x08,
+                           0x90,0x90,0x90, 0xC6,0x06,0,0,0x05 };
+      static const uint8_t sbam[20] = { 1,1,1,1,1, 1,1,0,0,1, 1,1, 1,1,1,
+                                        1,1,1,1,1 };
+      uint32_t at_fair = 0;
+      uint16_t o_sk, o_td, o_nb, o_hires = 0, o_sballs = 0;
+      if(sc_scan1(load_base, imglen, fair, fairm, sizeof(fair), 13,
+                  &at_fair, &o_sk) != 1){
+          fprintf(stderr, "[score] table %d: FAIR PLAY routine not unique;"
+                          " table left unscored\n", tn);
+          return;
+      }
+      o_td = img_u16(at_fair, 18);
+      o_nb = img_u16(at_fair, 23);
+      if(o_nb != o_nballs){
+          fprintf(stderr, "[score] table %d: FAIR PLAY resets DS:%04X but the"
+                  " ball site reads NO_OF_BALLS at DS:%04X; table left"
+                  " unscored\n", tn, o_nb, o_nballs);
+          return;
+      }
+      tlt[2] = (uint8_t)(o_td & 0xFF);  tlt[3] = (uint8_t)(o_td >> 8);
+      if(sc_scan1(load_base, imglen, tlt, tltm, sizeof(tlt), 2, NULL, NULL) != 1){
+          fprintf(stderr, "[score] table %d: tilt logic does not confirm"
+                  " TILTDISABLED (DS:%04X); table left unscored\n", tn, o_td);
+          return;
+      }
+      hir[12] = (uint8_t)(o_sk & 0xFF); hir[13] = (uint8_t)(o_sk >> 8);
+      if(sc_scan1(load_base, imglen, hir, hirm, sizeof(hir), 2, NULL, &o_hires) != 1){
+          fprintf(stderr, "[score] table %d: hi-res init does not confirm"
+                  " SHIFTKEYS (DS:%04X); table left unscored\n", tn, o_sk);
+          return;
+      }
+      sba[2] = sba[17] = (uint8_t)(o_nb & 0xFF);
+      sba[3] = sba[18] = (uint8_t)(o_nb >> 8);
+      if(sc_scan1(load_base, imglen, sba, sbam, sizeof(sba), 7, NULL, &o_sballs) != 1){
+          fprintf(stderr, "[score] table %d: ball-count option not found;"
+                          " table left unscored\n", tn);
+          return;
+      }
+      sc_tiltdis[tn]   = seg*16 + o_td;
+      sc_shiftkeys[tn] = seg*16 + o_sk;
+      sc_hires[tn]     = seg*16 + o_hires;
+      sc_sballs[tn]    = seg*16 + o_sballs;
+      fprintf(stderr, "[score] table %d: cheats tiltdisabled=DS:%04X"
+              " shiftkeys=DS:%04X hi_res=DS:%04X s_balls=DS:%04X\n",
+              tn, o_td, o_sk, o_hires, o_sballs);
+    }
+
     sc_score[tn]      = seg*16 + o_score;
     sc_demomode[tn]   = seg*16 + o_demo;
     sc_ball[tn]       = seg*16 + o_ball;
@@ -2359,7 +2459,40 @@ static int sc_byte(const uint32_t *tab){
     return (a && a < RAM_SIZE) ? ram[a] : -1;
 }
 
-/* Why an attempt is or is not rankable, as one token.  The six conditions in
+/* Which of the game's own cheats are in force right now (see the FAIR PLAY
+ * locator in fantasies_find_score).  Each is a difference from what the
+ * table set up for itself at start-up, so FAIR PLAY - or PgUp after PgDn -
+ * takes it back, and a table that was never touched reads 0. */
+#define SC_CHEAT_TILT   1                 /* EARTHQUAKE */
+#define SC_CHEAT_SPEED  2                 /* SNAIL, or PgDn/PgUp in attract */
+#define SC_CHEAT_BALLS  4                 /* EXTRA BALLS (or FAIR PLAY on 5) */
+static int sc_cheat_state(void){
+    int td = sc_byte(sc_tiltdis), sk = sc_byte(sc_shiftkeys);
+    int hr = sc_byte(sc_hires), sb = sc_byte(sc_sballs), nb = sc_byte(sc_nballs);
+    int m = 0;
+    if(td != 0) m |= SC_CHEAT_TILT;
+    if((sk < 0 || hr < 0) || (sk & 4) != (hr == 0xFF ? 4 : 0)) m |= SC_CHEAT_SPEED;
+    if(sb < 0 || nb != (sb ? 5 : 3)) m |= SC_CHEAT_BALLS;
+    return m;
+}
+
+/* Cheats are typed in attract mode only, so what is in force when a game
+ * starts is what it is played under.  The launch and the end sample again
+ * anyway: two more reads per ball are cheaper than being wrong about where
+ * the game listens for keys. */
+static void sc_cheat_sample(void){
+    int m = sc_cheat_state(), fresh = m & ~sc_cur.cheats;
+    if(!fresh) return;
+    sc_cur.cheats |= m;
+    fprintf(stderr, "[score] t=%.3f game cheat in force during attempt %d:%s%s%s"
+                    "  <- not rankable\n",
+            emu_time, sc_cur.index,
+            (fresh & SC_CHEAT_TILT)  ? " tilt off (EARTHQUAKE)" : "",
+            (fresh & SC_CHEAT_SPEED) ? " speed changed (SNAIL, PgDn/PgUp)" : "",
+            (fresh & SC_CHEAT_BALLS) ? " ball count changed (EXTRA BALLS)" : "");
+}
+
+/* Why an attempt is or is not rankable, as one token.  The seven conditions in
  * sc_close() are a conjunction, so a failing attempt usually fails several at
  * once; this reports the first in a fixed order, which makes it stable across
  * runs and across the two renderings below.
@@ -2371,6 +2504,7 @@ static const char *sc_reason(const ScAttempt *a){
     if(a->rankable)               return "rankable";
     if(strcmp(a->how,"attract"))  return "no_clean_end";
     if(a->trainer)                return "trainer_enabled";
+    if(a->cheats)                 return "game_cheat";
     if(!a->locked)                return "first_launch_unseen";
     if(a->players != 1)           return "player_count_not_1";
     if(a->bad_digits)             return "score_digits_out_of_range";
@@ -2384,6 +2518,7 @@ static const char *sc_reason_text(const char *code){
     if(!strcmp(code, "rankable"))                  return "  [RANKABLE]";
     if(!strcmp(code, "no_clean_end"))              return "  [not rankable: no clean end]";
     if(!strcmp(code, "trainer_enabled"))           return "  [not rankable: trainer enabled]";
+    if(!strcmp(code, "game_cheat"))                return "  [not rankable: game cheat in force]";
     if(!strcmp(code, "first_launch_unseen"))       return "  [not rankable: first launch never seen]";
     if(!strcmp(code, "player_count_not_1"))        return "  [not rankable: player count is not 1]";
     if(!strcmp(code, "score_digits_out_of_range")) return "  [not rankable: score digits out of range]";
@@ -2464,7 +2599,7 @@ static void sc_close(const char *how){
      * 3.2/3.3), so an attempt played with it armed can never be a verified
      * one either - whether or not a hotkey was actually pressed. */
     sc_cur.rankable = (!strcmp(how, "attract") && sc_cur.locked &&
-                       !sc_cur.trainer && sc_cur.players == 1 &&
+                       !sc_cur.trainer && !sc_cur.cheats && sc_cur.players == 1 &&
                        !sc_cur.bad_digits && !sc_cur.decreased);
     /* A ball that ended with no stable poll after it ends at the final score. */
     sc_mark_balls(sc_cur.score);
@@ -2541,6 +2676,7 @@ void fantasies_score_exec(uint32_t lin){
         int ball = sc_byte(sc_ball);
         if(!sc_state) return;
         sc_cur.launches++;
+        sc_cheat_sample();
         if(sc_cur.nballs > 0 && ball > sc_cur.nballs)
             sc_cur.launches_after_last_ball++;
         if(sc_state == 1 && ball == 1){
@@ -2587,6 +2723,7 @@ void fantasies_score_exec(uint32_t lin){
         if(sc_cur.trainer)
             fprintf(stderr, "[score] the trainer is enabled, so nothing this"
                             " session can be ranked\n");
+        sc_cheat_sample();
         return;
     }
     /* lin == score_hook_end: GO_DEMO_MODE.  The score is still intact here -
@@ -2595,6 +2732,7 @@ void fantasies_score_exec(uint32_t lin){
     if(sc_state){
         uint64_t v = sc_read_score(&bad);
         if(bad) sc_cur.bad_digits = 1; else sc_cur.score = v;
+        sc_cheat_sample();
         sc_close("attract");
     } else if(sc_seen_begin){
         /* Only surprising once a game has actually run on this table: a fresh
