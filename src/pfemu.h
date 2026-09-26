@@ -316,6 +316,7 @@ void plat_set_fullscreen(int on);     /* runtime toggle; also Alt+Enter in-windo
  * session itself: each host's main() does its own process setup and then
  * hands over. */
 void vga_font_init(void);   /* src/vgafont.c: derive the 8x8 table */
+extern const uint8_t bios_font8x8[128*8];   /* src/vgafont.c: the ROM font at F000:FA6E */
 
 int  emu_main(int argc, char **argv);
 void plat_early_init(void);           /* console, DPI, process-wide setup */

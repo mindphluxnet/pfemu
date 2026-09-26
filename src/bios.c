@@ -356,6 +356,10 @@ void bios_init(void){
     ram[0xF0000 + 0x0E80] = 0xCF;
     st32u(&ram[0x1C*4], ((uint32_t)0xF000<<16) | 0x0E80);
 
+    /* the 8x8 font of characters 0-127 where the system BIOS keeps it; the
+     * intro reads its side-bar texts from here (see src/vgafont.c) */
+    memcpy(&ram[0xFFA6E], bios_font8x8, sizeof(bios_font8x8));
+
     /* ROM identification */
     memcpy(&ram[0xFE000], "PFEMU BIOS (c) 2026 - not IBM", 29);
     memcpy(&ram[0xFFFF5], "01/01/93", 8);
